@@ -1,0 +1,88 @@
+# RoomRate production stack — see docs/DEPLOYMENT.md for the runbooks.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# One image (Dockerfile.api), three services:
+#   migrate  one-shot `alembic upgrade head`, must finish successfully first
+#   api      FastAPI/uvicorn, ROOMRATE_PROCESS_ROLE=api
+#   worker   APScheduler + scraper subprocess, ROOMRATE_PROCESS_ROLE=worker
+#
+# PostgreSQL is NOT a service here: production uses managed Supabase Postgres
+# reached through DATABASE_URL.
+
+name: roomrate
+
+# Shared definition for the three backend services. Values live in .env and are
+# injected at run time — never baked into the image (see .dockerignore).
+#
+# `build:` deliberately lives only on the `migrate` service below, not here.
+# All three services reference the same `image:` tag, so `docker compose up
+# --build` only needs to build it once (on migrate) and tag it; api/worker
+# then start from that same tag instead of rebuilding it two more times.
+x-backend: &backend
+  image: roomrate-backend:${ROOMRATE_IMAGE_TAG:-latest}
+  env_file:
+    - .env
+
+services:
+  # Answers the deployment question "who runs alembic upgrade head, and when":
+  # this service does, on every `up`, before api and worker are allowed to
+  # start. It exits 0 when the schema is at head (a no-op when nothing changed)
+  # and non-zero on a failed migration, which then blocks the rollout instead
+  # of letting new code meet an old schema.
+  migrate:
+    <<: *backend
+    # The one service that actually builds; see the note on x-backend above.
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    # One-shot: it must exit, not be restarted into a loop.
+    restart: "no"
+
+  api:
+    <<: *backend
+    environment:
+      # Overrides the single ROOMRATE_PROCESS_ROLE in .env: with APP_ENV=production
+      # the API refuses to boot on the local "all" role (api/config.py).
+      ROOMRATE_PROCESS_ROLE: api
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      # Both sides follow PORT: env_file injects it, so uvicorn and the image's
+      # HEALTHCHECK already listen/probe there. Terminate TLS at the load
+      # balancer or reverse proxy in front of this.
+      - "${PORT:-8000}:${PORT:-8000}"
+    restart: unless-stopped
+
+  worker:
+    <<: *backend
+    command: ["python", "-m", "api.worker"]
+    environment:
+      ROOMRATE_PROCESS_ROLE: worker
+      # The worker IS the scheduler; validate_production_settings refuses to
+      # start it with scheduling disabled.
+      ROOMRATE_SCHEDULER_ENABLED: "true"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      # Per-job scraper CSVs (output/scrapes/). Structured results live in
+      # PostgreSQL; these are debugging artifacts pruned by the daily
+      # SCRAPE_CSV_RETENTION_DAYS job, so they only need to outlive a restart.
+      - scrape-output:/app/output
+    # The worker serves no HTTP, so the image's /health probe cannot apply.
+    # Monitor it by process liveness plus queue age (docs/DEPLOYMENT.md).
+    healthcheck:
+      disable: true
+    # A claimed scrape job can hold an Apify subprocess for minutes; give it
+    # room to finish its current callback. Anything still running is returned
+    # to `queued` by the stale-job sweeper, so a hard kill is never data loss.
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+  # frontend: see frontend/Dockerfile (Round 5.2 frontend agent)
+
+volumes:
+  scrape-output:

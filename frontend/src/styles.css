@@ -1,0 +1,2345 @@
+@import "mapbox-gl/dist/mapbox-gl.css";
+
+* {
+  box-sizing: border-box;
+}
+
+:root {
+  --background: #f5f5f4;
+  --foreground: #0f172a;
+  --muted: #64748b;
+  --line: #dbe3ef;
+  --panel: #ffffff;
+  --teal: #0f766e;
+  --teal-soft: #e6fffb;
+  --danger: #be123c;
+  --slate: #0f172a;
+  /* Data-mark teal: one step brighter than --teal, which sits under the
+     chroma floor (OKLCH C 0.086) and reads gray as a chart mark. Validated
+     against the panel surface: L in band, C 0.11, 3.74:1 contrast. */
+  --chart-series: #0d9488;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.eyebrow {
+  color: var(--teal);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  margin: 0 0 6px;
+  text-transform: uppercase;
+}
+
+.muted {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.roomrate-input {
+  border: 1px solid rgb(203 213 225);
+  background: #ffffff;
+  color: var(--foreground);
+  font-size: 14px;
+  min-height: 42px;
+  padding: 9px 10px;
+  width: 100%;
+}
+
+.roomrate-input:focus {
+  border-color: var(--teal);
+  outline: 2px solid rgb(15 118 110 / 16%);
+  outline-offset: 0;
+}
+
+.muted-input {
+  background: #f1f5f9;
+}
+
+.primary-button,
+.secondary-button {
+  border: 0;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+  min-height: 42px;
+  padding: 11px 16px;
+}
+
+.primary-button {
+  background: var(--slate);
+  color: #ffffff;
+  width: 100%;
+}
+
+.secondary-button {
+  background: var(--teal);
+  color: #ffffff;
+}
+
+.save-feedback {
+  border: 1px solid #99f6e4;
+  background: #f0fdfa;
+  color: #134e4a;
+  font-size: 13px;
+  line-height: 1.4;
+  margin-top: 10px;
+  padding: 10px;
+}
+
+.save-feedback-error {
+  border-color: #fecdd3;
+  background: #fff1f2;
+  color: #9f1239;
+}
+
+.primary-button:disabled,
+.secondary-button:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
+}
+
+.text-button {
+  background: transparent;
+  border: 0;
+  color: var(--teal);
+  cursor: pointer;
+  font-weight: 700;
+  padding: 0;
+}
+
+.text-button:disabled {
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+
+.alert {
+  border: 1px solid #99f6e4;
+  background: #f0fdfa;
+  color: #134e4a;
+  font-size: 14px;
+  line-height: 1.45;
+  padding: 12px;
+}
+
+.alert-error {
+  border-color: #fecdd3;
+  background: #fff1f2;
+  color: #9f1239;
+}
+
+.progress-panel {
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding: 12px;
+}
+
+.progress-panel strong {
+  color: var(--slate);
+  font-size: 14px;
+}
+
+.progress-panel span {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.auth-page {
+  min-height: 100vh;
+  padding: 32px 20px;
+}
+
+.auth-page {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  padding: 28px 20px;
+}
+
+.auth-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: 0 20px 48px rgb(15 23 42 / 8%);
+  max-width: 520px;
+  padding: 30px;
+  width: 100%;
+}
+
+.auth-brand {
+  border-bottom: 1px solid #e2e8f0;
+  margin-bottom: 18px;
+  padding-bottom: 18px;
+}
+
+.auth-panel h1,
+.page-header h1 {
+  font-size: 26px;
+  line-height: 1.15;
+  margin: 0;
+}
+
+.auth-form,
+.form-panel,
+.filters-sidebar {
+  display: grid;
+  gap: 16px;
+}
+
+.auth-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  justify-content: space-between;
+  margin-top: 18px;
+}
+
+.password-field {
+  position: relative;
+}
+
+.password-input {
+  padding-right: 72px;
+}
+
+.password-toggle {
+  background: transparent;
+  border: 0;
+  color: var(--teal);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 6px 8px;
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+}
+
+label span,
+.amenity-list > span {
+  color: #475569;
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.page-header {
+  margin: 0 auto 24px;
+  max-width: 1180px;
+}
+
+.onboarding-grid {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: 360px minmax(0, 1fr);
+  margin: 0 auto;
+  max-width: 1180px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 20px;
+}
+
+.two-cols,
+.three-cols {
+  display: grid;
+  gap: 12px;
+}
+
+.two-cols {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.three-cols {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.section-title,
+.card-row {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.section-title h2,
+.filters-sidebar h2,
+.results-sidebar h2,
+.room-type-section h2 {
+  color: #475569;
+  font-size: 14px;
+  letter-spacing: 0.14em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.candidate-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 18px 0;
+}
+
+.candidate-card,
+.competitor-card,
+.room-type-option {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  color: var(--foreground);
+}
+
+.candidate-card {
+  cursor: pointer;
+  padding: 14px;
+  text-align: left;
+}
+
+.candidate-card.selected,
+.room-type-option.selected {
+  background: var(--teal-soft);
+  border-color: var(--teal);
+}
+
+.candidate-card h3 {
+  font-size: 15px;
+  margin: 0;
+}
+
+.candidate-card p,
+.candidate-card small,
+.competitor-card small {
+  color: var(--muted);
+}
+
+.room-type-section {
+  border-top: 1px solid var(--line);
+  margin-top: 22px;
+  padding-top: 18px;
+}
+
+.room-type-option {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 12px;
+}
+
+.align-right {
+  display: block;
+  margin: 18px 0 0 auto;
+  width: auto;
+}
+
+.map-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 720px;
+  overflow: hidden;
+}
+
+.map-header {
+  align-items: center;
+  background: #ffffff;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 16px 20px;
+}
+
+.map-header h1 {
+  font-size: 20px;
+  margin: 0;
+}
+
+.header-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.header-actions a,
+.header-actions span,
+.header-actions button {
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  color: #334155;
+  font-size: 14px;
+  padding: 8px 12px;
+}
+
+.header-actions button {
+  cursor: pointer;
+}
+
+/*
+ * The map header (owner review 2026-09-30). The row wraps rather than widen
+ * the page, and its items are told apart by what they do: status chips only
+ * report, the links navigate. The `.header-actions` selectors keep beating the
+ * shared `.header-actions a/span/button` rules above; the bell keeps them.
+ */
+.map-header > div:first-child {
+  min-width: 0;
+}
+
+.map-header h1 {
+  overflow-wrap: anywhere;
+}
+
+.map-header-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.header-actions .status-chip {
+  align-items: center;
+  background: #f1f5f9;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: #475569;
+  cursor: default;
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 600;
+  gap: 6px;
+  padding: 4px 10px;
+  user-select: none;
+  white-space: nowrap;
+}
+
+/* A small steady dot says "live" without a word more; decorative, so hidden from assistive tech by being CSS. */
+.header-actions .status-chip-live::before {
+  background: var(--teal);
+  border-radius: 999px;
+  content: "";
+  height: 7px;
+  width: 7px;
+}
+
+.header-nav {
+  align-items: center;
+  display: flex;
+  gap: 2px;
+}
+
+.header-actions .header-nav-link {
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: #334155;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 10px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.header-actions .header-nav-link:hover,
+.header-actions .header-nav-link:focus-visible {
+  background: #f1f5f9;
+  color: var(--teal);
+}
+
+.header-actions .header-signout {
+  color: #64748b;
+}
+
+/*
+ * The map is the hero of the page (owner feedback, Round 6 demo prep): both
+ * sidebars stay narrow so the centre column takes the dominant share of the
+ * width, and the canvas below guarantees the height.
+ */
+.map-grid {
+  display: grid;
+  flex: 1;
+  grid-template-columns: 300px minmax(0, 1fr) 360px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.map-grid.filters-collapsed {
+  grid-template-columns: minmax(0, 1fr) 360px;
+}
+
+.filters-sidebar,
+.results-sidebar {
+  background: #ffffff;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.filters-sidebar {
+  border-right: 1px solid var(--line);
+  /*
+   * Rows at their own height, the sidebar scrolls. With the default stretch
+   * sizing a form taller than the screen squeezed the one shrinkable row, the
+   * facility list (a scroll container), down to nothing — and Round 6 added
+   * the nearby areas and the radius to the same form.
+   */
+  grid-auto-rows: max-content;
+}
+
+.filters-title-row {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.panel-toggle-button,
+.show-filters-button {
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  color: #334155;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  min-height: 34px;
+  padding: 7px 10px;
+}
+
+.show-filters-button {
+  left: 16px;
+  position: absolute;
+  top: 16px;
+  z-index: 3;
+}
+
+.results-sidebar {
+  border-left: 1px solid var(--line);
+}
+
+/* «Σύγκριση για»: the room the whole results column is read for, set apart as its primary control. */
+.compare-room-field {
+  border-bottom: 1px solid var(--line);
+  display: block;
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+}
+
+.compare-room-field select {
+  font-weight: 600;
+  max-width: 100%;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+
+/* Round 6 (spec §4.1): the nearby areas as removable chips above the radius. */
+.nearby-field {
+  display: grid;
+  gap: 8px;
+}
+
+.nearby-field-label {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.nearby-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.nearby-chip {
+  align-items: center;
+  background: var(--teal-soft);
+  border: 1px solid var(--teal);
+  color: var(--foreground);
+  display: inline-flex;
+  font-size: 13px;
+  gap: 2px;
+  padding: 2px 2px 2px 8px;
+}
+
+.nearby-chip button {
+  background: transparent;
+  border: 0;
+  color: var(--teal);
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 6px;
+}
+
+.nearby-add-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.nearby-add-row button:disabled {
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+
+.nearby-hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Round 6 (spec §7): what the scrape reported about the result, under the banner. Amber, not the red of an error. */
+.search-warning {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-left: 3px solid #b45309;
+  color: #78350f;
+  font-size: 14px;
+  line-height: 1.45;
+  margin: 0;
+  padding: 10px 12px;
+}
+
+/* Round 6 (spec §4.8): the way from a finished search to its price recommendation. */
+.pricing-link {
+  background: #ffffff;
+  border: 1px solid var(--teal);
+  color: var(--teal);
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 12px;
+  padding: 10px 16px;
+  text-align: center;
+}
+
+.pricing-link:hover,
+.pricing-link:focus-visible {
+  background: var(--teal-soft);
+}
+
+/* Round 6 (spec §4.2): the running search's stage and elapsed clock, under the banner. */
+.scrape-progress {
+  align-items: baseline;
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--teal);
+  color: #334155;
+  display: flex;
+  font-size: 14px;
+  gap: 12px;
+  justify-content: space-between;
+  line-height: 1.45;
+  padding: 10px 12px;
+}
+
+.scrape-progress-clock {
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.amenity-list {
+  display: grid;
+  gap: 9px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.amenity-list-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.amenity-list-header span {
+  margin-bottom: 0;
+}
+
+.amenity-list-header button {
+  background: transparent;
+  border: 0;
+  color: var(--teal);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0;
+}
+
+.amenity-list-header button:disabled {
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+
+.baseline-room {
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+}
+
+.baseline-room strong {
+  font-size: 14px;
+}
+
+.baseline-room small {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.filter-section-label {
+  border-top: 1px solid var(--line);
+  color: #475569;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  padding-top: 4px;
+  text-transform: uppercase;
+}
+
+.checkbox-row {
+  align-items: center;
+  display: flex;
+  gap: 9px;
+  line-height: 1.3;
+}
+
+.checkbox-row span {
+  color: var(--foreground);
+  font-size: 14px;
+  letter-spacing: 0;
+  margin: 0;
+  text-transform: none;
+}
+
+.map-shell {
+  background: #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.map-canvas {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+/*
+ * Desktop only (above the breakpoint that moves the results under the map):
+ * the canvas ASKS for ~70vh (the map is the page's hero) through its flex
+ * basis, but keeps shrink enabled — a hard min-height overflowed the
+ * fixed-height .map-grid by ~100px on short windows whenever the setup
+ * checklist sat above the map, clipping the legend (CI caught it via the
+ * scenario-5b bottom-alignment contract).
+ */
+@media (min-width: 1121px) {
+  .map-canvas {
+    flex: 1 1 max(70vh, 420px);
+  }
+}
+
+.roomrate-map {
+  height: 100%;
+  width: 100%;
+}
+
+.map-empty-state {
+  background: rgb(255 255 255 / 86%);
+  border: 1px solid var(--line);
+  left: 50%;
+  max-width: 360px;
+  padding: 14px;
+  position: absolute;
+  text-align: center;
+  top: 24px;
+  transform: translateX(-50%);
+  z-index: 2;
+}
+
+/*
+ * Quiet, non-alarming notices: neither one is an error the user has to act on
+ * (a map that failed to load, a room the page picked by itself), so they must
+ * not borrow the red of .alert-error, which belongs to the results.
+ */
+.map-notice {
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-left: 3px solid #64748b;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 8px 0 0;
+  padding: 10px 12px;
+}
+
+.map-error-notice {
+  background: rgb(255 255 255 / 92%);
+  left: 50%;
+  margin: 0;
+  max-width: 360px;
+  position: absolute;
+  text-align: center;
+  top: 24px;
+  transform: translateX(-50%);
+  /* Above the Mapbox canvas and its controls, like .map-empty-state. */
+  z-index: 2;
+}
+
+/*
+ * A failed map with nothing to plot shows BOTH overlays, and they are both
+ * anchored to the same spot — the empty state moves down so neither is read
+ * through the other. General sibling: the notice is rendered before them.
+ */
+.map-error-notice ~ .map-empty-state {
+  top: 96px;
+}
+
+.stats-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 18px 0;
+}
+
+.stats-grid div {
+  border: 1px solid var(--line);
+  padding: 14px;
+}
+
+.stats-grid span {
+  color: #475569;
+  display: block;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.stats-grid strong {
+  font-size: 18px;
+}
+
+.map-filter-toggle {
+  border: 1px solid var(--line);
+  margin-top: 12px;
+  padding: 10px 12px;
+}
+
+.competitor-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.results-empty {
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+  padding: 14px;
+}
+
+.results-empty strong {
+  font-size: 15px;
+}
+
+.results-empty span {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.competitor-card {
+  align-items: flex-start;
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  padding: 12px;
+  transition: background-color 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+}
+
+/* The card points at its marker (map ↔ list linking), so it answers the pointer and the keyboard. */
+.competitor-card:hover,
+.competitor-card:focus-within {
+  border-color: #94a3b8;
+}
+
+/* Flashed after its marker was clicked on the map. */
+.competitor-card.is-highlighted {
+  background: var(--teal-soft);
+  border-color: var(--teal);
+  box-shadow: 0 0 0 1px var(--teal);
+}
+
+.competitor-body {
+  display: grid;
+  flex: 1;
+  gap: 7px;
+  /* A long hotel name wraps inside the card instead of widening the column. */
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.competitor-card b {
+  color: var(--teal);
+}
+
+/*
+ * Round 6 (spec §4.6): the card's category chip, drawn like the popup's. The
+ * overrides undo `label span`, which would otherwise make it a block of
+ * letter-spaced capitals.
+ */
+.competitor-card .category-chip {
+  background: #334155;
+  border: 1px solid #334155;
+  border-radius: 999px;
+  color: #ffffff;
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  margin: 0;
+  padding: 1px 8px;
+  text-transform: none;
+}
+
+.competitor-card .category-chip.is-similar {
+  background: #ffffff;
+  color: #334155;
+}
+
+/* «Μη συγκρίσιμο» (owner decision 2026-09-30): only with «Μόνο συγκρίσιμα»
+   off, and muted on purpose: the room is shown for context, not as a rival. */
+.competitor-card .category-chip.is-not-comparable,
+.rate-plan-chip.is-not-comparable {
+  background: var(--background);
+  border: 1px dashed var(--line);
+  color: var(--muted);
+}
+
+.compact {
+  align-items: center;
+}
+
+.mapboxgl-popup {
+  z-index: 20 !important;
+}
+
+.mapboxgl-marker {
+  z-index: 5 !important;
+}
+
+.mapboxgl-popup-content {
+  border: 1px solid rgb(226 232 240);
+  border-radius: 0;
+  box-shadow: 0 18px 45px rgb(15 23 42 / 18%);
+  padding: 0;
+}
+
+.mapboxgl-popup-close-button {
+  color: #475569;
+  font-size: 18px;
+  padding: 6px 9px;
+}
+
+.roomrate-popup {
+  max-width: 300px;
+  min-width: 260px;
+  padding: 14px 15px 15px;
+}
+
+.roomrate-popup__eyebrow {
+  color: var(--teal);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.roomrate-popup h3 {
+  color: var(--foreground);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.25;
+  margin: 6px 20px 0 0;
+}
+
+/* Round 6 (spec §4.5): the category chip and the distance under the hotel name. */
+.roomrate-popup__tags {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 8px;
+}
+
+.roomrate-popup__category {
+  background: #334155;
+  border: 1px solid #334155;
+  border-radius: 999px;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+}
+
+.roomrate-popup__category.is-similar {
+  background: #ffffff;
+  color: #334155;
+}
+
+.roomrate-popup__distance {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.roomrate-popup__footer {
+  border-top: 1px solid rgb(226 232 240);
+  margin-top: 12px;
+  padding-top: 10px;
+}
+
+/* Inline-block: Mapbox focuses the first link when the popup opens, and the ring should hug the text. */
+.roomrate-popup__link {
+  color: var(--teal);
+  display: inline-block;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.roomrate-popup__link:hover {
+  text-decoration: underline;
+}
+
+.roomrate-popup__link:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+
+.roomrate-popup--own .roomrate-popup__room {
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.roomrate-popup__price {
+  align-items: baseline;
+  color: var(--teal);
+  display: flex;
+  font-size: 18px;
+  font-weight: 800;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.roomrate-popup__price span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.roomrate-popup__section {
+  border-top: 1px solid rgb(226 232 240);
+  margin-top: 12px;
+  padding-top: 10px;
+}
+
+.roomrate-popup__label {
+  color: var(--muted);
+  display: block;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.roomrate-popup__room {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.roomrate-popup__metrics {
+  display: grid;
+  gap: 7px;
+  margin: 12px 0 0;
+}
+
+.roomrate-popup__metrics div {
+  align-items: center;
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+}
+
+.roomrate-popup__metrics dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.roomrate-popup__metrics dd {
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 700;
+  margin: 0;
+  text-align: right;
+}
+
+.roomrate-popup__metrics dd span {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+/*
+ * A competitor marker is a price pill (Round 6, spec §4.4): filled in its price
+ * band's colour for a room of the owner's category, outlined (`is-similar`) for
+ * a similar one. `--marker-band` is set by the band class below.
+ */
+.roomrate-marker-dot {
+  align-items: center;
+  background: var(--marker-band, #b45309);
+  border: 1.5px solid #ffffff;
+  border-radius: 999px;
+  box-shadow: 0 5px 14px rgb(15 23 42 / 22%);
+  color: #ffffff;
+  cursor: pointer;
+  display: flex;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  height: 20px;
+  justify-content: center;
+  line-height: 1;
+  min-width: 36px;
+  padding: 1px 6px;
+  /* Mapbox positions markers with transform; animating it makes markers lag during pan/zoom. */
+  transition: box-shadow 150ms ease, border-color 150ms ease;
+  white-space: nowrap;
+}
+
+.roomrate-marker-dot.is-similar {
+  background: #ffffff;
+  border-color: var(--marker-band, #b45309);
+  color: var(--marker-band, #b45309);
+}
+
+/*
+ * Zoomed out below 13.5 (the map container's is-zoomed-out), a dense market's
+ * pills pile up into an unreadable heap: each competitor becomes a compact dot
+ * in its band colour, its price kept in the label and the popup. «Εσείς» is not
+ * a .roomrate-marker-dot and keeps its label at every zoom.
+ */
+.roomrate-map.is-zoomed-out .roomrate-marker-dot {
+  height: 14px;
+  min-width: 14px;
+  padding: 0;
+  width: 14px;
+}
+
+.roomrate-map.is-zoomed-out .roomrate-marker-dot .price-pill {
+  display: none;
+}
+
+.roomrate-marker-dot::after {
+  content: "";
+  display: none;
+}
+
+.roomrate-marker-dot:hover,
+.roomrate-marker-dot:focus-visible {
+  box-shadow: 0 0 0 2px #172033, 0 10px 22px rgb(15 23 42 / 32%);
+  outline: none;
+}
+
+/*
+ * A room selected for tracking. The ring is drawn OUTSIDE the dot (white gap,
+ * then a dark halo) instead of recolouring it, so it reads the same over the
+ * teal, amber and rose price classes and keeps price legible as the dot's own
+ * colour.
+ *
+ * No z-index here: the dot IS the `.mapboxgl-marker` node and Mapbox writes an
+ * inline z-index on it for depth ordering, so a stylesheet rule would be dead
+ * (measured: inline 5 over a declared 1).
+ */
+.roomrate-marker-dot.is-selected {
+  box-shadow: 0 0 0 3px #ffffff, 0 0 0 5px #0f172a, 0 8px 20px rgb(15 23 42 / 30%);
+}
+
+/*
+ * Both states are box-shadow rings, so the selected rule above would otherwise
+ * swallow hover/focus feedback on exactly the markers the user cares most
+ * about. Thicken the halo instead of replacing it.
+ */
+.roomrate-marker-dot.is-selected:hover,
+.roomrate-marker-dot.is-selected:focus-visible {
+  box-shadow: 0 0 0 3px #ffffff, 0 0 0 7px #0f172a, 0 10px 22px rgb(15 23 42 / 32%);
+}
+
+/*
+ * The marker of the card under the pointer or keyboard focus (map ↔ list
+ * linking): raised over its neighbours, a little larger and outlined. Larger
+ * by size, never by transform, which is Mapbox's own positioning. The z-index
+ * is !important because Mapbox may write an inline one on the marker node.
+ */
+.roomrate-marker-dot.is-highlighted {
+  font-size: 11px;
+  height: 24px;
+  min-width: 42px;
+  outline: 2px solid #172033;
+  outline-offset: 2px;
+  z-index: 10 !important;
+}
+
+.roomrate-map.is-zoomed-out .roomrate-marker-dot.is-highlighted {
+  height: 18px;
+  min-width: 18px;
+  width: 18px;
+}
+
+.roomrate-marker-dot-low {
+  --marker-band: #0f766e;
+}
+
+.roomrate-marker-dot-mid {
+  --marker-band: #b45309;
+}
+
+.roomrate-marker-dot-high {
+  --marker-band: #be123c;
+}
+
+/*
+ * The owner's own marker (spec §4.3): dark and square-cornered, so it never
+ * reads as one more price pill.
+ */
+.roomrate-marker-own {
+  background: #0f172a;
+  border: 2px solid #ffffff;
+  border-radius: 4px;
+  box-shadow: 0 8px 20px rgb(15 23 42 / 35%);
+  color: #ffffff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  height: 26px;
+  letter-spacing: 0.04em;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+/*
+ * Above the competitor pills whatever order the two reads landed in: the
+ * owner's reference point must not vanish under a pile of prices when the
+ * radius circle zooms the map out. `!important` beats the rule above and the
+ * inline z-index Mapbox writes; popups (20) stay on top of it.
+ */
+.mapboxgl-marker.roomrate-marker-own {
+  z-index: 6 !important;
+}
+
+.roomrate-marker-own:hover,
+.roomrate-marker-own:focus-visible {
+  box-shadow: 0 0 0 2px #0f172a, 0 10px 22px rgb(15 23 42 / 40%);
+  outline: none;
+}
+
+.roomrate-popup__own-line {
+  color: var(--foreground);
+  font-size: 13px;
+  line-height: 1.4;
+  margin: 8px 0 0;
+}
+
+/* Lower-left corner of the map, above the Mapbox logo: the own-location notice over the key. */
+.map-corner {
+  bottom: 36px;
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  left: 10px;
+  max-width: calc(100% - 20px);
+  position: absolute;
+  z-index: 2;
+}
+
+.map-own-notice {
+  background: rgb(255 255 255 / 94%);
+  margin: 0;
+  max-width: 320px;
+}
+
+/* The marker key (spec §4.4). */
+.map-legend {
+  background: rgb(255 255 255 / 94%);
+  border: 1px solid var(--line);
+  box-shadow: 0 6px 16px rgb(15 23 42 / 10%);
+  color: #334155;
+  display: grid;
+  font-size: 11px;
+  gap: 5px;
+  padding: 6px 9px;
+}
+
+.map-legend-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.map-legend-item {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.map-legend-swatch {
+  border: 1.5px solid transparent;
+  border-radius: 999px;
+  display: inline-block;
+  height: 10px;
+  width: 16px;
+}
+
+.map-legend-low {
+  background: #0f766e;
+}
+
+.map-legend-mid {
+  background: #b45309;
+}
+
+.map-legend-high {
+  background: #be123c;
+}
+
+.map-legend-same {
+  background: #475569;
+}
+
+.map-legend-similar {
+  background: #ffffff;
+  border-color: #475569;
+}
+
+.map-legend-own {
+  background: #0f172a;
+  border-radius: 3px;
+}
+
+.page-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.page-body {
+  display: grid;
+  gap: 20px;
+  margin: 0 auto;
+  max-width: 1180px;
+  padding: 24px 20px;
+  width: 100%;
+}
+
+.pricing-grid {
+  align-items: start;
+  display: grid;
+  gap: 20px;
+  grid-template-columns: 340px minmax(0, 1fr);
+}
+
+.pricing-results {
+  display: grid;
+  gap: 20px;
+}
+
+/* The page's primary choice, above the stay form: which room is compared. */
+.comparison-bar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-bottom: 20px;
+  padding: 14px 20px;
+}
+
+.comparison-bar-label {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.comparison-bar-select {
+  flex: 1 1 280px;
+  font-weight: 600;
+  max-width: 520px;
+}
+
+.pricing-hint {
+  font-size: 13px;
+  margin: 0;
+}
+
+.chip-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.match-chip {
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 9px;
+  white-space: nowrap;
+}
+
+.match-chip-high {
+  background: var(--teal-soft);
+  border: 1px solid #99f6e4;
+  color: var(--teal);
+}
+
+.match-chip-mid {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  color: #b45309;
+}
+
+.match-chip-low {
+  background: #fff1f2;
+  border: 1px solid #fecdd3;
+  color: #9f1239;
+}
+
+.source-chip {
+  background: #f1f5f9;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 9px;
+  white-space: nowrap;
+}
+
+.recommendation-card {
+  display: grid;
+  gap: 14px;
+}
+
+/* Headline block: the price and its range on the left, the pills on the right. */
+.recommendation-headline {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  justify-content: space-between;
+}
+
+.recommendation-figure {
+  display: grid;
+  gap: 4px;
+}
+
+.recommendation-label {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.recommendation-price {
+  color: var(--teal);
+  font-size: 44px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  line-height: 1.05;
+}
+
+.recommendation-range {
+  color: #334155;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  margin: 0;
+}
+
+.confidence-pill {
+  border: 1px solid;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+
+.confidence-high {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+  color: #047857;
+}
+
+.confidence-medium {
+  background: #fffbeb;
+  border-color: #fde68a;
+  color: #b45309;
+}
+
+.confidence-low {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #475569;
+}
+
+.recommendation-summary {
+  color: var(--foreground);
+  font-size: 15px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.key-factors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.factor-chip {
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 3px 10px;
+}
+
+.reasoning-disclosure {
+  display: grid;
+  gap: 8px;
+}
+
+.reasoning-toggle {
+  align-items: center;
+  display: inline-flex;
+  font-size: 13px;
+  gap: 8px;
+  justify-self: start;
+}
+
+/* A drawn chevron, not a glyph: generated text would join the accessible name. */
+.reasoning-toggle::after {
+  border-bottom: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+  content: "";
+  height: 6px;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 0.15s ease;
+  width: 6px;
+}
+
+.reasoning-toggle[aria-expanded="true"]::after {
+  transform: translateY(1px) rotate(-135deg);
+}
+
+.recommendation-reasoning {
+  border-left: 3px solid var(--line);
+  color: #334155;
+  font-size: 14px;
+  line-height: 1.55;
+  margin: 0;
+  padding-left: 12px;
+}
+
+/* Loading skeleton: the card's own shape in grey, with a gentle pulse. */
+.recommendation-skeleton {
+  display: grid;
+  gap: 14px;
+}
+
+.skeleton-headline {
+  display: flex;
+  gap: 20px;
+  justify-content: space-between;
+}
+
+.skeleton-figure,
+.skeleton-pills {
+  display: grid;
+  gap: 8px;
+}
+
+.skeleton-pills {
+  align-content: start;
+  grid-auto-flow: column;
+}
+
+.skeleton-block {
+  animation: rr-pulse 1.4s ease-in-out infinite;
+  background: #e2e8f0;
+  border-radius: 6px;
+  display: block;
+}
+
+.skeleton-label {
+  height: 12px;
+  width: 180px;
+}
+
+.skeleton-price {
+  height: 44px;
+  width: 140px;
+}
+
+.skeleton-range {
+  height: 15px;
+  width: 150px;
+}
+
+.skeleton-pill {
+  border-radius: 999px;
+  height: 22px;
+  width: 92px;
+}
+
+.skeleton-line {
+  height: 14px;
+  width: 100%;
+}
+
+.skeleton-line-short {
+  width: 62%;
+}
+
+@keyframes rr-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-block {
+    animation: none;
+  }
+}
+
+.visually-hidden {
+  border: 0;
+  clip: rect(0 0 0 0);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+.recommendation-footer {
+  border-top: 1px solid var(--line);
+  color: #94a3b8;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 11px;
+  gap: 4px 12px;
+  margin: 0;
+  padding-top: 10px;
+}
+
+.stat-notes {
+  display: grid;
+  font-size: 13px;
+  gap: 4px;
+  line-height: 1.45;
+  margin: 0;
+  padding-left: 18px;
+}
+
+/* --- Market price-history chart -------------------------------------------
+   Inline SVG, no chart library. Font sizes inside .history-svg are viewBox
+   user units, so they scale with the card and stay proportional to the marks. */
+
+.history-card {
+  display: grid;
+  gap: 12px;
+}
+
+.history-scroll {
+  overflow-x: auto;
+}
+
+.history-chart {
+  position: relative;
+  width: 100%;
+}
+
+/* A refetch holds the previous render instead of flashing a skeleton. */
+.history-chart.is-refreshing {
+  opacity: 0.55;
+}
+
+.history-svg {
+  display: block;
+  height: auto;
+  width: 100%;
+}
+
+.history-gridline {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.history-y-tick,
+.history-x-tick-date,
+.history-x-tick-time,
+.history-axis-caption {
+  fill: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.history-y-tick {
+  font-size: 13px;
+}
+
+.history-x-tick-date {
+  font-size: 12px;
+}
+
+.history-x-tick-time,
+.history-axis-caption {
+  font-size: 11px;
+}
+
+.history-band,
+.history-key-band {
+  fill: var(--chart-series);
+  fill-opacity: 0.12;
+}
+
+.history-line,
+.history-key-line {
+  fill: none;
+  stroke: var(--chart-series);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+/* The 2px ring is the panel surface showing through, so dots stay readable
+   where they overlap the line or the band edge. */
+.history-dot,
+.history-key-dot {
+  fill: var(--chart-series);
+  stroke: var(--panel);
+  stroke-width: 2;
+}
+
+.history-crosshair {
+  stroke: var(--chart-series);
+  stroke-opacity: 0.45;
+  stroke-width: 1;
+}
+
+.history-value {
+  fill: var(--foreground);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.history-hit {
+  fill: transparent;
+  pointer-events: all;
+}
+
+.history-hit:focus {
+  outline: none;
+}
+
+.history-hit:focus-visible {
+  stroke: var(--teal);
+  stroke-dasharray: 4 3;
+  stroke-width: 2;
+}
+
+.history-tooltip {
+  --tip-x: -50%;
+  --tip-y: calc(-100% - 14px);
+
+  background: var(--slate);
+  color: #ffffff;
+  display: grid;
+  font-size: 12px;
+  gap: 2px;
+  line-height: 1.35;
+  padding: 8px 10px;
+  pointer-events: none;
+  position: absolute;
+  transform: translate(var(--tip-x), var(--tip-y));
+  white-space: nowrap;
+  z-index: 2;
+}
+
+/* Value leads, labels follow. */
+.history-tooltip strong {
+  font-size: 15px;
+}
+
+.history-tooltip span {
+  color: #cbd5e1;
+}
+
+.history-tooltip.tip-start {
+  --tip-x: 0;
+}
+
+.history-tooltip.tip-end {
+  --tip-x: -100%;
+}
+
+.history-tooltip.tip-below {
+  --tip-y: 14px;
+}
+
+/* 1-2 runs: a compact explanation and a way to build the history. */
+.history-low-data {
+  align-items: start;
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+}
+
+.history-low-data.is-refreshing {
+  opacity: 0.55;
+}
+
+.history-low-data-text {
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.history-low-data-cta {
+  border: 1px solid var(--teal);
+  color: var(--teal);
+  font-size: 13px;
+  font-weight: 700;
+  justify-self: start;
+  margin-top: 4px;
+  padding: 7px 12px;
+}
+
+.history-low-data-cta:hover,
+.history-low-data-cta:focus-visible {
+  background: var(--teal-soft);
+}
+
+.history-meta {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 6px 16px;
+  justify-content: space-between;
+}
+
+.history-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.history-key-item {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.history-key-mark {
+  height: 8px;
+  width: 18px;
+}
+
+.history-table {
+  font-size: 13px;
+}
+
+.history-table summary {
+  color: var(--teal);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.history-table table {
+  border-collapse: collapse;
+  margin-top: 8px;
+  width: 100%;
+}
+
+.history-table th,
+.history-table td {
+  border-bottom: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+  padding: 6px 8px;
+  text-align: right;
+}
+
+.history-table th:first-child,
+.history-table td:first-child {
+  text-align: left;
+}
+
+.history-table th {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+@media (max-width: 640px) {
+  /* Keep the chart at a readable size and scroll the card sideways instead of
+     shrinking every axis label into illegibility. A FLOOR rather than a fixed
+     width, so the base rule's width:100% keeps governing wherever the card is
+     wider than 560px and the chart is never stranded in a gap it could have
+     filled; narrower than that, the overflow is what .history-scroll scrolls. */
+  .history-chart {
+    min-width: 560px;
+  }
+}
+
+.spin {
+  animation: rr-spin 0.8s linear infinite;
+  border: 2px solid rgb(255 255 255 / 35%);
+  border-radius: 999px;
+  border-top-color: #ffffff;
+  display: inline-block;
+  height: 13px;
+  margin-right: 8px;
+  vertical-align: -2px;
+  width: 13px;
+}
+
+@keyframes rr-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.settings-form {
+  max-width: 640px;
+}
+
+.settings-toggle span {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0;
+  margin: 0;
+  text-transform: none;
+}
+
+.settings-readonly {
+  margin: 6px 0 0;
+}
+
+@media (max-width: 920px) {
+  .pricing-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.market-summary-block {
+  margin: 12px 0 18px;
+}
+
+.market-summary-counts {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.kpi-strip {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 12px;
+}
+
+.kpi-strip div {
+  border: 1px solid var(--line);
+  padding: 10px;
+}
+
+.kpi-strip span {
+  color: #475569;
+  display: block;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.kpi-strip strong {
+  font-size: 15px;
+}
+
+.match-controls {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 14px;
+}
+
+.match-controls input[type="range"] {
+  accent-color: var(--teal);
+  width: 100%;
+}
+
+/* Agents (spec Α.4): the agent's one-line justification under a package's match chip.
+   flex-basis 100% wraps it onto its own line inside the wrapping plan rows;
+   in the grid of plain package rows it simply becomes the next row. */
+.match-reasoning {
+  color: var(--muted);
+  flex-basis: 100%;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+/* Agents (spec Α.4): the source badge over the match list, with the re-run button beside it. */
+.match-source-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.matched-list {
+  display: grid;
+  gap: 10px;
+}
+
+.matched-card {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+.matched-card > small {
+  color: var(--muted);
+}
+
+.matched-packages {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 6px;
+  padding-top: 8px;
+}
+
+.matched-package-meta {
+  align-items: center;
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+/* Rate plans (spec §5): the opened list of one room's plans. */
+.plans-toggle {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.rate-plan-list {
+  border-left: 2px solid var(--line);
+  display: grid;
+  gap: 6px;
+  padding: 2px 0 2px 10px;
+}
+
+.rate-plan-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.rate-plan-row .match-chip {
+  margin-left: auto;
+}
+
+.rate-plan-price {
+  color: var(--teal);
+  font-size: 13px;
+}
+
+.rate-plan-chip {
+  background: var(--background);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+
+/* A room's only plan: the strip sits where the plain row's price would, so it
+   packs to the right and drops the opened list's push-right on the score. */
+.single-plan-row {
+  flex: 1;
+  justify-content: flex-end;
+}
+
+.single-plan-row .match-chip {
+  margin-left: 0;
+}
+
+.rate-plan-meals {
+  color: var(--muted);
+}
+
+/* Rate plans (spec §5): the one-line origin of every price on the page. */
+.price-source-note {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 8px 0 0;
+}
+
+.notification-bell {
+  position: relative;
+}
+
+.bell-button {
+  position: relative;
+}
+
+.bell-badge {
+  background: var(--danger);
+  border-radius: 999px;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  height: 18px;
+  line-height: 18px;
+  min-width: 18px;
+  padding: 0 4px;
+  position: absolute;
+  right: -7px;
+  text-align: center;
+  top: -7px;
+}
+
+.notification-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: 0 18px 45px rgb(15 23 42 / 18%);
+  max-height: 440px;
+  overflow-y: auto;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: min(360px, calc(100vw - 32px));
+  z-index: 40;
+}
+
+.notification-panel-header {
+  align-items: center;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  padding: 12px 14px;
+  position: sticky;
+  top: 0;
+}
+
+/* The header-actions button rules would otherwise restyle panel buttons. */
+.notification-panel .text-button {
+  background: transparent;
+  border: 0;
+  color: var(--teal);
+  font-size: 13px;
+  padding: 0;
+}
+
+.notification-panel .text-button:disabled {
+  color: #94a3b8;
+}
+
+.notification-item {
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+}
+
+.notification-item.unread {
+  background: var(--teal-soft);
+}
+
+.notification-item-top {
+  align-items: baseline;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.notification-item-top strong {
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.notification-item-top small {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.notification-item p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.notification-empty {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 14px;
+}
+
+.toast-stack {
+  bottom: 16px;
+  display: grid;
+  gap: 10px;
+  position: fixed;
+  right: 16px;
+  width: min(340px, calc(100vw - 32px));
+  z-index: 60;
+}
+
+.toast {
+  background: var(--slate);
+  box-shadow: 0 18px 45px rgb(15 23 42 / 30%);
+  color: #ffffff;
+  display: grid;
+  gap: 4px;
+  padding: 12px 32px 12px 14px;
+  position: relative;
+}
+
+.toast strong {
+  font-size: 14px;
+}
+
+.toast p {
+  color: rgb(226 232 240);
+  font-size: 13px;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.toast-close {
+  background: transparent;
+  border: 0;
+  color: rgb(203 213 225);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 4px;
+  position: absolute;
+  right: 6px;
+  top: 6px;
+}
+
+@media (max-width: 1120px) {
+  .map-grid {
+    grid-template-columns: 300px minmax(0, 1fr);
+  }
+
+  /* minmax(0, …), not 1fr: a bare 1fr grows to its widest child's min-content
+     (a long room name in a select, a nowrap chip row) and pushes the page
+     sideways on a narrow window. */
+  .map-grid.filters-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .results-sidebar {
+    grid-column: 1 / -1;
+    max-height: 320px;
+  }
+}
+
+@media (max-width: 820px) {
+  .onboarding-grid,
+  .candidate-grid,
+  .map-grid,
+  .map-grid.filters-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .map-page {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
+  .map-shell {
+    min-height: 420px;
+  }
+}

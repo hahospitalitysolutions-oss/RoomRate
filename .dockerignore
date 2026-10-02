@@ -1,0 +1,81 @@
+# Build context filter for Dockerfile.api (context = repository root).
+# Keeping the context small makes `docker build` fast and keeps secrets and
+# developer junk out of the image entirely.
+
+# Secrets — env values are injected at RUN time (compose env_file), never baked
+# into a layer. A baked .env would be readable by anyone who pulls the image.
+.env
+.env.*
+!.env.example
+
+# Version control and CI metadata
+.git
+.gitignore
+.github
+.claude
+.agents
+.superpowers
+.codex_tmp
+
+# Frontend: a separate image with its own Dockerfile and context. Only the
+# heavy derived directories are listed (not frontend/ itself) so a frontend
+# build that uses the repository root as its context still works.
+**/node_modules
+.npm-cache
+frontend/dist
+frontend/.angular
+frontend/test-results
+frontend/playwright-report
+.playwright-cli
+
+# Python caches, local virtualenvs and pip scratch dirs.
+# NOTE: unlike .gitignore, a .dockerignore pattern is matched against the WHOLE
+# relative path, so `__pycache__/` alone would only exclude a top-level one —
+# the nested caches inside api/ and scraper/ need the `**/` prefix.
+**/__pycache__
+**/*.py[cod]
+.venv
+venv
+env
+*.egg-info
+pip-build-tracker-*
+pip-ephem-wheel-cache-*
+pip-install-*
+
+# Tests are deliberately NOT shipped: the runtime image should contain only
+# what production executes. api/tests/ adds fixtures, fakes and scripted
+# engines that have no business inside a production container, and CI runs the
+# suite against the repository checkout rather than against the image.
+api/tests
+pytest.ini
+.pytest_cache
+.pytest-cache
+.pytest-tmp
+.pytest-*
+pytest-cache-files-*
+
+# Generated data, logs and local artifacts
+output/
+outputs/
+logs/
+tmp/
+**/*.log
+*.csv
+*.sqlite
+*.sqlite3
+*.db
+migration_preview.sql
+
+# Docs, editor and OS files — nothing in the image reads them
+docs/
+**/*.md
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Container definitions themselves
+Dockerfile*
+docker-compose*.yml
+.dockerignore

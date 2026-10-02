@@ -1,0 +1,20 @@
+api:
+  host: "0.0.0.0"
+  port: 8000
+  cors_origins:
+    - "http://localhost:3000"
+    - "http://127.0.0.1:3000"
+
+market:
+  default_limit: 500
+  max_limit: 5000
+  rate_source: "normalized"
+  default_account_id: "00000000-0000-0000-0000-000000000001"
+
+alerts:
+  price_drop_threshold_pct: 10
+  rooms_left_low_threshold: 3
+
+map:
+  default_zoom: 13
+  marker_price_currency: "EUR"

@@ -1,0 +1,32 @@
+{
+  "name": "roomrate-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "ng serve --host 127.0.0.1 --port 4200",
+    "start": "ng serve --host 127.0.0.1 --port 4200",
+    "build": "ng build",
+    "lint": "tsc -p tsconfig.app.json --noEmit",
+    "e2e": "playwright test"
+  },
+  "dependencies": {
+    "@angular/common": "^20.3.0",
+    "@angular/compiler": "^20.3.0",
+    "@angular/core": "^20.3.0",
+    "@angular/forms": "^20.3.0",
+    "@angular/platform-browser": "^20.3.0",
+    "@angular/router": "^20.3.0",
+    "@supabase/supabase-js": "^2.84.0",
+    "mapbox-gl": "^3.23.0",
+    "rxjs": "~7.8.2",
+    "tslib": "^2.8.1",
+    "zone.js": "~0.15.1"
+  },
+  "devDependencies": {
+    "@angular/build": "^20.3.0",
+    "@angular/cli": "^20.3.0",
+    "@angular/compiler-cli": "^20.3.0",
+    "@playwright/test": "^1.61.1",
+    "typescript": "~5.8.3"
+  }
+}

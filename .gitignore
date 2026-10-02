@@ -1,0 +1,61 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.pytest-cache/
+pytest-cache-files-*/
+.codex_tmp/
+tmp/
+.npm-cache/
+frontend/.angular/
+frontend/dist/
+pip-build-tracker-*/
+pip-ephem-wheel-cache-*/
+pip-install-*/
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Data and generated outputs
+data/raw/
+data/processed/
+logs/
+/models/
+/output/
+outputs/
+migration_preview.sql
+*.csv
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# Generated agent context files
+smart_advisor_*.json
+amenities_*.json
+my_hotel.json
+
+# IDE / OS
+.vscode/
+.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
+desktop.ini
+.pytest-tmp/
+
+# Playwright CLI session artifacts (page snapshots)
+.playwright-cli/
+
+# Superpowers brainstorming session mockups
+.superpowers/

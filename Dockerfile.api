@@ -1,0 +1,67 @@
+# syntax=docker/dockerfile:1
+#
+# RoomRate backend image — ONE image, three commands (see docker-compose.prod.yml):
+#   migrate: python -m alembic upgrade head   (one-shot, runs before the others)
+#   api:     python -m uvicorn api.main:app   (ROOMRATE_PROCESS_ROLE=api)
+#   worker:  python -m api.worker             (ROOMRATE_PROCESS_ROLE=worker)
+#
+# The worker executes scrape jobs by spawning `python -m scraper` as a
+# subprocess, so scraper/ and its runtime dependencies (apify-client, pandas,
+# sqlalchemy, python-dotenv) must live in this same image — a separate scraper
+# image would break that subprocess contract.
+#
+# This file sits at the repository root rather than under docker/ because the
+# build context has to BE the repository root (api/, scraper/, scripts/,
+# migrations/ and alembic.ini all ship in the image) and .dockerignore is only
+# honoured at the context root. The frontend has its own Dockerfile and its own
+# context.
+
+FROM python:3.12-slim
+
+# PYTHONDONTWRITEBYTECODE: no .pyc files written next to the copied source.
+# PYTHONUNBUFFERED: log lines reach `docker logs` immediately — LOG_FORMAT=json
+# emits one JSON object per line and must not sit in a stdio buffer.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PORT=8000 \
+    UVICORN_WORKERS=4
+
+WORKDIR /app
+
+# Dependencies first, in their own layer: requirements.txt changes far less
+# often than application code, so a code-only edit reuses this cached layer.
+# Every pin (psycopg2-binary, pandas, cryptography, Pillow, rapidfuzz) ships a
+# manylinux cp312 wheel, so no compiler or -dev headers are installed here.
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Application code last, as explicit COPYs so nothing unexpected enters the
+# image. api/tests/ is excluded by .dockerignore — see that file for why.
+COPY alembic.ini ./
+COPY migrations/ ./migrations/
+COPY api/ ./api/
+COPY scraper/ ./scraper/
+COPY scripts/ ./scripts/
+
+# Non-root runtime. output/scrapes/ holds the per-job scraper CSVs the worker
+# writes (SCRAPE_CSV_RETENTION_DAYS prunes them); both it and logs/ must be
+# writable by the unprivileged user. Compose mounts a volume over output/ so
+# the CSVs survive container replacement.
+RUN useradd --create-home --uid 10001 appuser \
+    && mkdir -p /app/output/scrapes /app/logs \
+    && chown -R appuser:appuser /app
+USER appuser
+
+EXPOSE 8000
+
+# Liveness via the app's own DB-free /health endpoint, using the interpreter
+# already in the image instead of adding curl. Meaningless for the worker
+# service (it serves no HTTP) — compose disables the healthcheck there.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import os,sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT', '8000') + '/health', timeout=4).status == 200 else 1)"
+
+# `exec` so uvicorn becomes PID 1 and receives SIGTERM directly, which lets
+# FastAPI's lifespan shut the scheduler and the notification listener down.
+CMD ["sh", "-c", "exec python -m uvicorn api.main:app --host 0.0.0.0 --port \"${PORT:-8000}\" --workers \"${UVICORN_WORKERS:-4}\""]

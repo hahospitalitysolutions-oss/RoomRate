@@ -1,0 +1,43 @@
+# Keep the build context small and, more importantly, keep local state out of
+# the image. `COPY . .` in the build stage copies whatever survives this file.
+
+# Reinstalled from package-lock.json inside the image; a host node_modules
+# built on Windows would also ship the wrong native binaries.
+node_modules
+.angular
+
+# A previous host build would be copied in and then overwritten by the
+# container's own build — noise at best, a stale bundle at worst.
+dist
+
+# Secrets and local-only configuration. .env.local currently holds real API
+# keys; nothing under this directory belongs in an image layer.
+.env
+.env.*
+!.env.example
+
+# Test artefacts and the Playwright suite: the e2e specs run against a dev
+# server, never against this image.
+e2e
+test-results
+playwright-report
+.playwright-cli
+playwright.config.ts
+
+# Local server logs that accumulate in this folder.
+*.log
+
+# Tooling and VCS metadata.
+.git
+.gitignore
+.dockerignore
+Dockerfile
+.vscode
+.idea
+*.tsbuildinfo
+
+# Docs: not needed to compile, and they change far more often than the code,
+# which would keep busting the build cache.
+README.md
+AGENTS.md
+CLAUDE.md

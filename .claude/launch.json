@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "api",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "uvicorn", "api.main:app", "--port", "8000"],
+      "port": 8000
+    },
+    {
+      "name": "roomrate-frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "frontend"],
+      "port": 4200,
+      "autoPort": false,
+      "url": "http://127.0.0.1:4200"
+    },
+    {
+      "name": "frontend-attach",
+      "url": "http://127.0.0.1:4200"
+    }
+  ]
+}

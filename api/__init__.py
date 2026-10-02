@@ -1,0 +1,1 @@
+﻿"""RoomRate FastAPI package."""
