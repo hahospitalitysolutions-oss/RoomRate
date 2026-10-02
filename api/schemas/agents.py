@@ -206,14 +206,18 @@ class RoomMatchRunRequest(BaseModel):
 class RoomMatchRunResponse(BaseModel):
     """Synchronous outcome of one manual matching run.
 
-    ``skipped`` means the agent could not run at all (no API key configured);
-    quota exhaustion is a 429, mirroring the pricing endpoint. ``source`` is
-    the constant ``"agent"`` so the UI can label the refresh button's result
-    without inspecting anything else.
+    ``skipped`` means the agent did not run: ``skip_reason`` "no_api_key"
+    (no key configured) or "in_progress" (another run is still scoring this
+    scope — its rows appear on a later read; a run that finishes within the
+    wait comes back as ``completed`` with ITS rows). Quota exhaustion is a
+    429, mirroring the pricing endpoint. ``source`` is the constant
+    ``"agent"`` so the UI can label the refresh button's result without
+    inspecting anything else.
     """
 
     status: Literal["completed", "error", "skipped"]
     matches_written: int = Field(default=0, ge=0)
+    skip_reason: str | None = None
     source: Literal["agent"] = "agent"
 
 

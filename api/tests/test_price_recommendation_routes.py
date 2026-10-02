@@ -59,13 +59,15 @@ class FakeOnboardingRepository:
 
 
 class FakePriceHistoryRepository:
-    def __init__(self, rows, own_live_price=None, latest_run_id=None):
+    def __init__(self, rows, own_live_price=None, latest_run_id=None, agent_matches=None):
         self.rows = rows
         self.own_live_price = own_live_price
         self.latest_run_id = latest_run_id
+        self.agent_matches = agent_matches or []
         self.last_kwargs = None
         self.own_price_kwargs = None
         self.run_id_calls = []
+        self.agent_match_calls = []
 
     def fetch_price_series(self, **kwargs):
         self.last_kwargs = kwargs
@@ -79,15 +81,23 @@ class FakePriceHistoryRepository:
         self.run_id_calls.append(kwargs)
         return self.latest_run_id
 
+    def fetch_latest_run_agent_matches(self, **kwargs):
+        self.agent_match_calls.append(kwargs)
+        return self.agent_matches
+
 
 class FakeMarketService:
     def __init__(self):
         self.last_filters = None
         self.last_origin = None
+        self.last_agent_matches = None
 
-    def get_smart_advisor_context(self, filters: RoomRateFilters, my_hotel_name=None, origin=None):
+    def get_smart_advisor_context(
+        self, filters: RoomRateFilters, my_hotel_name=None, origin=None, agent_matches=None
+    ):
         self.last_filters = filters
         self.last_origin = origin
+        self.last_agent_matches = agent_matches
         return SmartAdvisorContext(
             meta=AgentMeta(destination="Faliraki", market_stats={"price_median_eur": 120.0}),
             data_quality=AgentDataQuality(
@@ -236,12 +246,16 @@ def test_price_recommendation_returns_statistics_and_recommendation():
     # The market key flowed through to the history lookup.
     assert history_repo.last_kwargs["canonical_destination"] == "faliraki"
     assert history_repo.last_kwargs["room_type_category"] == "double"
-    # v4: the advisor context reads the FULL comparison basis the statistics
-    # read (similar hotels included), not the tracked-only subset; the owned
-    # property still travels so the service can flag the tracked competitors.
+    # v4: the advisor context reads the comparison basis the statistics were
+    # computed on, not the tracked-only subset; the owned property still
+    # travels so the service can flag the tracked competitors. Two
+    # same-category hotels and no similar-only one: scope "same", so the
+    # comparable pool only (the history read still sees similar hotels and
+    # lets the statistics decide).
     advisor_filters = market_service.last_filters
+    assert body["statistics"]["stats_scope"]["used"] == "same"
     assert advisor_filters.selected_competitors_only is False
-    assert advisor_filters.include_similar is True
+    assert advisor_filters.include_similar is False
     assert history_repo.last_kwargs["include_similar"] is True
     assert str(advisor_filters.owned_property_id) == str(OWNED_PROPERTY_ID)
     assert advisor_filters.destination == "faliraki"
@@ -1149,6 +1163,127 @@ def test_price_recommendation_rejects_a_room_type_of_another_property():
     app.dependency_overrides.clear()
 
 
+HOTEL_A_ID = UUID("00000000-0000-0000-0000-0000000000a1")
+HOTEL_B_ID = UUID("00000000-0000-0000-0000-0000000000a2")
+
+
+def _agent_match_rows(written_at="2026-09-30T10:00:00+00:00"):
+    """The latest run's verdicts for the selected room, as the repository reads them."""
+    return [
+        {"property_id": HOTEL_A_ID, "room_type": "Double Room", "score": 90, "comparable": True,
+         "reasoning": "Ίδιο δίκλινο.", "created_at": written_at},
+        {"property_id": HOTEL_B_ID, "room_type": "Suite", "score": 20, "comparable": False,
+         "reasoning": "Σουίτα.", "created_at": written_at},
+    ]
+
+
+def _agent_basis_history_rows():
+    """The latest run priced on the agent basis (fetch_price_series agent_basis = 1)."""
+    return [
+        {**row, "min_price_same": row["min_price"], "min_price_similar": None, "agent_basis": 1}
+        for row in _history_rows()
+    ]
+
+
+def _agent_client(history_repo, market_service, audit_repo=None):
+    _override_account()
+    app.dependency_overrides[get_price_history_repository] = lambda: history_repo
+    app.dependency_overrides[get_onboarding_repository] = _room_aware_onboarding
+    app.dependency_overrides[get_price_recommendation_agent] = lambda: FakeAgent()
+    app.dependency_overrides[get_market_service] = lambda: market_service
+    if audit_repo is not None:
+        app.dependency_overrides[get_price_recommendation_audit_repository] = lambda: audit_repo
+    return TestClient(app)
+
+
+def test_cache_key_changes_when_the_agent_verdicts_change_without_a_new_run():
+    """Post-scrape matching finishes after the job completed, and
+    «Επανεκτίμηση» rewrites the verdicts: neither adds a run, yet both change
+    the basis, so neither may be answered from a recommendation cached on
+    the category pool or on older verdicts."""
+    audit_repo = FakeAuditRepository()
+    hashes = []
+    for agent_matches in (
+        [],
+        _agent_match_rows("2026-09-30T10:00:00+00:00"),
+        _agent_match_rows("2026-09-30T10:05:00+00:00"),
+    ):
+        history_repo = FakePriceHistoryRepository(
+            _history_rows(), latest_run_id="run-1", agent_matches=agent_matches
+        )
+        client = _agent_client(history_repo, FakeMarketService(), audit_repo)
+
+        assert client.post(
+            "/api/v1/agents/price-recommendation", json=_recommendation_body()
+        ).status_code == 200
+
+        hashes.append(audit_repo.insert_calls[-1]["request_hash"])
+        assert history_repo.agent_match_calls[0]["owned_room_type_id"] == SELECTED_ROOM_ID
+    payload = audit_repo.insert_calls[-1]["request_payload"]
+    assert payload["agent_matches"] == 2
+    assert payload["agent_matches_written_at"] == "2026-09-30T10:05:00+00:00"
+    assert len(set(hashes)) == 3
+    app.dependency_overrides.clear()
+
+
+def test_cache_key_is_stable_while_the_agent_verdicts_stay():
+    audit_repo = FakeAuditRepository()
+    for _ in range(2):
+        history_repo = FakePriceHistoryRepository(
+            _history_rows(), latest_run_id="run-1", agent_matches=_agent_match_rows()
+        )
+        _agent_client(history_repo, FakeMarketService(), audit_repo).post(
+            "/api/v1/agents/price-recommendation", json=_recommendation_body()
+        )
+
+    first, second = (call["request_hash"] for call in audit_repo.insert_calls)
+    assert first == second
+    app.dependency_overrides.clear()
+
+
+def test_the_advisor_reads_the_agent_verdicts_the_statistics_were_computed_on():
+    history_repo = FakePriceHistoryRepository(
+        _agent_basis_history_rows(), agent_matches=_agent_match_rows()
+    )
+    market_service = FakeMarketService()
+
+    response = _agent_client(history_repo, market_service).post(
+        "/api/v1/agents/price-recommendation", json=_recommendation_body()
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["statistics"]["stats_scope"]["used"] == "agent"
+    # The whole lookup travels (a rejected room vs one the agent never
+    # scored), and the filters ask for the comparison set: the service reads
+    # the broad pool and narrows it with these verdicts, as the map does.
+    lookup = market_service.last_agent_matches
+    assert lookup[(str(HOTEL_A_ID), "double room")].comparable is True
+    assert lookup[(str(HOTEL_B_ID), "suite")].comparable is False
+    assert market_service.last_filters.include_similar is False
+    app.dependency_overrides.clear()
+
+
+def test_the_advisor_reads_similar_hotels_only_when_the_statistics_widened():
+    rows = [
+        # 1 same-category hotel + 1 similar-only one: the statistics widen.
+        {"rn": 1, "observed_at": "2026-06-30T08:00:00+00:00", "property_id": HOTEL_A_ID,
+         "hotel_name": "A", "min_price": 100.0, "min_price_same": 100.0, "min_price_similar": None},
+        {"rn": 1, "observed_at": "2026-06-30T08:00:00+00:00", "property_id": HOTEL_B_ID,
+         "hotel_name": "B", "min_price": None, "min_price_same": None, "min_price_similar": 60.0},
+    ]
+    history_repo = FakePriceHistoryRepository(rows)
+    market_service = FakeMarketService()
+
+    response = _agent_client(history_repo, market_service).post(
+        "/api/v1/agents/price-recommendation", json=_recommendation_body()
+    )
+
+    assert response.json()["statistics"]["stats_scope"]["used"] == "same_plus_similar"
+    assert market_service.last_filters.include_similar is True
+    assert market_service.last_agent_matches is None
+    app.dependency_overrides.clear()
+
+
 def test_price_history_reads_the_selected_room_basis_with_the_widening_rule():
     rows = [
         # Latest run: 1 same-category hotel + 1 similar-only one -> widened,
@@ -1220,7 +1355,8 @@ _PARITY_SCHEMA = (
     "CREATE TABLE roomrate_owned_properties (id TEXT PRIMARY KEY, account_id TEXT,"
     " display_name TEXT, is_active BOOLEAN)",
     "CREATE TABLE roomrate_room_matches (account_id TEXT, scrape_job_id TEXT, owned_room_type_id TEXT,"
-    " property_id TEXT, room_type TEXT, score NUMERIC, comparable BOOLEAN)",
+    " property_id TEXT, room_type TEXT, score NUMERIC, comparable BOOLEAN, reasoning TEXT,"
+    " created_at TEXT)",
 )
 
 # The own package is non_refundable, so like-for-like moves every mixed-class

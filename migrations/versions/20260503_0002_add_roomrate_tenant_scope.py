@@ -1,4 +1,4 @@
-﻿"""Add RoomRate tenant scope.
+"""Add RoomRate tenant scope.
 
 Revision ID: 20260503_0002
 Revises: 20260502_0001

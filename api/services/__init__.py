@@ -1,1 +1,1 @@
-﻿"""Business services for RoomRate."""
+"""Business services for RoomRate."""

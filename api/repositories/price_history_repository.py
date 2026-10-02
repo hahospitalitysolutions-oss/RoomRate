@@ -171,9 +171,11 @@ _AGENT_RUNS_CTES = """ranked_fragments AS (
         FROM ranked_fragments rf
     ),"""
 
-# The unique scope (job, owned room, property, room_type) makes this join
-# row-preserving: at most one agent row per package, matched on the exact
-# stored room name. Only agent-basis runs join at all.
+# At most one agent row per package: the agent writes one row per room of a
+# (job, owned room) scope, keyed like the read side's lookup on the room name
+# without case or surrounding spaces, so the spellings Booking gives one room
+# across packages («Double Room» / «double room») all find that row. Only
+# agent-basis runs join at all.
 _AGENT_MATCH_JOIN = """
         LEFT JOIN roomrate_room_matches rm
           ON rr.agent_basis = 1
@@ -181,12 +183,7 @@ _AGENT_MATCH_JOIN = """
          AND rm.scrape_job_id = rr.scrape_job_id
          AND rm.owned_room_type_id = :owned_room_type_id
          AND rm.property_id = ro.property_id
-         AND rm.room_type = rp.room_type"""
-
-# EFFECTIVE comparable (shared contract): the agent's verdict when set, else
-# score >= 50 (rows written before migration 0027). A package the agent did
-# not score has no row, so the whole expression is NULL: not comparable.
-_AGENT_COMPARABLE = "COALESCE(rm.comparable, rm.score >= 50)"
+         AND lower(trim(rm.room_type)) = lower(trim(rp.room_type))"""
 
 # One deterministic id for the latest logical run: the largest id among the
 # fragments that share the latest finished_at (the recommendation cache key).
@@ -248,9 +245,13 @@ class PriceHistoryRepository:
         With ``owned_room_type_id`` a run whose scrape job has room-matching
         agent rows for that owned room switches to the agent basis: each
         hotel's ``min_price_same`` is its cheapest package among its
-        agent-comparable rooms, ``min_price_similar`` is NULL (no widening)
-        and ``agent_basis`` is 1. Runs without agent rows keep the category
-        pool (``agent_basis`` 0).
+        agent-comparable rooms (a room the agent left unscored falls back to
+        the category pool), ``min_price_similar`` is NULL (no widening) and
+        ``agent_basis`` is 1. Runs without agent rows keep the category pool
+        (``agent_basis`` 0). The latest run's hotels come back even without
+        a basis price when that run is on the agent basis, so the statistics
+        can tell «nothing comparable in the newest search» from «no newer
+        search» instead of promoting the previous run to the current market.
 
         ``has_discount_data`` is 1 when any of the hotel's packages in that
         run carried a discounted price (never before migration 0025): with
@@ -261,6 +262,9 @@ class PriceHistoryRepository:
         prices_cte, cancellation_params = self._prices_cte(
             property_ids, same_filter, cancellation_type, owned_room_type_id
         )
+        scope_filter = self._scope_filter(include_similar)
+        if owned_room_type_id:
+            scope_filter = f"({scope_filter}) OR (rn = 1 AND agent_basis = 1)"
         sql = (
             prices_cte
             + f"""
@@ -269,7 +273,7 @@ class PriceHistoryRepository:
                    cancellation_matched_same, cancellation_matched_similar,
                    agent_basis, has_discount_data
             FROM prices
-            WHERE {self._scope_filter(include_similar)}
+            WHERE {scope_filter}
             ORDER BY rn ASC, property_id ASC
             """
         )
@@ -409,7 +413,7 @@ class PriceHistoryRepository:
         run_id = rows[0].get("id")
         return str(run_id) if run_id is not None else None
 
-    def fetch_agent_comparable_rooms(
+    def fetch_latest_run_agent_matches(
         self,
         account_id: UUID | str,
         canonical_destination: str,
@@ -419,13 +423,16 @@ class PriceHistoryRepository:
         children: int,
         rooms: int,
         owned_room_type_id: UUID | str,
-    ) -> set[tuple[str, str]]:
-        """Agent-comparable (property_id, casefolded room_type) pairs of the latest run.
+    ) -> list[dict]:
+        """Every room-matching agent row of the latest logical run's job for one owned room.
 
-        The price advisor filters its competitor rows through this set so the
-        model reads the same comparison basis as the statistics. An empty set
-        means the latest run's job has no comparable agent row: callers keep
-        the category basis.
+        The price advisor builds its competitor rows from these verdicts (via
+        ``build_agent_match_lookup``, so a room the agent left unscored keeps
+        the category pool, as in the statistics), and the recommendation
+        cache key folds in their ``created_at``: a matching run that finishes
+        or is redone after a recommendation changes the basis without a new
+        scrape run. An empty list means the latest run's job has no agent
+        rows for this room: the category basis.
         """
         sql = f"""
             WITH latest_jobs AS (
@@ -433,12 +440,12 @@ class PriceHistoryRepository:
                 FROM ({_AGENT_RANKED_RUNS_SQL}) runs
                 WHERE runs.rn = 1
             )
-            SELECT rm.property_id, rm.room_type
+            SELECT rm.property_id, rm.room_type, rm.score, rm.comparable,
+                   rm.reasoning, rm.created_at
             FROM roomrate_room_matches rm
             JOIN latest_jobs lj ON lj.scrape_job_id = rm.scrape_job_id
             WHERE rm.account_id = :account_id
               AND rm.owned_room_type_id = :owned_room_type_id
-              AND {_AGENT_COMPARABLE}
         """
         params = {
             **self._market_key_params(
@@ -446,10 +453,7 @@ class PriceHistoryRepository:
             ),
             **self._agent_params(owned_room_type_id),
         }
-        return {
-            (str(row["property_id"]), str(row["room_type"] or "").strip().casefold())
-            for row in self._execute(sql, params)
-        }
+        return self._execute(sql, params)
 
     def fetch_own_live_price(
         self,
@@ -611,8 +615,14 @@ class PriceHistoryRepository:
                 f"rr.agent_basis = 0 AND NOT ({same_filter})"
                 " AND rp.room_type_category IS DISTINCT FROM 'single'"
             )
+            # EFFECTIVE comparable, the SQL twin of market_service.is_comparable:
+            # the agent's verdict when it scored the room (``comparable``, else
+            # score >= 50 for rows written before migration 0027). A room the
+            # agent left unscored (a failed chunk, the candidate ceiling) has
+            # no row, so the category pool decides it — spec Α.5, exactly as
+            # the map, the list and the summary read the same job.
             same_filter = (
-                f"((rr.agent_basis = 1 AND {_AGENT_COMPARABLE})"
+                f"((rr.agent_basis = 1 AND COALESCE(rm.comparable, rm.score >= 50, {same_filter}))"
                 f" OR (rr.agent_basis = 0 AND {same_filter}))"
             )
         else:

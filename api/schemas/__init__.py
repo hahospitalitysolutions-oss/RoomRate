@@ -1,1 +1,1 @@
-﻿"""Pydantic schemas for the RoomRate API."""
+"""Pydantic schemas for the RoomRate API."""

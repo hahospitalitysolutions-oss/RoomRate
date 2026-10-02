@@ -150,7 +150,12 @@ def test_completed_run_returns_the_exact_contract_payload():
 
     assert response.status_code == 200
     # The frontend lane mirrors this exact JSON.
-    assert response.json() == {"status": "completed", "matches_written": 3, "source": "agent"}
+    assert response.json() == {
+        "status": "completed",
+        "matches_written": 3,
+        "skip_reason": None,
+        "source": "agent",
+    }
     assert jobs.calls == [(ACCOUNT_ID, JOB_ID)]
     assert onboarding.calls == [(ACCOUNT_ID, ROOM_TYPE_ID)]
     call = matcher.calls[0]
@@ -214,7 +219,12 @@ def test_no_api_key_is_a_200_skip():
     response = _post(client)
 
     assert response.status_code == 200
-    assert response.json() == {"status": "skipped", "matches_written": 0, "source": "agent"}
+    assert response.json() == {
+        "status": "skipped",
+        "matches_written": 0,
+        "skip_reason": "no_api_key",
+        "source": "agent",
+    }
 
 
 def test_agent_error_is_a_200_error_status_not_a_5xx():
@@ -228,7 +238,28 @@ def test_agent_error_is_a_200_error_status_not_a_5xx():
     response = _post(client)
 
     assert response.status_code == 200
-    assert response.json() == {"status": "error", "matches_written": 0, "source": "agent"}
+    assert response.json() == {
+        "status": "error",
+        "matches_written": 0,
+        "skip_reason": None,
+        "source": "agent",
+    }
+
+
+def test_a_run_still_in_progress_after_the_wait_is_a_200_skip_with_its_reason():
+    """Another run holds the scope past the wait: the page can say «still
+    running» instead of «AI unavailable»."""
+    client, _, _, _ = _client(
+        job=_job(),
+        owned_room_type=_owned_room(),
+        result=RoomMatchRunResult(status="skipped", skip_reason="in_progress"),
+    )
+
+    response = _post(client)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "skipped"
+    assert response.json()["skip_reason"] == "in_progress"
 
 
 def test_room_matches_post_is_rate_limited_like_the_other_llm_paths():

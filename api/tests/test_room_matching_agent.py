@@ -229,6 +229,7 @@ def _service(
     client_factory=None,
     max_daily_runs=30,
     timeout_seconds=30.0,
+    **service_kwargs,
 ):
     rates = FakeRatesRepository(_job_rows() if rows is None else rows)
     repository = match_repository or FakeMatchRepository()
@@ -244,6 +245,7 @@ def _service(
         timeout_seconds=timeout_seconds,
         max_daily_runs=max_daily_runs,
         client_factory=factory,
+        **service_kwargs,
     )
     return service, repository, rates
 
@@ -1031,3 +1033,208 @@ def test_validated_matches_carry_the_verdict_to_persistence():
         ("Junior Suite", 85, False),
         ("Double Room", 30, True),
     ]
+
+
+# ---------------------------------------------------------------------------
+# One run per (job, owned room): the lease (review fix 2026-09-30). The map's
+# automatic run must never pay for a duplicate of the post-scrape run that is
+# still waiting on the model for the same scope.
+# ---------------------------------------------------------------------------
+
+LEASE_HOLDER = UUID("00000000-0000-0000-0000-00000000c0de")
+
+
+class LeasingMatchRepository(FakeMatchRepository):
+    """Adds the lease store. ``held_polls``: lease checks that still see the other run."""
+
+    def __init__(
+        self, *, busy=False, held_polls=0, rows_after_wait=0, existing_after_claim=False, **kwargs
+    ):
+        super().__init__(**kwargs)
+        self.busy = busy
+        self.held_polls = held_polls
+        self.rows_after_wait = rows_after_wait
+        self.existing_after_claim = existing_after_claim
+        self.acquire_calls = []
+        self.release_calls = []
+        self.claimed = False
+
+    def acquire_lease(self, **kwargs):
+        self.acquire_calls.append(kwargs)
+        if self.busy:
+            return None
+        self.claimed = True
+        return LEASE_HOLDER
+
+    def release_lease(self, **kwargs):
+        self.release_calls.append(kwargs)
+
+    def lease_held(self, **kwargs):
+        if self.held_polls > 0:
+            self.held_polls -= 1
+            return True
+        return False
+
+    def count_matches(self, account_id, scrape_job_id, owned_room_type_id):
+        return self.rows_after_wait
+
+    def has_matches(self, account_id, scrape_job_id, owned_room_type_id):
+        return self.existing or (self.claimed and self.existing_after_claim)
+
+
+class FakeClock:
+    """monotonic() + sleep() that only move when the service sleeps."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def _leased_service(repository, *, client=None, client_factory=None, clock=None, **kwargs):
+    clock = clock or FakeClock()
+    service, _, _ = _service(
+        match_repository=repository,
+        client=client,
+        client_factory=client_factory,
+        sleep=clock.sleep,
+        clock=clock,
+        **kwargs,
+    )
+    return service, clock
+
+
+def test_a_run_holds_the_scope_lease_and_releases_it():
+    repository = LeasingMatchRepository()
+    proposal = RoomMatchProposal(matches=[_candidate()])
+    service, _ = _leased_service(repository, client=_FakeClient(result=_FakeParseResult(proposal)))
+
+    result = _run(service)
+
+    assert result.status == "completed"
+    assert repository.acquire_calls == [
+        {
+            "account_id": ACCOUNT_ID,
+            "scrape_job_id": JOB_ID,
+            "owned_room_type_id": ROOM_TYPE_ID,
+            "stale_after_seconds": service.lease_seconds,
+        }
+    ]
+    assert repository.release_calls == [
+        {
+            "account_id": ACCOUNT_ID,
+            "scrape_job_id": JOB_ID,
+            "owned_room_type_id": ROOM_TYPE_ID,
+            "holder": LEASE_HOLDER,
+        }
+    ]
+
+
+def test_the_lease_is_released_when_the_run_fails():
+    repository = LeasingMatchRepository()
+    client = _FakeClient(error=anthropic.APITimeoutError(request=None))
+    service, _ = _leased_service(repository, client=client)
+
+    result = _run(service)
+
+    assert result.status == "error"
+    assert [call["holder"] for call in repository.release_calls] == [LEASE_HOLDER]
+
+
+def test_the_post_scrape_run_skips_while_another_run_holds_the_scope():
+    repository = LeasingMatchRepository(busy=True)
+    factory = _RaisingFactory()
+    service, clock = _leased_service(repository, client_factory=factory)
+
+    result = _run(service, skip_if_existing=True)
+
+    assert factory.called is False
+    assert result.status == "skipped"
+    assert result.skip_reason == "in_progress"
+    assert repository.run_rows == [_skipped_row("in_progress")]
+    assert repository.release_calls == []
+    assert clock.sleeps == []  # the background hook never waits
+
+
+def test_the_endpoint_waits_for_the_run_in_flight_instead_of_paying_twice():
+    repository = LeasingMatchRepository(busy=True, held_polls=2, rows_after_wait=5)
+    factory = _RaisingFactory()
+    service, clock = _leased_service(repository, client_factory=factory)
+
+    result = _run(service, skip_if_existing=False)
+
+    # No model call, no rewrite: the other run's rows are the answer.
+    assert factory.called is False
+    assert repository.replace_calls == []
+    assert result.status == "completed"
+    assert result.matches_written == 5
+    assert clock.sleeps == [3.0, 3.0]
+    # Nothing ran here: no audit row, no quota unit, no lease to release.
+    assert repository.run_rows == []
+    assert repository.release_calls == []
+
+
+def test_the_wait_is_bounded_and_reports_in_progress():
+    repository = LeasingMatchRepository(busy=True, held_polls=10**6)
+    service, clock = _leased_service(repository, client_factory=_RaisingFactory(), max_wait_seconds=10.0)
+
+    result = _run(service)
+
+    assert result.status == "skipped"
+    assert result.skip_reason == "in_progress"
+    assert 10.0 <= clock.now <= 13.0
+    assert repository.run_rows == [_skipped_row("in_progress")]
+
+
+def test_a_run_in_flight_that_left_no_rows_reads_as_an_error():
+    repository = LeasingMatchRepository(busy=True, held_polls=1, rows_after_wait=0)
+    service, _ = _leased_service(repository, client_factory=_RaisingFactory())
+
+    result = _run(service)
+
+    assert result.status == "error"
+    assert result.matches_written == 0
+
+
+def test_the_post_scrape_run_rechecks_the_rows_once_it_holds_the_lease():
+    """The previous holder finished between the first check and the claim."""
+    repository = LeasingMatchRepository(existing_after_claim=True)
+    factory = _RaisingFactory()
+    service, _ = _leased_service(repository, client_factory=factory)
+
+    result = _run(service, skip_if_existing=True)
+
+    assert factory.called is False
+    assert result.skip_reason == "already_matched"
+    assert [call["holder"] for call in repository.release_calls] == [LEASE_HOLDER]
+
+
+def test_an_unavailable_lease_store_runs_unleased():
+    """A database without migration 20260930_0028 must not stop matching."""
+
+    class NoLeaseTable(LeasingMatchRepository):
+        def acquire_lease(self, **kwargs):
+            raise RuntimeError('relation "roomrate_agent_leases" does not exist')
+
+    repository = NoLeaseTable()
+    proposal = RoomMatchProposal(matches=[_candidate()])
+    service, _ = _leased_service(repository, client=_FakeClient(result=_FakeParseResult(proposal)))
+
+    result = _run(service)
+
+    assert result.status == "completed"
+    assert repository.release_calls == []
+
+
+def test_the_lease_outlives_the_longest_possible_run():
+    service, _, _ = _service(timeout_seconds=120.0)
+
+    # 600 candidates = 15 chunks = 2 waves of 8 parallel calls, each up to
+    # 120 s with its one retry, plus 120 s of database time.
+    assert service.lease_seconds == 2 * 2 * 120.0 + 120.0

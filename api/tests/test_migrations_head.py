@@ -11,7 +11,10 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 from api.models.market import (
+    RoomRateAgentLease,
     RoomRateAgentRun,
+    RoomRateRateLimitHit,
+    RoomRateScheduleConfig,
     RoomRateProperty,
     RoomRateRoomMatch,
     RoomRateRoomPackage,
@@ -23,6 +26,9 @@ ROUND6_REVISION = "20260915_0024"
 RATE_PLANS_REVISION = "20260929_0025"
 AGENT_MATCHING_REVISION = "20260930_0026"
 COMPARABLE_REVISION = "20260930_0027"
+AGENT_LEASE_REVISION = "20260930_0028"
+RATE_LIMIT_REVISION = "20260930_0029"
+SCHEDULE_LOCAL_HOUR_REVISION = "20260930_0030"
 
 
 def _script_directory() -> ScriptDirectory:
@@ -31,8 +37,66 @@ def _script_directory() -> ScriptDirectory:
     return ScriptDirectory.from_config(config)
 
 
-def test_comparable_migration_is_the_single_alembic_head():
-    assert _script_directory().get_heads() == [COMPARABLE_REVISION]
+def test_schedule_local_hour_migration_is_the_single_alembic_head():
+    assert _script_directory().get_heads() == [SCHEDULE_LOCAL_HOUR_REVISION]
+
+
+def test_schedule_local_hour_migration_revises_the_rate_limit_migration():
+    revision = _script_directory().get_revision(SCHEDULE_LOCAL_HOUR_REVISION)
+
+    assert revision.down_revision == RATE_LIMIT_REVISION
+
+
+def test_orm_declares_the_schedule_local_hour_next_to_the_legacy_utc_hour():
+    """Additive: hour_utc stays for older images; the scheduler reads the local pair."""
+    table = RoomRateScheduleConfig.__table__
+
+    assert {"hour_local", "timezone", "hour_utc"} <= set(table.columns.keys())
+    assert table.columns["hour_local"].server_default.arg == "8"
+    assert table.columns["timezone"].server_default.arg == "Europe/Athens"
+    checks = {constraint.name for constraint in table.constraints}
+    assert "ck_roomrate_schedule_configs_hour_local" in checks
+
+
+def test_rate_limit_migration_revises_the_agent_lease_migration():
+    revision = _script_directory().get_revision(RATE_LIMIT_REVISION)
+
+    assert revision.down_revision == AGENT_LEASE_REVISION
+
+
+def test_orm_declares_the_shared_rate_limit_table():
+    """Hashed caller keys only, indexed for the per-key window and the sweep."""
+    table = RoomRateRateLimitHit.__table__
+
+    assert table.name == "roomrate_rate_limit_hits"
+    assert table.columns["key_hash"].type.length == 64
+    assert table.columns["key_hash"].nullable is False
+    assert table.columns["hit_at"].nullable is False
+    indexes = {index.name: [column.name for column in index.columns] for index in table.indexes}
+    assert indexes == {
+        "ix_roomrate_rate_limit_hits_key_hit": ["key_hash", "hit_at"],
+        "ix_roomrate_rate_limit_hits_hit_at": ["hit_at"],
+    }
+
+
+def test_agent_lease_migration_revises_the_comparable_migration():
+    revision = _script_directory().get_revision(AGENT_LEASE_REVISION)
+
+    assert revision.down_revision == COMPARABLE_REVISION
+
+
+def test_orm_declares_the_agent_lease_table():
+    """One lease per (kind, job, owned room): the primary key IS the scope."""
+    table = RoomRateAgentLease.__table__
+
+    assert table.name == "roomrate_agent_leases"
+    assert [column.name for column in table.primary_key.columns] == [
+        "kind",
+        "scrape_job_id",
+        "owned_room_type_id",
+    ]
+    for name in ("account_id", "holder", "acquired_at"):
+        assert table.columns[name].nullable is False
 
 
 def test_comparable_migration_revises_the_agent_matching_migration():

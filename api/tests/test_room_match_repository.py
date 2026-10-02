@@ -230,3 +230,91 @@ def test_replace_matches_persists_the_comparable_verdict_and_reads_it_back(monke
     RoomMatchRepository().fetch_matches(ACCOUNT_ID, JOB_ID, ROOM_TYPE_ID)
     select_sql, _ = read_engine.connection.executed[0]
     assert "comparable" in select_sql
+
+
+# ---------------------------------------------------------------------------
+# The in-flight lease (migration 20260930_0028): one run per scope.
+# ---------------------------------------------------------------------------
+
+HOLDER = UUID("00000000-0000-0000-0000-00000000c0de")
+
+
+def test_acquire_lease_claims_a_free_or_stale_scope_in_one_statement(monkeypatch):
+    engine = _install(monkeypatch, [FakeResult(scalar_value=HOLDER)])
+
+    holder = RoomMatchRepository().acquire_lease(
+        account_id=ACCOUNT_ID,
+        scrape_job_id=JOB_ID,
+        owned_room_type_id=ROOM_TYPE_ID,
+        stale_after_seconds=600,
+    )
+
+    sql, params = engine.connection.executed[0]
+    assert holder == HOLDER
+    assert engine.begin_calls == 1
+    assert "INSERT INTO roomrate_agent_leases" in sql
+    # A live lease wins the conflict; only a stale one is taken over.
+    assert "ON CONFLICT (kind, scrape_job_id, owned_room_type_id) DO UPDATE" in sql
+    assert "WHERE roomrate_agent_leases.acquired_at" in sql
+    assert "< now() - :stale_after_seconds * interval '1 second'" in sql
+    assert "RETURNING holder" in sql
+    assert params["stale_after_seconds"] == 600.0
+    assert params["scrape_job_id"] == JOB_ID
+    assert params["owned_room_type_id"] == ROOM_TYPE_ID
+    assert isinstance(params["holder"], UUID)
+
+
+def test_acquire_lease_returns_none_while_a_live_run_holds_the_scope(monkeypatch):
+    _install(monkeypatch, [FakeResult(scalar_value=None)])
+
+    holder = RoomMatchRepository().acquire_lease(
+        account_id=ACCOUNT_ID,
+        scrape_job_id=JOB_ID,
+        owned_room_type_id=ROOM_TYPE_ID,
+        stale_after_seconds=600,
+    )
+
+    assert holder is None
+
+
+def test_release_lease_only_deletes_the_holders_own_lease(monkeypatch):
+    engine = _install(monkeypatch, [FakeResult()])
+
+    RoomMatchRepository().release_lease(
+        account_id=ACCOUNT_ID,
+        scrape_job_id=JOB_ID,
+        owned_room_type_id=ROOM_TYPE_ID,
+        holder=HOLDER,
+    )
+
+    sql, params = engine.connection.executed[0]
+    assert "DELETE FROM roomrate_agent_leases" in sql
+    assert "holder = :holder" in sql
+    assert params["holder"] == HOLDER
+
+
+def test_lease_held_ignores_a_stale_lease(monkeypatch):
+    engine = _install(monkeypatch, [FakeResult(scalar_value=1)])
+
+    held = RoomMatchRepository().lease_held(
+        account_id=ACCOUNT_ID,
+        scrape_job_id=JOB_ID,
+        owned_room_type_id=ROOM_TYPE_ID,
+        stale_after_seconds=600,
+    )
+
+    sql, params = engine.connection.executed[0]
+    assert held is True
+    assert "acquired_at >= now() - :stale_after_seconds * interval '1 second'" in sql
+    assert params["account_id"] == ACCOUNT_ID
+
+
+def test_count_matches_counts_the_scope(monkeypatch):
+    engine = _install(monkeypatch, [FakeResult(scalar_value=7)])
+
+    count = RoomMatchRepository().count_matches(ACCOUNT_ID, JOB_ID, ROOM_TYPE_ID)
+
+    sql, params = engine.connection.executed[0]
+    assert count == 7
+    assert "FROM roomrate_room_matches" in sql
+    assert params["owned_room_type_id"] == ROOM_TYPE_ID

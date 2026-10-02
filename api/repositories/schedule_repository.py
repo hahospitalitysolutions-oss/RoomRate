@@ -12,9 +12,9 @@ from api.db import get_engine
 
 # Shared SELECT/RETURNING column list so every method returns the same shape.
 CONFIG_COLUMNS = """
-    id, account_id, enabled, frequency_hours, hour_utc, lead_days,
-    nights, adults, children, rooms, consecutive_failures, last_run_at,
-    created_at, updated_at
+    id, account_id, enabled, frequency_hours, hour_local, timezone, hour_utc,
+    lead_days, nights, adults, children, rooms, consecutive_failures,
+    last_run_at, created_at, updated_at
 """
 
 
@@ -68,16 +68,17 @@ class ScheduleRepository:
                 text(
                     f"""
                     INSERT INTO roomrate_schedule_configs (
-                        id, account_id, enabled, frequency_hours, hour_utc, lead_days,
-                        nights, adults, children, rooms, consecutive_failures
+                        id, account_id, enabled, frequency_hours, hour_local, hour_utc,
+                        lead_days, nights, adults, children, rooms, consecutive_failures
                     )
                     VALUES (
-                        :id, :account_id, :enabled, :frequency_hours, :hour_utc, :lead_days,
-                        :nights, :adults, :children, :rooms, :consecutive_failures
+                        :id, :account_id, :enabled, :frequency_hours, :hour_local, :hour_utc,
+                        :lead_days, :nights, :adults, :children, :rooms, :consecutive_failures
                     )
                     ON CONFLICT (account_id) DO UPDATE SET
                         enabled = EXCLUDED.enabled,
                         frequency_hours = EXCLUDED.frequency_hours,
+                        hour_local = EXCLUDED.hour_local,
                         hour_utc = EXCLUDED.hour_utc,
                         lead_days = EXCLUDED.lead_days,
                         nights = EXCLUDED.nights,
@@ -93,6 +94,7 @@ class ScheduleRepository:
                     "account_id": account_id,
                     "enabled": payload["enabled"],
                     "frequency_hours": payload["frequency_hours"],
+                    "hour_local": payload["hour_local"],
                     "hour_utc": payload["hour_utc"],
                     "lead_days": payload["lead_days"],
                     "nights": payload["nights"],
@@ -104,20 +106,12 @@ class ScheduleRepository:
             ).mappings().one()
         return dict(row)
 
-    def list_due_configs(self, now: datetime) -> list[dict[str, Any]]:
-        """Return enabled configs whose next run is due at ``now``.
+    def list_enabled_configs(self) -> list[dict[str, Any]]:
+        """Every enabled schedule, least recently run first.
 
-        Due semantics (kept deliberately simple and index-friendly — the
-        table holds one row per account, so a sequential scan is fine):
-
-        * ``enabled`` is true, AND
-        * the configured frequency has elapsed since ``last_run_at``
-          (or the schedule never ran), AND
-        * the current UTC hour has reached ``hour_utc`` — i.e. a schedule
-          fires at the first tick at/after its start hour, never earlier
-          in the day. Re-fires later the same day are prevented by the
-          frequency condition because ``touch_last_run`` always stamps
-          due configs.
+        Whether one is due depends on its own time zone and local calendar,
+        so ScheduleService decides (api/services/schedule_timing.py). The
+        table holds one row per account, so reading all enabled rows is cheap.
         """
         with self._engine().connect() as connection:
             rows = connection.execute(
@@ -126,15 +120,9 @@ class ScheduleRepository:
                     SELECT {CONFIG_COLUMNS}
                     FROM roomrate_schedule_configs
                     WHERE enabled = true
-                      AND (
-                          last_run_at IS NULL
-                          OR last_run_at <= :now - frequency_hours * interval '1 hour'
-                      )
-                      AND extract(hour FROM (:now AT TIME ZONE 'UTC')) >= hour_utc
                     ORDER BY last_run_at ASC NULLS FIRST
                     """
                 ),
-                {"now": now},
             ).mappings().all()
         return [dict(row) for row in rows]
 

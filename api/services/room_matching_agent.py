@@ -19,9 +19,13 @@ statistical score — partial results are legitimate (the UI labels them
 «Εκτίμηση AI (μερική)») and the run is audited ``ok`` with the failed chunk
 numbers in ``error_message``. When EVERY chunk fails (or persistence fails)
 the run writes no rows and is audited ``error``; skips (no key, quota,
-already matched) write a ``skipped`` audit row with the reason. ``run``
-never raises to its caller, so neither the scrape-job hook nor the endpoint
-can be broken by this path.
+already matched, another run in progress) write a ``skipped`` audit row
+with the reason. ``run`` never raises to its caller, so neither the
+scrape-job hook nor the endpoint can be broken by this path.
+
+One run per (job, owned room) at a time: a lease row names the run scoring
+the scope, so the map's automatic run never pays for a duplicate of the
+post-scrape run still waiting on the model — it waits for that run's rows.
 
 Anthropic SDK call shape, per chunk (authoritative for the installed
 0.115.0 — keep it minimal, exactly like the pricing agent):
@@ -41,7 +45,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -50,7 +56,11 @@ from typing import Any, Literal
 
 from api.schemas.agents import RoomMatchProposal
 from api.services.market_helpers import as_optional_float
-from api.services.market_service import RoomRateFilters, RoomRatesRepositoryProtocol
+from api.services.market_service import (
+    AGENT_POOL_READ_LIMIT,
+    RoomRateFilters,
+    RoomRatesRepositoryProtocol,
+)
 from api.services.room_matching import attributes_from_dict, extract_room_attributes
 
 logger = logging.getLogger(__name__)
@@ -67,12 +77,24 @@ _CHUNK_SIZE = 40
 _MAX_PARALLEL_CALLS = 8
 _MAX_REASONING_CHARS = 120
 # Package-row budget read from one job (a job caps at ~320 deep-crawl items).
-_MAX_JOB_ROWS = 2000
+# Shared with the read side, which reads this many broad-pool rows before the
+# verdicts narrow them, so it never drops a room the agent judged.
+_MAX_JOB_ROWS = AGENT_POOL_READ_LIMIT
 # Cost/latency guard; rooms beyond it stay statistical (an 89-hotel job has ~150-250 rooms).
 _MAX_CANDIDATES = 600
 # One SDK retry at most: the default 2 retries turned one timeout into a
 # ~3x block of the post-scrape hook before the (silent) statistical fallback.
 _MAX_RETRIES = 1
+# One run per (job, owned room) at a time (lease, migration 20260930_0028).
+# A lease outlives the longest possible run — every chunk wave at the full
+# per-call timeout with its retry, plus database time — so only a run that
+# died without releasing it ever leaves a stale one behind.
+_MAX_CHUNK_WAVES = math.ceil(math.ceil(_MAX_CANDIDATES / _CHUNK_SIZE) / _MAX_PARALLEL_CALLS)
+_LEASE_MARGIN_SECONDS = 120.0
+# The endpoint waits this long for a run already scoring its scope: under the
+# browser's 180 s POST timeout, and past a typical one-wave run.
+_MAX_WAIT_FOR_RUN_IN_FLIGHT_SECONDS = 150.0
+_LEASE_POLL_SECONDS = 3.0
 
 ROOM_MATCHING_SYSTEM_PROMPT = (
     "Είσαι αναλυτής φιλοξενίας που αντιστοιχίζει δωμάτια ανταγωνιστών με το "
@@ -121,7 +143,8 @@ class RoomMatchRunResult:
 
     status: Literal["completed", "error", "skipped"]
     matches_written: int = 0
-    # "no_api_key" | "quota_exceeded" | "already_matched" (skips only).
+    # "no_api_key" | "quota_exceeded" | "already_matched" | "in_progress"
+    # (skips only; "in_progress": another run is still scoring the scope).
     skip_reason: str | None = None
 
 
@@ -138,6 +161,9 @@ class RoomMatchingAgentService:
         timeout_seconds: float = 120.0,
         max_daily_runs: int = 30,
         client_factory: Callable[[], Any] | None = None,
+        max_wait_seconds: float = _MAX_WAIT_FOR_RUN_IN_FLIGHT_SECONDS,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
     ):
         self.match_repository = match_repository
         self.onboarding_repository = onboarding_repository
@@ -149,6 +175,12 @@ class RoomMatchingAgentService:
         self.timeout_seconds = timeout_seconds
         self.max_daily_runs = max_daily_runs
         self._client_factory = client_factory
+        self.lease_seconds = (
+            _MAX_CHUNK_WAVES * (1 + _MAX_RETRIES) * timeout_seconds + _LEASE_MARGIN_SECONDS
+        )
+        self.max_wait_seconds = max_wait_seconds
+        self._sleep = sleep
+        self._clock = clock
         # Lazy, shared SDK client (same rationale as the pricing agent: a
         # fresh anthropic.Anthropic per run would pay pool + TLS every time).
         self._client: Any | None = None
@@ -172,10 +204,17 @@ class RoomMatchingAgentService:
         ``id`` and ``owned_property_id``). ``skip_if_existing`` is the
         automatic trigger's idempotency (spec Α.1); the manual endpoint
         passes False so «Επανεκτίμηση» replaces the rows.
+
+        One run per scope at a time: a lease names the run scoring it. While
+        another run holds it — the post-scrape run the map's automatic run
+        would otherwise race — the automatic trigger skips (``in_progress``)
+        and the endpoint waits for that run's rows instead of paying for a
+        duplicate run of the same scope.
         """
         if not self.api_key:
             return self._skip(account_id, scrape_job_id, "no_api_key")
         owned_room_type_id = owned_room["id"]
+        lease: uuid.UUID | None = None
         try:
             if skip_if_existing and self.match_repository.has_matches(
                 account_id, scrape_job_id, owned_room_type_id
@@ -186,6 +225,18 @@ class RoomMatchingAgentService:
             runs_today = self._count_runs_today(account_id)
             if runs_today is not None and runs_today >= self.max_daily_runs:
                 return self._skip(account_id, scrape_job_id, "quota_exceeded")
+
+            claimed, lease = self._acquire_lease(account_id, scrape_job_id, owned_room_type_id)
+            if not claimed:
+                if skip_if_existing:
+                    return self._skip(account_id, scrape_job_id, "in_progress")
+                return self._await_run_in_flight(account_id, scrape_job_id, owned_room_type_id)
+            if skip_if_existing and self.match_repository.has_matches(
+                account_id, scrape_job_id, owned_room_type_id
+            ):
+                # The run that held the lease finished between the first
+                # check and this claim: its rows stand.
+                return self._skip(account_id, scrape_job_id, "already_matched")
 
             rows = self.rates_repository_factory(account_id).fetch_room_rates(
                 self._job_filters(scrape_job_id, owned_room)
@@ -226,6 +277,9 @@ class RoomMatchingAgentService:
             )
             self._record_run(account_id, scrape_job_id, "error", _short_error(exc))
             return RoomMatchRunResult(status="error", matches_written=0)
+        finally:
+            if lease is not None:
+                self._release_lease(account_id, scrape_job_id, owned_room_type_id, lease)
 
     def run_for_completed_job(self, account_id: uuid.UUID, job: Any) -> RoomMatchRunResult | None:
         """Automatic post-scrape trigger for a completed competitor search.
@@ -299,6 +353,101 @@ class RoomMatchingAgentService:
                 exc_info=True,
             )
             return None
+
+    def _acquire_lease(
+        self, account_id: uuid.UUID, scrape_job_id: uuid.UUID, owned_room_type_id: Any
+    ) -> tuple[bool, uuid.UUID | None]:
+        """``(claimed, holder)``: claimed is False while another live run holds the scope.
+
+        A lease store that fails (e.g. a database without migration
+        20260930_0028) must not stop matching: the run goes ahead unleased
+        (``(True, None)``), exactly as before leases existed.
+        """
+        try:
+            holder = self.match_repository.acquire_lease(
+                account_id=account_id,
+                scrape_job_id=scrape_job_id,
+                owned_room_type_id=owned_room_type_id,
+                stale_after_seconds=self.lease_seconds,
+            )
+        except Exception:
+            logger.warning(
+                "Room-matching lease unavailable; running unleased: "
+                "account_id=%s scrape_job_id=%s",
+                account_id,
+                scrape_job_id,
+                exc_info=True,
+            )
+            return True, None
+        return holder is not None, holder
+
+    def _release_lease(
+        self,
+        account_id: uuid.UUID,
+        scrape_job_id: uuid.UUID,
+        owned_room_type_id: Any,
+        holder: uuid.UUID,
+    ) -> None:
+        """Best-effort: an unreleased lease only goes stale after ``lease_seconds``."""
+        try:
+            self.match_repository.release_lease(
+                account_id=account_id,
+                scrape_job_id=scrape_job_id,
+                owned_room_type_id=owned_room_type_id,
+                holder=holder,
+            )
+        except Exception:
+            logger.warning(
+                "Room-matching lease release failed; it expires on its own: "
+                "account_id=%s scrape_job_id=%s",
+                account_id,
+                scrape_job_id,
+                exc_info=True,
+            )
+
+    def _await_run_in_flight(
+        self, account_id: uuid.UUID, scrape_job_id: uuid.UUID, owned_room_type_id: Any
+    ) -> RoomMatchRunResult:
+        """Wait (bounded) for the run already scoring this scope, then report its rows.
+
+        The endpoint's caller (the map's automatic run, «Επανεκτίμηση») gets
+        that run's verdicts instead of paying for a duplicate. Still running
+        at the deadline: ``skipped``/``in_progress`` — its rows appear on a
+        later read. Finished without rows (it failed): ``error``, the
+        statistical fallback, exactly as if this call had failed.
+        """
+        deadline = self._clock() + self.max_wait_seconds
+        while self._lease_still_held(account_id, scrape_job_id, owned_room_type_id):
+            if self._clock() >= deadline:
+                return self._skip(account_id, scrape_job_id, "in_progress")
+            self._sleep(_LEASE_POLL_SECONDS)
+        written = self.match_repository.count_matches(
+            account_id, scrape_job_id, owned_room_type_id
+        )
+        if written:
+            return RoomMatchRunResult(status="completed", matches_written=written)
+        return RoomMatchRunResult(status="error", matches_written=0)
+
+    def _lease_still_held(
+        self, account_id: uuid.UUID, scrape_job_id: uuid.UUID, owned_room_type_id: Any
+    ) -> bool:
+        """Whether the other run still holds the scope; a failing check stops the wait."""
+        try:
+            return self.match_repository.lease_held(
+                account_id=account_id,
+                scrape_job_id=scrape_job_id,
+                owned_room_type_id=owned_room_type_id,
+                stale_after_seconds=self.lease_seconds,
+            )
+        except Exception:
+            logger.warning(
+                "Room-matching lease check failed; reading the rows as they are: "
+                "account_id=%s scrape_job_id=%s",
+                account_id,
+                scrape_job_id,
+                exc_info=True,
+            )
+            return False
 
     def _skip(
         self, account_id: uuid.UUID, scrape_job_id: uuid.UUID | None, reason: str

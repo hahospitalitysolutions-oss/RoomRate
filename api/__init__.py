@@ -1,1 +1,1 @@
-﻿"""RoomRate FastAPI package."""
+"""RoomRate FastAPI package."""

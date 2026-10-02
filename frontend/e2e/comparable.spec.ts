@@ -254,6 +254,7 @@ test("a failed automatic run shows the fallback notice and is never posted again
   await openMap(page);
   await expect(page.getByTestId("auto-match-notice"))
     .toHaveText("Η εκτίμηση AI δεν είναι διαθέσιμη· εμφανίζεται η στατιστική.");
+  await expect(page.getByTestId("auto-match-notice")).toHaveClass(/alert-error/);
   expect(roomMatchPosts(calls)).toHaveLength(1);
   expect(roomMatchPosts(calls)[0].body).toEqual({ scrape_job_id: JOB_ID, owned_room_type_id: ROOM_TYPE_ID });
   // The statistical screen stays: the comparable room is still listed.
@@ -267,6 +268,24 @@ test("a failed automatic run shows the fallback notice and is never posted again
   await expect(page.locator(".header-actions").getByText("1 ανταγωνιστής")).toBeVisible();
   await expect.poll(() => readsOf(reads, "/market/summary").length).toBe(3);
   expect(roomMatchPosts(calls)).toHaveLength(1);
+});
+
+test("a run still in progress elsewhere is a quiet notice, not the failure one", async ({ page }) => {
+  const calls: RecordedCall[] = [];
+  // The search's own run still holds the room past the server's wait.
+  await mockComparableMap(page, {
+    calls, judgedRooms: new Set<string>(),
+    agentRun: { status: "skipped", matches_written: 0, skip_reason: "in_progress", source: "agent" },
+  });
+
+  await openMap(page);
+  const notice = page.getByTestId("auto-match-notice");
+  await expect(notice).toHaveText(
+    "Η εκτίμηση AI για αυτό το δωμάτιο είναι ακόμη σε εξέλιξη· ανανεώστε τη σελίδα σε λίγο για να τη δείτε.",
+  );
+  await expect(notice).not.toHaveClass(/alert-error/);
+  expect(roomMatchPosts(calls)).toHaveLength(1);
+  await expect(cardFor(page, "Hotel Keira")).toHaveCount(1);
 });
 
 test("the quota (429) is the same notice, without a retry", async ({ page }) => {

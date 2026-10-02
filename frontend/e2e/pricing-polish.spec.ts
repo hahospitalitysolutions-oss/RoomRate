@@ -349,6 +349,24 @@ test.describe("the recommendation card leads with the price", () => {
     }
   });
 
+  test("a Greek question mark ends the summary sentence", async ({ page }) => {
+    await mockPricingPage(page, {
+      response: pricingResponse(recommendation({
+        reasoning: "Γιατί 95 €; Η αγορά κινείται ανοδικά. Τα σαββατοκύριακα γεμίζουν πρώτα.",
+      })),
+    });
+    await page.goto("/pricing");
+    await page.getByRole("button", { name: "Λήψη σύστασης" }).click();
+
+    const card = page.locator(".recommendation-card");
+    // «;» is the Greek question mark: the question is the summary, the rest waits.
+    await expect(card.locator(".recommendation-summary")).toHaveText("Γιατί 95 €;");
+    await card.getByRole("button", { name: "Γιατί αυτή η τιμή;" }).click();
+    await expect(card.locator(".recommendation-reasoning")).toHaveText(
+      "Γιατί 95 €; Η αγορά κινείται ανοδικά. Τα σαββατοκύριακα γεμίζουν πρώτα.",
+    );
+  });
+
   test("a one-sentence reasoning is its own summary, rendered as text, with no toggle", async ({ page }) => {
     await mockPricingPage(page, {
       response: pricingResponse(recommendation({

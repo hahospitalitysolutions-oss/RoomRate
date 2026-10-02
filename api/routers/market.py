@@ -19,6 +19,7 @@ from api.schemas.market import MarketSummary
 from api.services.destination_aliases import canonical_destination as canonicalize_destination
 from api.services.market_helpers import as_optional_float
 from api.services.market_service import MarketService, RoomRateFilters
+from api.services.own_reference_price import resolve_own_reference_price
 from api.services.price_statistics_service import basis_price_rows
 from api.services.room_rates_normalizer import normalize_room_type_category_key
 
@@ -75,18 +76,19 @@ def _reference_cancellation_class(
 ) -> str | None:
     """The own reference package's cancellation class, as the recommendation reads it.
 
-    Same lookup as ``resolve_own_reference_price`` in the agents router: the
-    owner's live Booking package of the latest run (``fetch_own_live_price``
-    with the same market key, category and display name). A typed-in sample
-    price has no package, so no live row, no owned property or no category
-    all mean None — today's overall minimums, exactly like the statistics.
+    The recommendation's own ``resolve_own_reference_price`` with the same
+    market key, category and display name: the owner's live Booking package
+    of the latest run. A typed-in sample price has no package, so no live
+    row, no owned property or no category all mean None — today's overall
+    minimums, exactly like the statistics.
     """
     if owned_property_id is None or room_type_category is None:
         return None
     owned_property = onboarding_repository.get_owned_property(account_id, owned_property_id)
     if owned_property is None:
         return None
-    live_reference = repository.fetch_own_live_price(
+    _, _, cancellation_type = resolve_own_reference_price(
+        repository,
         account_id=account_id,
         canonical_destination=canonical_destination,
         check_in=check_in,
@@ -97,9 +99,7 @@ def _reference_cancellation_class(
         room_type_category=room_type_category,
         display_name=owned_property.get("display_name"),
     )
-    if live_reference is None:
-        return None
-    return live_reference.get("cancellation_type")
+    return cancellation_type
 
 
 @router.get("/price-history", response_model=PriceHistorySeries)

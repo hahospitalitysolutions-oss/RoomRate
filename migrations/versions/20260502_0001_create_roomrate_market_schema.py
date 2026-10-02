@@ -1,4 +1,4 @@
-﻿"""Create RoomRate production market schema.
+"""Create RoomRate production market schema.
 
 Revision ID: 20260502_0001
 Revises:

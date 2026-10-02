@@ -210,6 +210,84 @@ def test_a_room_the_agent_left_unscored_falls_back_to_the_category_pool():
     assert gamma["Family Suite"] is False
 
 
+class LimitedPoolRatesRepository(PoolRatesRepository):
+    """Also honours the SQL ORDER BY effective price ASC LIMIT :limit."""
+
+    def fetch_room_rates(self, filters: RoomRateFilters) -> list[dict]:
+        rows = sorted(super().fetch_room_rates(filters), key=lambda row: row["price_per_night_eur"])
+        return rows[: filters.limit]
+
+
+def _cheap_rejected_suites(count: int) -> tuple[list[dict], list[dict]]:
+    rows, matches = [], []
+    for index in range(count):
+        property_id = UUID(f"00000000-0000-0000-0000-0000000005{index:02d}")
+        rows.append(_row(property_id, f"Suites {index}", "Suite", "suite", 40.0 + index))
+        matches.append(_match(property_id, "Suite", 30, False))
+    return rows, matches
+
+
+def test_the_agent_filter_runs_before_the_row_limit():
+    """A LIMIT on the broad pool (cheapest first) must not cut a comparable
+    room priced above many cheaper non-comparable packages."""
+    suites, suite_matches = _cheap_rejected_suites(5)
+    repository = LimitedPoolRatesRepository(suites + ROWS)
+    service = MarketService(repository)
+    lookup = build_agent_match_lookup(MATCH_ROWS + suite_matches)
+
+    competitors = service.get_competitors(replace(_filters(), limit=2), agent_matches=lookup)
+
+    # The broad read is sized for the whole job the agent judged ...
+    assert repository.calls[0].include_similar is True
+    assert repository.calls[0].limit >= 2000
+    # ... and the caller's limit applies to the comparison set: its 2 cheapest rows.
+    assert _packages(competitors) == {
+        "Alpha": {"Double Room": True},
+        "Gamma": {"Twin Room": True},
+    }
+
+
+def test_the_row_limit_still_caps_the_comparison_set():
+    service = MarketService(LimitedPoolRatesRepository())
+
+    competitors = service.get_competitors(
+        replace(_filters(), limit=1), agent_matches=build_agent_match_lookup(MATCH_ROWS)
+    )
+
+    # Gamma's twin (90) is the cheapest comparable row; Alpha's double is 100.
+    assert _packages(competitors) == {"Gamma": {"Twin Room": True}}
+
+
+def test_the_advisor_reads_the_agents_comparison_set_like_the_map():
+    """Owner decision 2026-09-30 + spec Α.5: the price advisor's competitors
+    are the map's comparable set — the verdict when the agent scored a room,
+    the category pool for a room it left unscored."""
+    rows = ROWS + [_row(UUID("00000000-0000-0000-0000-0000000000d1"), "Delta", "Double Room", "double", 110.0)]
+    suites, suite_matches = _cheap_rejected_suites(3)
+    repository = LimitedPoolRatesRepository(suites + rows)
+    service = MarketService(repository)
+
+    context = service.get_smart_advisor_context(
+        replace(_filters(), limit=3), agent_matches=build_agent_match_lookup(MATCH_ROWS + suite_matches)
+    )
+
+    assert {competitor.hotel_name: [p.room_type for p in competitor.packages] for competitor in context.competitors} == {
+        "Gamma": ["Twin Room"],
+        "Alpha": ["Double Room"],
+        "Delta": ["Double Room"],  # unscored: the double pool keeps it
+    }
+    assert context.meta.total_competitors == 3
+
+
+def test_the_advisor_without_agent_verdicts_reads_the_filters_pool():
+    repository = PoolRatesRepository()
+
+    context = MarketService(repository).get_smart_advisor_context(_filters())
+
+    assert repository.calls[0].include_similar is False
+    assert {competitor.hotel_name for competitor in context.competitors} == {"Alpha", "Gamma"}
+
+
 @pytest.mark.parametrize("comparable_only", [True, False])
 def test_markers_and_summary_agree_with_the_list(comparable_only):
     service = MarketService(PoolRatesRepository())

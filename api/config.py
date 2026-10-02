@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 from functools import lru_cache
 from uuid import UUID
 from typing import Literal

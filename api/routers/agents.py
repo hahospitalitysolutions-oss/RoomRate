@@ -24,14 +24,14 @@ from api.repositories.price_recommendation_audit_repository import (
 )
 from api.routers._filters import owned_property_origin
 from api.schemas.agents import (
-    OwnPriceSource,
     PriceRecommendationRequest,
     PriceRecommendationResponse,
     RoomMatchRunRequest,
     RoomMatchRunResponse,
 )
 from api.services.market_helpers import as_optional_float
-from api.services.market_service import MarketService, RoomRateFilters
+from api.services.market_service import MarketService, RoomRateFilters, build_agent_match_lookup
+from api.services.own_reference_price import resolve_own_reference_price
 from api.services.price_recommendation_agent import (
     PRICE_RECOMMENDATION_PROMPT_VERSION,
     PriceRecommendationAgent,
@@ -56,48 +56,6 @@ def build_recommendation_request_hash(account_id: str, payload: dict) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-def resolve_own_reference_price(
-    price_history_repository: PriceHistoryRepository,
-    *,
-    account_id,
-    canonical_destination: str,
-    request: PriceRecommendationRequest,
-    room_type_category: str,
-    display_name: str | None,
-    sample_price: float | None,
-) -> tuple[float | None, OwnPriceSource | None, str | None]:
-    """Own reference price, in order: live Booking row of the latest run, onboarding sample, none.
-
-    The live row is what the market actually sees for these dates; the
-    onboarding sample is a typed-in number that goes stale. Neither is ever
-    counted as a competitor (the repository CTE excludes the own hotel).
-
-    The third element is the reference PACKAGE's cancellation class (spec
-    2026-09-29 §4), which scopes the like-for-like history minimums. A
-    typed-in sample has no package, so its class is None.
-    """
-    live_reference = price_history_repository.fetch_own_live_price(
-        account_id=account_id,
-        canonical_destination=canonical_destination,
-        check_in=request.check_in,
-        check_out=request.check_out,
-        adults=request.adults,
-        children=request.children,
-        rooms=request.rooms,
-        room_type_category=room_type_category,
-        display_name=display_name,
-    )
-    if live_reference is not None:
-        return (
-            round(live_reference["price"], 2),
-            "booking_live",
-            live_reference.get("cancellation_type"),
-        )
-    if sample_price is not None:
-        return round(sample_price, 2), "onboarding_sample", None
-    return None, None, None
-
-
 @router.post("/room-matches", response_model=RoomMatchRunResponse)
 def run_room_matching(
     request: RoomMatchRunRequest,
@@ -111,9 +69,14 @@ def run_room_matching(
     Synchronous (spec 2026-09-29 Α.1): the UI's «Επανεκτίμηση ταιριάσματος»
     button waits for the outcome. The run REPLACES any existing agent rows
     for the scope — only the automatic post-scrape trigger is idempotent.
-    Agent failures come back as ``status: "error"`` with zero rows (never a
-    5xx, spec Α.5); a missing API key is ``status: "skipped"``; the daily
-    per-account run quota is a 429 like the pricing endpoint.
+    When another run is already scoring the scope (the post-scrape run the
+    map's automatic run would otherwise duplicate), this waits for that run
+    and answers with its rows instead of paying for a second one; still
+    running after the wait is ``status: "skipped"`` with ``skip_reason:
+    "in_progress"``. Agent failures come back as ``status: "error"`` with
+    zero rows (never a 5xx, spec Α.5); a missing API key is ``status:
+    "skipped"``; the daily per-account run quota is a 429 like the pricing
+    endpoint.
 
     Deliberately a plain ``def``: the blocking ``service.run`` holds the
     worker thread up to the Anthropic timeout, so Starlette must run it in
@@ -145,7 +108,9 @@ def run_room_matching(
             ),
         )
     return RoomMatchRunResponse(
-        status=result.status, matches_written=result.matches_written
+        status=result.status,
+        matches_written=result.matches_written,
+        skip_reason=result.skip_reason,
     )
 
 
@@ -224,12 +189,37 @@ def price_recommendation(
         children=request.children,
         rooms=request.rooms,
     )
+    # The matching agent's verdicts for the latest run choose the basis, and
+    # they change WITHOUT a new run: the post-scrape matching finishes after
+    # the job is already completed, and «Επανεκτίμηση» rewrites them. Their
+    # write stamp is part of the request identity, so a recommendation cached
+    # on the category pool (or on older verdicts) is never served afterwards.
+    latest_agent_matches = (
+        price_history_repository.fetch_latest_run_agent_matches(
+            account_id=account.account_id,
+            canonical_destination=canonical_destination,
+            check_in=request.check_in,
+            check_out=request.check_out,
+            adults=request.adults,
+            children=request.children,
+            rooms=request.rooms,
+            owned_room_type_id=owned_room_type_id,
+        )
+        if owned_room_type_id
+        else []
+    )
+    agent_matches_written_at = max(
+        (str(row["created_at"]) for row in latest_agent_matches if row.get("created_at")),
+        default=None,
+    )
     audit_request_payload = {
         **request.model_dump(mode="json"),
         "room_type_category": room_type_category,
         "canonical_destination": canonical_destination,
         "latest_run_id": latest_run_id,
         "owned_room_type_id": str(owned_room_type_id) if owned_room_type_id else None,
+        "agent_matches": len(latest_agent_matches),
+        "agent_matches_written_at": agent_matches_written_at,
     }
     request_hash = build_recommendation_request_hash(
         str(account.account_id), audit_request_payload
@@ -296,7 +286,11 @@ def price_recommendation(
         price_history_repository,
         account_id=account.account_id,
         canonical_destination=canonical_destination,
-        request=request,
+        check_in=request.check_in,
+        check_out=request.check_out,
+        adults=request.adults,
+        children=request.children,
+        rooms=request.rooms,
         room_type_category=room_type_category,
         display_name=owned_property.get("display_name"),
         sample_price=sample_price,
@@ -326,12 +320,19 @@ def price_recommendation(
         history_rows, own_price, request.check_in, own_cancellation_type=own_cancellation_type
     )
 
-    # Same market key AND the same comparison basis the statistics read: every
-    # competitor, similar-category hotels included (as fetch_price_series
-    # above). Scoping this to the tracked competitors made the model report
-    # «only 2 competitors» over statistics computed on 10; the owner's watched
-    # set is now a per-competitor ``tracked`` flag instead (owned_property_id
-    # lets the service resolve it).
+    # Same market key AND the same comparison basis the statistics read, so
+    # «competitors_in_basis» is the market size the statistics were computed
+    # on: the agent's verdicts when they chose the basis (a room the agent
+    # left unscored keeps the category pool, as in the statistics), the
+    # comparable category pool under "same", and similar-only hotels too
+    # only when the statistics widened to them. Scoping this to the tracked
+    # competitors made the model report «only 2 competitors» over statistics
+    # computed on 10; the owner's watched set is a per-competitor ``tracked``
+    # flag instead (owned_property_id lets the service resolve it).
+    scope_used = statistics.stats_scope.used if statistics.stats_scope is not None else None
+    agent_matches = None
+    if scope_used == "agent":
+        agent_matches = build_agent_match_lookup(latest_agent_matches) or None
     advisor_filters = RoomRateFilters(
         destination=canonical_destination,
         check_in=request.check_in,
@@ -341,36 +342,16 @@ def price_recommendation(
         rooms=request.rooms,
         owned_property_id=request.owned_property_id,
         room_type_category=room_type_category,
-        include_similar=True,
+        include_similar=scope_used in (None, "same_plus_similar"),
     )
     # Β.2: the owner's coordinates give the advisor competitors a distance_km;
     # the reference package's cancellation class scopes the per-competitor
     # cheapest-in-same-class figure inside the agent payload.
-    # Agent basis: the model reads exactly the agent-comparable rooms the
-    # statistics were computed on.
-    comparable_rooms = None
-    if (
-        owned_room_type_id
-        and statistics.stats_scope is not None
-        and statistics.stats_scope.used == "agent"
-    ):
-        comparable_rooms = price_history_repository.fetch_agent_comparable_rooms(
-            account_id=account.account_id,
-            canonical_destination=canonical_destination,
-            check_in=request.check_in,
-            check_out=request.check_out,
-            adults=request.adults,
-            children=request.children,
-            rooms=request.rooms,
-            owned_room_type_id=owned_room_type_id,
-        )
-    # Passed only in agent mode, so the category path calls it as before.
-    agent_basis_kwargs = {"comparable_rooms": comparable_rooms} if comparable_rooms else {}
     advisor_context = market_service.get_smart_advisor_context(
         advisor_filters,
         my_hotel_name=owned_property.get("display_name"),
         origin=owned_property_origin(owned_property),
-        **agent_basis_kwargs,
+        agent_matches=agent_matches,
     )
 
     recommendation = apply_business_guardrails(

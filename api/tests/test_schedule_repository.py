@@ -20,6 +20,8 @@ def _config_row(**overrides) -> dict:
         "account_id": ACCOUNT_ID,
         "enabled": True,
         "frequency_hours": 24,
+        "hour_local": 8,
+        "timezone": "Europe/Athens",
         "hour_utc": 5,
         "lead_days": 30,
         "nights": 3,
@@ -54,7 +56,7 @@ def test_get_config_returns_none_when_missing(monkeypatch):
 
 
 def test_upsert_config_inserts_with_conflict_update_on_account(monkeypatch):
-    engine = _patch_engine(monkeypatch, [FakeResult(rows=[_config_row(hour_utc=7)])])
+    engine = _patch_engine(monkeypatch, [FakeResult(rows=[_config_row(hour_local=10, hour_utc=7)])])
     repository = ScheduleRepository()
 
     row = repository.upsert_config(
@@ -62,6 +64,7 @@ def test_upsert_config_inserts_with_conflict_update_on_account(monkeypatch):
         {
             "enabled": True,
             "frequency_hours": 24,
+            "hour_local": 10,
             "hour_utc": 7,
             "lead_days": 30,
             "nights": 3,
@@ -72,13 +75,19 @@ def test_upsert_config_inserts_with_conflict_update_on_account(monkeypatch):
         },
     )
 
-    assert row["hour_utc"] == 7
+    assert row["hour_local"] == 10
     sql, params = engine.connection.calls[0]
     assert "INSERT INTO roomrate_schedule_configs" in sql
     assert "ON CONFLICT (account_id) DO UPDATE" in sql
     assert "RETURNING" in sql
     assert params["account_id"] == ACCOUNT_ID
+    assert params["hour_local"] == 10
+    assert "hour_local = EXCLUDED.hour_local" in sql
+    # Kept current for an older API image (migration 20260930_0030).
     assert params["hour_utc"] == 7
+    assert "hour_utc = EXCLUDED.hour_utc" in sql
+    # The zone is not editable yet: new rows take the column default.
+    assert "timezone" not in params
     # New rows need a client-generated primary key.
     assert params["id"] is not None
     # A PUT carrying a stale read must not clobber breaker updates recorded
@@ -87,19 +96,21 @@ def test_upsert_config_inserts_with_conflict_update_on_account(monkeypatch):
     assert "consecutive_failures = EXCLUDED.consecutive_failures" not in sql
 
 
-def test_list_due_configs_filters_on_enabled_frequency_and_hour(monkeypatch):
+def test_list_enabled_configs_reads_every_enabled_schedule_least_recent_first(monkeypatch):
+    """Due-ness depends on each schedule's zone and calendar: the service decides."""
     engine = _patch_engine(monkeypatch, [FakeResult(rows=[_config_row()])])
     repository = ScheduleRepository()
 
-    due = repository.list_due_configs(NOW)
+    enabled = repository.list_enabled_configs()
 
-    assert len(due) == 1
-    sql, params = engine.connection.calls[0]
-    assert "enabled = true" in sql
-    assert "last_run_at IS NULL" in sql
-    assert "frequency_hours * interval '1 hour'" in sql
-    assert "extract(hour FROM (:now AT TIME ZONE 'UTC')) >= hour_utc" in sql
-    assert params["now"] == NOW
+    assert enabled == [_config_row()]
+    sql, _params = engine.connection.calls[0]
+    assert "WHERE enabled = true" in sql
+    assert "ORDER BY last_run_at ASC NULLS FIRST" in sql
+    assert "hour_local, timezone" in sql
+    # No due rule in SQL any more: no UTC hour, no frequency arithmetic.
+    assert "extract(hour" not in sql
+    assert "frequency_hours * interval" not in sql
 
 
 def test_touch_last_run_updates_one_config(monkeypatch):

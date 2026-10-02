@@ -308,9 +308,12 @@ These are implemented, not aspirational — see `.env.example` for the knobs.
 - **HSTS and security headers** on every response; HSTS is enabled by
   `APP_ENV=production`.
 - **Rate limiting** (`RATE_LIMIT_PER_MINUTE`, default 30) on the expensive
-  mutation POSTs, keyed by account id and falling back to client IP. It is
-  counted **per process**, so it is approximate behind multiple API replicas —
-  size it accordingly, or move it to the edge.
+  mutation POSTs, keyed by the caller's bearer token (hashed), an internal
+  caller's account id, else the client IP. The window lives in PostgreSQL
+  (`roomrate_rate_limit_hits`, migration `20260930_0029`), so the limit holds
+  per caller across every uvicorn worker and API replica. If the database
+  check fails, each process falls back to its own in-memory window instead of
+  failing requests.
 - **Quotas** per account: concurrent and daily scrape jobs, daily price
   recommendations — the spend controls, distinct from the rate limit.
 - **Token verification is local** (JWKS or HS256), with no per-request

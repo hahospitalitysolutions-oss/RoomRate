@@ -1,9 +1,7 @@
 import { CommonModule } from "@angular/common";
-import { AfterViewInit, Component, computed, ElementRef, inject, OnDestroy, OnInit, signal, ViewChild } from "@angular/core";
+import { Component, computed, ElementRef, inject, OnDestroy, OnInit, signal, ViewChild } from "@angular/core";
 import { FormsModule } from "@angular/forms";
 import { Router, RouterLink } from "@angular/router";
-import type { Feature, Polygon } from "geojson";
-import type mapboxgl from "mapbox-gl";
 
 import { environment } from "../../environments/environment";
 import { EmptyStateComponent } from "../components/empty-state.component";
@@ -17,13 +15,10 @@ import { OnboardingService } from "../services/onboarding.service";
 import { SetupProgressService } from "../services/setup-progress.service";
 import { WorkflowStorageService } from "../services/workflow-storage.service";
 import {
-  CategoryMatch,
   Competitor,
   CompetitorMapMarker,
-  CompetitorPackage,
   CompetitorSort,
   MarketSummary,
-  MatchSource,
   NearbyDestinationsResponse,
   OwnedPropertyRoomType,
   OwnPropertyMapInfo,
@@ -34,303 +29,57 @@ import {
   ScrapeResultSummary,
   TrackedCompetitorListResponse,
 } from "../types/market";
-import { StayDates, defaultStayDates, ensureFutureStay, isPastLocalDate } from "../utils/date-defaults";
+import { ensureFutureStay, isPastLocalDate } from "../utils/date-defaults";
 import { areComparableRoomCategories } from "../utils/room-category";
-
-type LoadingState = "idle" | "loading" | "ready" | "error";
-// What the badge over the match list can claim (spec Α.4): the two wire
-// sources, plus the honest in-between when one read mixes them — some rows
-// scored by the agent, the rest (older rows, missing field) statistically.
-type MatchSourceState = MatchSource | "partial";
-type MapboxModule = typeof mapboxgl;
-// One competitor marker on the map, kept across repaints (see renderMarkers).
-// `popupHtml` and the coordinates are what the entry last rendered, so a repaint
-// only touches what really changed: setHTML on an open popup rebuilds its
-// content and moves focus into it.
-type MarkerEntry = {
-  marker: mapboxgl.Marker;
-  element: HTMLButtonElement;
-  // The price text inside the marker; hidden by the stylesheet when zoomed out.
-  pricePill: HTMLSpanElement;
-  popup: mapboxgl.Popup;
-  popupHtml: string;
-  lng: number;
-  lat: number;
-};
-// `radiusKm`: the radius the job ran with (null before Round 6), for the
-// sentence that explains a radius that kept no hotel.
-type JobScope = StayDates & { roomTypeCategory: string; radiusKm: number | null };
-// Why a finished search is showing nothing, in the order of the user's own
-// ability to act on it. "amenities" carries no count on purpose: it is the one
-// reason that is NOT read out of the scrape's result summary (see
-// amenityFilterHidesEverything), so there is no honest number to put in it.
-// "single_rooms" and "capacity" are the scraper's first two stages since Round
-// 6 (spec §3.4), which replaced its room-category cut before storage.
-// "comparable" is the other read filter and carries no count for the same
-// reason as "amenities".
-type EmptyResultReason =
-  | { kind: "amenities" }
-  | { kind: "comparable" }
-  | { kind: "single_rooms"; count: number }
-  | { kind: "capacity"; count: number }
-  | { kind: "remaining-filters"; count: number };
-
-// One ROOM of a matched hotel: its packages are that room's rate plans (spec
-// §5). `rangeLabel` carries the collapsed «από … έως …» line and doubles as
-// the switch between the two renderings: null (a single package, or old rows
-// without rate-plan data) keeps today's plain package rows.
-type RoomPlanGroup = {
-  room_type: string;
-  packages: CompetitorPackage[];
-  rangeLabel: string | null;
-};
-
-type MapFilters = {
-  destination: string;
-  check_in: string;
-  check_out: string;
-  adults: string;
-  children: string;
-  rooms: string;
-  limit: string;
-  radius_km: string;
-};
-
-// Spec §4.1 bounds for the two Round 6 search fields. The server enforces its
-// own (8 areas, 0.5-50 km); the form stays inside them so it never earns a 422.
-const MAX_NEARBY_DESTINATIONS = 8;
-const DEFAULT_RADIUS_KM = 10;
-const MIN_RADIUS_KM = 1;
-const MAX_RADIUS_KM = 30;
-
-// A Round 6 scrape (scouts of several areas, up to 120 hotels) runs far longer
-// than the old 10 minutes — a live Faliraki search with four nearby areas took
-// 10-11 — and Apify can be slower on the day. So the page waits as long as the
-// backend's own hard timeout (SCRAPE_JOB_TIMEOUT_SECONDS = 1800): 360 polls of
-// 5 s = 30 minutes. It used to give up at 15 on a job that was still running.
-const SCRAPE_POLL_ATTEMPTS = 360;
-const SCRAPE_POLL_INTERVAL_MS = 5000;
-// A scrape keeps running server-side whether or not one status read reaches
-// the page, so a lone 502 or network blip must not end the wait. Only this
-// many failed reads IN A ROW mean the server is really gone.
-const SCRAPE_POLL_FAILURE_LIMIT = 5;
-// Rows asked for by the marker and summary reads of a job: the whole job (the
-// server caps a Round 6 scrape at 120 hotels), so the map, the header count and
-// the summary box all describe the same set (spec §4.7).
-const JOB_RESULT_READ_LIMIT = "1000";
-
-// The map filter's name, defined once and rendered as the control's own label:
-// every message that sends the user to that control has to call it exactly
-// what the control is called, or the instruction points at nothing.
-const ONLY_SELECTED_FILTER_NAME = "Μόνο τα επιλεγμένα στον χάρτη";
-// The single way out of a map the filter has emptied, shared by both messages
-// that leave the user looking at one.
-const UNHIDE_INSTRUCTION = "Τσεκάρετε δωμάτια ή απενεργοποιήστε το φίλτρο.";
-
-// Two of the four banners a search that DID return rooms can leave on screen
-// (the others are SEARCH_AMENITY_FILTERED_MESSAGE and
-// SEARCH_COMPARABLE_FILTERED_MESSAGE below, which need wording defined
-// further down). They are module constants because
-// refreshSearchResultMessage has to recognise this component's own banner to
-// keep it true as the filters change under it; matching against the very
-// constants the writer uses is what stops the two sides from drifting apart.
-const SEARCH_PLOTTED_MESSAGE =
-  "Όλα τα αποτελέσματα εμφανίζονται στον χάρτη. Τσεκάρετε όσα θέλετε να παρακολουθείτε.";
-const SEARCH_FILTERED_MESSAGE =
-  `Η αναζήτηση επέστρεψε αποτελέσματα, αλλά το φίλτρο «${ONLY_SELECTED_FILTER_NAME}» κρατά στον `
-  + `χάρτη μόνο όσα δωμάτια έχετε τσεκάρει. ${UNHIDE_INSTRUCTION}`;
-// The map overlay's version of the same state, reached from the other side:
-// the user is looking at the map itself rather than at a search banner.
-const FILTER_HIDES_ALL_MESSAGE =
-  `Όλα τα αποτελέσματα είναι κρυμμένα από το φίλτρο «${ONLY_SELECTED_FILTER_NAME}». ${UNHIDE_INSTRUCTION}`;
-
-// The OTHER user-caused empty screen, and a different one from the map filter
-// above: the facility checkboxes are applied by the backend when the job's rows
-// are READ, so the rows exist and every one of them was dropped for lacking a
-// ticked facility. Said in three places at once — the sidebar's title, its
-// explanation and the map overlay — so they are built from shared parts rather
-// than written out three times and left to drift.
-const AMENITY_FILTER_HIDES_ALL_TITLE = "Τα φίλτρα παροχών κρύβουν όλα τα αποτελέσματα";
-const AMENITY_UNHIDE_INSTRUCTION = "Αφαιρέστε κάποιο από αυτά για να δείτε ξανά τα δωμάτια.";
-const AMENITY_FILTER_HIDES_ALL_EXPLANATION =
-  "Η αναζήτηση επέστρεψε δωμάτια, αλλά κανένα δεν διαθέτει όλες τις παροχές που έχετε επιλέξει. "
-  + AMENITY_UNHIDE_INSTRUCTION;
-const AMENITY_FILTER_HIDES_ALL_MESSAGE = `${AMENITY_FILTER_HIDES_ALL_TITLE}. ${AMENITY_UNHIDE_INSTRUCTION}`;
-// The third search-result banner (see SEARCH_PLOTTED_MESSAGE): the search
-// returned rooms and the facility filter is keeping every one of them off the
-// map. Its own sentence rather than SEARCH_FILTERED_MESSAGE's, because that
-// one names the map filter — telling a user to untick cards or switch off a
-// filter they never touched points them at the wrong control.
-const SEARCH_AMENITY_FILTERED_MESSAGE =
-  "Η αναζήτηση επέστρεψε αποτελέσματα, αλλά τα φίλτρα παροχών δεν αφήνουν κανένα στον χάρτη. "
-  + AMENITY_UNHIDE_INSTRUCTION;
-// The way out, offered where the message is read: the filters sidebar starts
-// collapsed, so the checkboxes that caused this are not necessarily on screen.
-const CLEAR_AMENITY_FILTERS_LABEL = "Καθαρισμός φίλτρων παροχών";
-// A facility re-read that failed without an error message of its own.
-const AMENITY_FILTER_FAILED_MESSAGE = "Δεν ήταν δυνατή η εφαρμογή των φίλτρων παροχών.";
-
-// Spec Α.5: a failed agent run (error, skipped, quota) is never an error of
-// the match list itself — the statistical scores on screen stay and this one
-// sentence says why the AI ones did not arrive.
-const AGENT_UNAVAILABLE_NOTICE = "Η εκτίμηση AI δεν είναι διαθέσιμη· εμφανίζεται η στατιστική.";
-
-// Shown while the page runs the room-matching agent BY ITSELF (owner decision
-// 2026-09-30): a completed job whose competitors carry no agent verdict for
-// the selected room gets one automatic run per (job, room) per visit.
-const AUTO_MATCH_PENDING_MESSAGE = "Εκτίμηση AI για το δωμάτιο σε εξέλιξη…";
-
-// The same three places for the other read filter, «Μόνο συγκρίσιμα» (owner
-// decision 2026-09-30: the comparison set is the AI agent's verdict, and the
-// rooms it judged non-comparable are hidden by default), built from shared
-// parts for the same reason as the facility texts above. Its name is
-// rendered as the switch's own label.
-//
-// The title stays «Δεν βρέθηκαν συγκρίσιμα δωμάτια» on purpose: the filter is
-// ON by default, so an empty comparable read is not something the user did —
-// the sentence is simply true, while "the switch hides everything" would be a
-// guess (rows without coordinates also leave a job's read empty).
-const COMPARABLE_FILTER_NAME = "Μόνο συγκρίσιμα";
-const COMPARABLE_HIDES_ALL_TITLE = "Δεν βρέθηκαν συγκρίσιμα δωμάτια";
-const COMPARABLE_UNHIDE_INSTRUCTION = `Απενεργοποιήστε το «${COMPARABLE_FILTER_NAME}» για να δείτε όλα τα καταλύματα που βρέθηκαν.`;
-const COMPARABLE_HIDES_ALL_EXPLANATION =
-  "Η αναζήτηση επέστρεψε καταλύματα, αλλά κανένα δεν κρίθηκε συγκρίσιμο με το δωμάτιό σας. "
-  + COMPARABLE_UNHIDE_INSTRUCTION;
-const COMPARABLE_HIDES_ALL_MESSAGE = `Κανένα συγκρίσιμο δωμάτιο στον χάρτη. ${COMPARABLE_UNHIDE_INSTRUCTION}`;
-const SEARCH_COMPARABLE_FILTERED_MESSAGE =
-  "Η αναζήτηση επέστρεψε αποτελέσματα, αλλά κανένα δεν κρίθηκε συγκρίσιμο με το δωμάτιό σας. "
-  + COMPARABLE_UNHIDE_INSTRUCTION;
-const SHOW_ALL_ROOMS_LABEL = "Εμφάνιση όλων";
-
-// A map that cannot draw says so where the map is, and says the one thing the
-// user needs to know about the rest of the screen: the numbers still hold.
-const MAP_LOAD_FAILED_MESSAGE =
-  "Ο χάρτης δεν μπόρεσε να φορτώσει. Τα αποτελέσματα δεν επηρεάζονται.";
-// The "nothing is running, here is the way out" banner. Written from three
-// places (the initial signal, the restore's catch and the per-navigation
-// reset), so it is a constant: three copies of one sentence is three chances
-// for them to drift, and the e2e negatives hang off this exact wording.
-// It names the button by its label, so the two must be translated together.
-const START_SEARCH_MESSAGE =
-  "Ρυθμίστε τα φίλτρα και πατήστε «Εύρεση ανταγωνιστών» για να ξεκινήσει ζωντανή αναζήτηση.";
-// Shown when ensureSelectedRoom picked the room instead of the user. Rendered
-// in the results sidebar, which is the only part of the page that is up
-// unconditionally — the filters sidebar starts collapsed.
-const AUTO_PICKED_ROOM_HINT =
-  "Επιλέχθηκε αυτόματα το πρώτο δωμάτιο του καταλόγου — αλλάξτε το αν χρειάζεται.";
-
-const DEFAULT_CENTER: [number, number] = [28.199, 36.3396];
-const DEFAULT_ZOOM = 14;
-// Below this zoom a dense market's price pills pile up (40 hotels inside
-// 1.2 km of Faliraki centre): the markers drop their text and become dots.
-const PRICE_LABEL_MIN_ZOOM = 13.5;
-// How long a card stays highlighted after its marker was clicked.
-const CARD_HIGHLIGHT_MS = 1500;
-const PRICE_BAND_CLASSES = ["roomrate-marker-dot-low", "roomrate-marker-dot-mid", "roomrate-marker-dot-high"];
-
-type PriceTertiles = { low: number; high: number };
-
-/**
- * The two cut points that split the prices on the map into thirds (spec §4.4).
- *
- * Relative to the markers actually drawn, not fixed euros: the old 75/130 €
- * thresholds painted a whole 200-260 € market «high». Interpolated between the
- * sorted prices (numpy's default), so three markers still get three colours.
- * Null when there is no spread to split — a single price, or one price for
- * all — which reads as «Μεσαία» rather than as a cheap or a dear market.
- */
-function priceTertiles(prices: number[]): PriceTertiles | null {
-  const sorted = prices.filter((price) => Number.isFinite(price)).sort((a, b) => a - b);
-  if (sorted.length < 2 || sorted[0] === sorted[sorted.length - 1]) {
-    return null;
-  }
-  const quantile = (fraction: number): number => {
-    const position = (sorted.length - 1) * fraction;
-    const lower = Math.floor(position);
-    const upper = Math.min(lower + 1, sorted.length - 1);
-    return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
-  };
-  return { low: quantile(1 / 3), high: quantile(2 / 3) };
-}
-
-// The owner's radius circle on the map (spec §4.3): one GeoJSON source drawn
-// by a fill and an outline layer.
-const RADIUS_SOURCE_ID = "roomrate-own-radius";
-const RADIUS_FILL_LAYER_ID = "roomrate-own-radius-fill";
-const RADIUS_LINE_LAYER_ID = "roomrate-own-radius-line";
-const EARTH_RADIUS_KM = 6371;
-
-/**
- * A circle of `km` around a point, as a closed GeoJSON polygon of `steps`
- * points (spec §4.3: 64).
- *
- * Spherical destination-point formula rather than a flat offset in degrees: a
- * degree of longitude at Rhodes (36° N) is 20% shorter than a degree of
- * latitude, so a "circle" drawn in degrees would be an ellipse that puts
- * in-radius hotels outside it.
- */
-export function circlePolygon(lng: number, lat: number, km: number, steps = 64): Feature<Polygon> {
-  const angularDistance = km / EARTH_RADIUS_KM;
-  const latRad = (lat * Math.PI) / 180;
-  const lngRad = (lng * Math.PI) / 180;
-  const ring: number[][] = [];
-  for (let step = 0; step < steps; step += 1) {
-    const bearing = (2 * Math.PI * step) / steps;
-    const pointLat = Math.asin(
-      Math.sin(latRad) * Math.cos(angularDistance) + Math.cos(latRad) * Math.sin(angularDistance) * Math.cos(bearing),
-    );
-    const pointLng = lngRad + Math.atan2(
-      Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(latRad),
-      Math.cos(angularDistance) - Math.sin(latRad) * Math.sin(pointLat),
-    );
-    ring.push([(pointLng * 180) / Math.PI, (pointLat * 180) / Math.PI]);
-  }
-  // GeoJSON rings are closed: the last position repeats the first.
-  ring.push([...ring[0]]);
-  return { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [ring] } };
-}
-
-const DEFAULT_STAY = defaultStayDates();
-// A facility filter is two different things at once, and 5.1 split them
-// apart: `value` is the Booking facility name the backend matches rows on and
-// the one thing `amenities=` may ever carry, `label` is what the hotelier
-// reads. They used to be the same English string, so translating the checkbox
-// text would have silently returned zero rooms instead of failing loudly.
-// Never send a label; never render a value.
-type AmenityOption = { value: string; label: string };
-
-const COMMON_AMENITIES: AmenityOption[] = [
-  { value: "Free WiFi", label: "Δωρεάν WiFi" },
-  { value: "Free parking", label: "Δωρεάν στάθμευση" },
-  { value: "Swimming pool", label: "Πισίνα" },
-  { value: "Non-smoking rooms", label: "Δωμάτια για μη καπνίζοντες" },
-  { value: "Restaurant", label: "Εστιατόριο" },
-  { value: "Family rooms", label: "Οικογενειακά δωμάτια" },
-  { value: "Tea/coffee maker", label: "Βραστήρας για τσάι και καφέ" },
-  { value: "Bar", label: "Μπαρ" },
-  { value: "Breakfast", label: "Πρωινό" },
-  { value: "Balcony", label: "Μπαλκόνι" },
-  { value: "Sea view", label: "Θέα στη θάλασσα" },
-  { value: "Air conditioning", label: "Κλιματισμός" },
-];
-const AMENITY_BY_VALUE = new Map(COMMON_AMENITIES.map((option) => [option.value, option]));
-// Keyed by the same `value`, so a matcher can never invent a facility the
-// option list does not carry. `terms` are the (already bilingual) tokens the
-// scraped facility text is searched for — that is the right layer for Greek.
-const FACILITY_MATCHERS = [
-  { value: "Free WiFi", terms: ["wifi", "wi-fi", "internet"] },
-  { value: "Free parking", terms: ["parking", "στάθμευση", "πάρκινγκ"] },
-  { value: "Swimming pool", terms: ["pool", "swimming", "πισίνα", "πισίνες"] },
-  { value: "Non-smoking rooms", terms: ["non-smoking", "non smoking", "μη καπνιστών"] },
-  { value: "Restaurant", terms: ["restaurant", "εστιατόριο"] },
-  { value: "Family rooms", terms: ["family", "οικογενειακά"] },
-  { value: "Tea/coffee maker", terms: ["tea", "coffee", "καφέ", "τσάι", "καφετιέρα"] },
-  { value: "Bar", terms: ["bar", "μπαρ"] },
-  { value: "Breakfast", terms: ["breakfast", "πρωινό"] },
-  { value: "Balcony", terms: ["balcony", "μπαλκόνι"] },
-  { value: "Sea view", terms: ["sea view", "θέα στη θάλασσα"] },
-  { value: "Air conditioning", terms: ["air conditioning", "κλιματισμός"] },
-];
+import { CompetitorCardComponent } from "./map/competitor-card.component";
+import { buildRoomGroups, formatEuro, formatRadius, hasValidCoordinates, hotelKey, markerKey, planKey } from "./map/competitor-format";
+import { CompetitorMapComponent, CompetitorMapSource } from "./map/competitor-map.component";
+import { MapFiltersSidebarComponent } from "./map/map-filters-sidebar.component";
+import {
+  LoadingState,
+  MatchSourceState,
+  JobScope,
+  EmptyResultReason,
+  RoomPlanGroup,
+  MapFilters,
+  MAX_NEARBY_DESTINATIONS,
+  DEFAULT_RADIUS_KM,
+  MIN_RADIUS_KM,
+  MAX_RADIUS_KM,
+  SCRAPE_POLL_ATTEMPTS,
+  SCRAPE_POLL_INTERVAL_MS,
+  SCRAPE_POLL_FAILURE_LIMIT,
+  JOB_RESULT_READ_LIMIT,
+  ONLY_SELECTED_FILTER_NAME,
+  SEARCH_PLOTTED_MESSAGE,
+  SEARCH_FILTERED_MESSAGE,
+  FILTER_HIDES_ALL_MESSAGE,
+  AMENITY_FILTER_HIDES_ALL_TITLE,
+  AMENITY_FILTER_HIDES_ALL_EXPLANATION,
+  AMENITY_FILTER_HIDES_ALL_MESSAGE,
+  SEARCH_AMENITY_FILTERED_MESSAGE,
+  CLEAR_AMENITY_FILTERS_LABEL,
+  AMENITY_FILTER_FAILED_MESSAGE,
+  AGENT_UNAVAILABLE_NOTICE,
+  AGENT_IN_PROGRESS_NOTICE,
+  agentRunNotice,
+  AUTO_MATCH_PENDING_MESSAGE,
+  COMPARABLE_FILTER_NAME,
+  COMPARABLE_HIDES_ALL_TITLE,
+  COMPARABLE_HIDES_ALL_EXPLANATION,
+  COMPARABLE_HIDES_ALL_MESSAGE,
+  SEARCH_COMPARABLE_FILTERED_MESSAGE,
+  SHOW_ALL_ROOMS_LABEL,
+  START_SEARCH_MESSAGE,
+  AUTO_PICKED_ROOM_HINT,
+  CARD_HIGHLIGHT_MS,
+  DEFAULT_STAY,
+  AmenityOption,
+  COMMON_AMENITIES,
+  AMENITY_BY_VALUE,
+  FACILITY_MATCHERS,
+} from "./map/map-page.constants";
+import { MatchedCompetitorCardComponent } from "./map/matched-competitor-card.component";
 
 // All async-written state is signal-based. Every API call in this component
 // awaits getAccessToken() first, and supabase-js getSession() acquires a
@@ -343,7 +92,19 @@ const FACILITY_MATCHERS = [
 @Component({
   selector: "app-map-page",
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink, EmptyStateComponent, NotificationBellComponent, NotificationToastsComponent, SetupChecklistComponent],
+  imports: [
+    CommonModule,
+    FormsModule,
+    RouterLink,
+    CompetitorCardComponent,
+    CompetitorMapComponent,
+    EmptyStateComponent,
+    MapFiltersSidebarComponent,
+    MatchedCompetitorCardComponent,
+    NotificationBellComponent,
+    NotificationToastsComponent,
+    SetupChecklistComponent,
+  ],
   template: `
     <main class="map-page">
       <header class="map-header">
@@ -370,141 +131,48 @@ const FACILITY_MATCHERS = [
       </header>
 
       <section class="map-grid" [class.filters-collapsed]="filtersCollapsed()">
-        <aside *ngIf="!filtersCollapsed()" class="filters-sidebar">
-          <div class="filters-title-row">
-            <h2>Φίλτρα αναζήτησης</h2>
-            <button class="panel-toggle-button" type="button" (click)="toggleFiltersSidebar()">Απόκρυψη</button>
-          </div>
-          <!-- The room itself is chosen at the top of the results column («Σύγκριση για»); a new search runs for it. -->
-          <div *ngIf="selectedOwnedRoom()" class="baseline-room">
-            <strong>{{ selectedOwnedRoom()?.room_type }}</strong>
-            <small>Το RoomRate ταιριάζει δωμάτια ανταγωνιστών με παρόμοια ονόματα και την ίδια κανονικοποιημένη κατηγορία.</small>
-          </div>
-          <label>
-            <span>Περιοχή</span>
-            <input class="roomrate-input muted-input" [value]="filters().destination" readonly>
-          </label>
-          <div class="filter-section-label">Ημερομηνίες διαμονής</div>
-          <div class="two-cols">
-            <label>
-              <span>Άφιξη</span>
-              <input class="roomrate-input" type="date" [ngModel]="filters().check_in" (ngModelChange)="setFilter('check_in', $event)">
-            </label>
-            <label>
-              <span>Αναχώρηση</span>
-              <input class="roomrate-input" type="date" [ngModel]="filters().check_out" (ngModelChange)="setFilter('check_out', $event)">
-            </label>
-          </div>
-          <label>
-            <span>Πλήθος ανταγωνιστών</span>
-            <input class="roomrate-input" min="1" max="80" type="number" data-testid="limit-input" [ngModel]="filters().limit" (ngModelChange)="setFilter('limit', $event)">
-          </label>
-          <!--
-            A div, not a label: it holds the chips' own remove buttons. Enter in
-            the input and the button both add; the list is what the POST sends.
-          -->
-          <div class="nearby-field">
-            <span class="nearby-field-label">Γειτονικές περιοχές</span>
-            <div *ngIf="nearbyDestinations().length" class="nearby-chips">
-              <span *ngFor="let area of nearbyDestinations()" class="nearby-chip">
-                <span data-testid="nearby-chip">{{ area }}</span>
-                <button type="button" [attr.aria-label]="'Αφαίρεση περιοχής ' + area" (click)="removeNearbyDestination(area)">×</button>
-              </span>
-            </div>
-            <div class="nearby-add-row">
-              <input
-                class="roomrate-input"
-                data-testid="nearby-input"
-                aria-label="Νέα γειτονική περιοχή"
-                placeholder="π.χ. Ιξιά"
-                maxlength="100"
-                [disabled]="!canAddNearbyDestination()"
-                [ngModel]="nearbyDraft()"
-                (ngModelChange)="nearbyDraft.set($event)"
-                (keydown.enter)="addNearbyDestination()"
-              >
-              <button class="panel-toggle-button" type="button" [disabled]="!canAddNearbyDestination()" (click)="addNearbyDestination()">Προσθήκη</button>
-            </div>
-            <small class="nearby-hint">Έως {{ maxNearbyDestinations }} περιοχές εκτός από την κύρια.</small>
-          </div>
-          <label>
-            <span>Ακτίνα (km)</span>
-            <input class="roomrate-input" min="1" max="30" step="1" type="number" data-testid="radius-input" [ngModel]="filters().radius_km" (ngModelChange)="setFilter('radius_km', $event)">
-          </label>
-
-          <div class="amenity-list">
-            <div class="amenity-list-header">
-              <span>Δημοφιλέστερες παροχές</span>
-              <button type="button" [disabled]="!selectedAmenities().size" (click)="clearAmenities()">Καθαρισμός</button>
-            </div>
-            <label *ngFor="let amenity of amenities()" class="checkbox-row">
-              <input type="checkbox" [checked]="selectedAmenities().has(amenity.value)" (change)="toggleAmenity(amenity.value)">
-              <span>{{ amenity.label }}</span>
-            </label>
-          </div>
-
-          <button class="primary-button" type="button" [disabled]="actionStatus() === 'loading'" (click)="findCompetitors()">
-            {{ actionStatus() === "loading" ? "Γίνεται αναζήτηση" : "Εύρεση ανταγωνιστών" }}
-          </button>
-          <div *ngIf="message()" class="alert">{{ message() }}</div>
-          <!-- What the scrape itself reported about this result (spec §3.1/§3.3), under the banner that describes it. -->
-          <p *ngFor="let warning of searchWarnings()" class="search-warning" data-testid="search-warning">{{ warning }}</p>
-          <!-- Live progress of the search this page started (spec §4.2), under the banner. -->
-          <div #scrapeProgressBlock *ngIf="scrapeInFlight()" class="scrape-progress" data-testid="scrape-progress">
-            <span role="status" data-testid="scrape-progress-text">{{ scrapeProgressLabel() }}</span>
-            <span *ngIf="scrapeElapsedLabel()" class="scrape-progress-clock" data-testid="scrape-elapsed">{{ scrapeElapsedLabel() }}</span>
-          </div>
-          <div *ngIf="error()" class="alert alert-error">{{ error() }}</div>
-        </aside>
+        <aside
+          *ngIf="!filtersCollapsed()"
+          appMapFiltersSidebar
+          class="filters-sidebar"
+          [baselineRoom]="selectedOwnedRoom() ?? null"
+          [filters]="filters()"
+          [nearbyDestinations]="nearbyDestinations()"
+          [nearbyDraft]="nearbyDraft()"
+          [canAddNearbyDestination]="canAddNearbyDestination()"
+          [amenities]="amenities()"
+          [selectedAmenities]="selectedAmenities()"
+          [searching]="actionStatus() === 'loading'"
+          [message]="message()"
+          [searchWarnings]="searchWarnings()"
+          [scrapeInFlight]="scrapeInFlight()"
+          [scrapeProgressLabel]="scrapeProgressLabel()"
+          [scrapeElapsedLabel]="scrapeElapsedLabel()"
+          [error]="error()"
+          (collapseRequest)="toggleFiltersSidebar()"
+          (filterChange)="setFilter($event.key, $event.value)"
+          (nearbyDraftChange)="nearbyDraft.set($event)"
+          (nearbyAdd)="addNearbyDestination()"
+          (nearbyRemove)="removeNearbyDestination($event)"
+          (amenityToggle)="toggleAmenity($event)"
+          (amenitiesClear)="clearAmenities()"
+          (findRequest)="findCompetitors()"
+        ></aside>
 
         <section class="map-shell">
           <app-setup-checklist></app-setup-checklist>
-          <div class="map-canvas">
+          <div
+            class="map-canvas"
+            appCompetitorMap
+            [source]="mapSource"
+            [emptyMessage]="visibleCompetitors().length ? null : mapEmptyMessage()"
+            [ownCoordinatesMissing]="ownCoordinatesMissing()"
+            [showLegend]="showMapLegend()"
+            (markerClick)="flashCard($event)"
+          >
             <button *ngIf="filtersCollapsed()" class="show-filters-button" type="button" (click)="toggleFiltersSidebar()">
               Φίλτρα
             </button>
-            <!--
-              data-radius-km: the radius circle the map was given (the circle itself is WebGL).
-              is-zoomed-out / data-zoomed-out: below zoom 13.5 the competitor markers are dots.
-              data-fit-count: how many times the camera was fitted (a re-read must not add one).
-            -->
-            <div
-              #mapContainer
-              class="roomrate-map"
-              [class.is-zoomed-out]="mapZoomedOut()"
-              [attr.data-zoomed-out]="mapZoomedOut()"
-              [attr.data-radius-km]="radiusCircleKm()"
-              [attr.data-fit-count]="mapFitCount()"
-            ></div>
-            <div *ngIf="mapError()" class="map-notice map-error-notice" data-testid="map-error-notice">
-              {{ mapError() }}
-            </div>
-            <div *ngIf="!mapboxToken" class="map-empty-state">Λείπει το token του Mapbox.</div>
-            <div *ngIf="mapboxToken && !visibleCompetitors().length" class="map-empty-state">
-              {{ mapEmptyMessage() }}
-            </div>
-            <!--
-              The lower-left corner, above the Mapbox logo: why «Εσείς» is
-              missing (spec §4.3) stacked over the marker key (spec §4.4), so
-              the two never overlap.
-            -->
-            <div *ngIf="ownCoordinatesMissing() || showMapLegend()" class="map-corner">
-              <p *ngIf="ownCoordinatesMissing()" class="map-notice map-own-notice" data-testid="own-location-notice">
-                Δεν βρέθηκαν συντεταγμένες για το κατάλυμά σας
-              </p>
-              <div *ngIf="showMapLegend()" class="map-legend" data-testid="map-legend" role="note" aria-label="Υπόμνημα χάρτη">
-                <div class="map-legend-row">
-                  <span class="map-legend-item"><span class="map-legend-swatch map-legend-low" aria-hidden="true"></span>Χαμηλή τιμή</span>
-                  <span class="map-legend-item"><span class="map-legend-swatch map-legend-mid" aria-hidden="true"></span>Μεσαία τιμή</span>
-                  <span class="map-legend-item"><span class="map-legend-swatch map-legend-high" aria-hidden="true"></span>Υψηλή τιμή</span>
-                </div>
-                <div class="map-legend-row">
-                  <span class="map-legend-item"><span class="map-legend-swatch map-legend-same" aria-hidden="true"></span>Ίδια κατηγορία</span>
-                  <span class="map-legend-item"><span class="map-legend-swatch map-legend-similar" aria-hidden="true"></span>Παρόμοιο</span>
-                  <span class="map-legend-item"><span class="map-legend-swatch map-legend-own" aria-hidden="true"></span>Εσείς</span>
-                </div>
-              </div>
-            </div>
           </div>
         </section>
 
@@ -617,7 +285,7 @@ const FACILITY_MATCHERS = [
           <div *ngIf="autoMatchPending()" class="results-empty" data-testid="auto-match-pending">
             <span>{{ autoMatchPendingMessage }}</span>
           </div>
-          <div *ngIf="autoMatchNotice()" class="alert alert-error" data-testid="auto-match-notice">{{ autoMatchNotice() }}</div>
+          <div *ngIf="autoMatchNotice()" class="alert" [class.alert-error]="isAgentFailureNotice(autoMatchNotice())" data-testid="auto-match-notice">{{ autoMatchNotice() }}</div>
 
           <div *ngIf="status() === 'loading'" class="results-empty">
             <strong>Γίνεται αναζήτηση</strong>
@@ -649,7 +317,12 @@ const FACILITY_MATCHERS = [
           <div class="competitor-list">
             <label
               *ngFor="let competitor of competitors()"
+              appCompetitorCard
               class="competitor-card"
+              [competitor]="competitor"
+              [selected]="selectedKeys().has(markerKey(competitor))"
+              [matchScore]="matchRoomEnabled ? matchScoreFor(competitor.hotel_name) : null"
+              (selectionToggle)="toggleCompetitor(markerKey(competitor))"
               [class.is-highlighted]="highlightedCardKey() === hotelKey(competitor)"
               [attr.data-hotel-key]="hotelKey(competitor)"
               (mouseenter)="highlightMarker(hotelKey(competitor))"
@@ -657,49 +330,7 @@ const FACILITY_MATCHERS = [
               (focusin)="highlightMarker(hotelKey(competitor))"
               (focusout)="unhighlightMarker(hotelKey(competitor))"
               (click)="easeToMarker($event, hotelKey(competitor))"
-            >
-              <input
-                type="checkbox"
-                [checked]="selectedKeys().has(markerKey(competitor))"
-                (change)="toggleCompetitor(markerKey(competitor))"
-              >
-              <span class="competitor-body">
-                <span class="card-row">
-                  <strong>{{ competitor.hotel_name }}</strong>
-                  <b>{{ formatEuro(competitor.price_per_night_eur) }}</b>
-                </span>
-                <small>{{ competitor.room_type || competitor.room_type_category || competitor.property_type }}</small>
-                <!-- Spec §4.6: the category chip and the distance, each only when the API sent it. -->
-                <span
-                  *ngIf="categoryLabel(competitor.category_match) || formatDistance(competitor.distance_km) || competitor.comparable === false"
-                  class="card-row compact card-tags"
-                >
-                  <span
-                    *ngIf="categoryLabel(competitor.category_match) as category"
-                    class="category-chip"
-                    [class.is-similar]="competitor.category_match === 'similar'"
-                    data-testid="card-category"
-                  >{{ category }}</span>
-                  <!-- «Μόνο συγκρίσιμα» off: the agent's "not comparable" verdict, muted. -->
-                  <span
-                    *ngIf="competitor.comparable === false"
-                    class="category-chip is-not-comparable"
-                    data-testid="not-comparable-chip"
-                  >Μη συγκρίσιμο</span>
-                  <small *ngIf="formatDistance(competitor.distance_km) as distance" data-testid="card-distance">{{ distance }}</small>
-                </span>
-                <span class="card-row compact">
-                  <small>Βαθμολογία {{ competitor.review_score.toFixed(1) }} ({{ competitor.review_count }})</small>
-                  <small>{{ roomsLeftLabel(competitor.rooms_left) }}</small>
-                </span>
-                <span *ngIf="matchRoomEnabled && matchScoreFor(competitor.hotel_name) !== null" class="card-row compact">
-                  <small>Ταίριασμα</small>
-                  <span class="match-chip" [ngClass]="matchChipClass(matchScoreFor(competitor.hotel_name))">
-                    {{ formatScore(matchScoreFor(competitor.hotel_name)) }}
-                  </span>
-                </span>
-              </span>
-            </label>
+            ></label>
           </div>
           <!-- Once under the results, not per card (spec §5): where every shown price comes from. -->
           <p *ngIf="competitors().length" class="price-source-note" data-testid="price-source-note">
@@ -728,7 +359,7 @@ const FACILITY_MATCHERS = [
                   (click)="reassessMatches()"
                 >{{ reassessInFlight() ? "Εκτίμηση σε εξέλιξη…" : "Επανεκτίμηση ταιριάσματος" }}</button>
               </div>
-              <div *ngIf="reassessNotice()" class="alert alert-error" data-testid="reassess-notice">{{ reassessNotice() }}</div>
+              <div *ngIf="reassessNotice()" class="alert" [class.alert-error]="isAgentFailureNotice(reassessNotice())" data-testid="reassess-notice">{{ reassessNotice() }}</div>
               <label>
                 <span>Ελάχιστο σκορ ταιριάσματος: {{ minMatchScore }}</span>
                 <input type="range" min="0" max="100" step="5" [ngModel]="minMatchScore" (ngModelChange)="onMinScoreChange($event)">
@@ -751,89 +382,17 @@ const FACILITY_MATCHERS = [
                 <span>Μειώστε το ελάχιστο σκορ ταιριάσματος ή τρέξτε πρώτα νέα αναζήτηση ανταγωνιστών.</span>
               </div>
               <div *ngIf="matchedCompetitors().length" class="matched-list">
-                <article *ngFor="let hotel of matchedCompetitors(); index as hotelIndex" class="matched-card">
-                  <span class="card-row">
-                    <strong>{{ hotel.hotel_name }}</strong>
-                    <span class="match-chip" [ngClass]="matchChipClass(hotel.best_match_score)">
-                      {{ formatScore(hotel.best_match_score) }}
-                    </span>
-                  </span>
-                  <small>
-                    {{ formatExactEuro(hotel.price_min_eur) }}&ndash;{{ formatExactEuro(hotel.price_max_eur) }}
-                    &middot; Βαθμολογία {{ hotel.review_score.toFixed(1) }} ({{ hotel.review_count }})
-                    <ng-container *ngIf="formatDistance(hotel.distance_km) as distance">&middot; {{ distance }}</ng-container>
-                  </small>
-                  <span class="matched-packages">
-                    <ng-container *ngFor="let group of roomGroupsFor(hotel)">
-                      <ng-container *ngIf="!group.rangeLabel">
-                        <ng-container *ngFor="let pkg of group.packages">
-                          <!-- No rate-plan data (old rows): today's plain row. -->
-                          <ng-container *ngIf="!pkg.rate_plan">
-                            <span class="card-row compact">
-                              <small>{{ pkg.room_type }}</small>
-                              <span class="matched-package-meta">
-                                <span *ngIf="pkg.comparable === false" class="rate-plan-chip is-not-comparable" data-testid="not-comparable-chip">Μη συγκρίσιμο</span>
-                                <small>{{ formatExactEuro(pkg.price_per_night_eur) }}</small>
-                                <span class="match-chip" [ngClass]="matchChipClass(pkg.match_score)">
-                                  {{ formatScore(pkg.match_score) }}
-                                </span>
-                              </span>
-                            </span>
-                            <!-- Agents (spec Α.4): the agent's own line under the chip; statistical rows carry null and get nothing. -->
-                            <small *ngIf="pkg.match_reasoning" class="match-reasoning" data-testid="match-reasoning">{{ pkg.match_reasoning }}</small>
-                          </ng-container>
-                          <!-- A room's ONLY plan (spec §5): the guest-visible price and its
-                               chips inline — nothing to collapse, so no range or button. -->
-                          <span *ngIf="pkg.rate_plan" class="card-row compact">
-                            <small>{{ pkg.room_type }}</small>
-                            <span class="rate-plan-row single-plan-row" data-testid="single-plan-row">
-                              <ng-container *ngTemplateOutlet="planStrip; context: { $implicit: pkg }"></ng-container>
-                            </span>
-                          </span>
-                        </ng-container>
-                      </ng-container>
-                      <!-- Spec §5: several rate plans of one room collapse into a range and open on demand. -->
-                      <ng-container *ngIf="group.rangeLabel">
-                        <span class="card-row compact">
-                          <small>{{ group.room_type }}</small>
-                          <span class="matched-package-meta">
-                            <small data-testid="room-price-range">{{ group.rangeLabel }}</small>
-                            <button
-                              type="button"
-                              class="text-button plans-toggle"
-                              [attr.aria-expanded]="plansExpanded(hotelIndex, group)"
-                              (click)="togglePlans(hotelIndex, group)"
-                            >Πλάνα τιμών</button>
-                          </span>
-                        </span>
-                        <span *ngIf="plansExpanded(hotelIndex, group)" class="rate-plan-list" data-testid="rate-plan-list">
-                          <span *ngFor="let pkg of group.packages" class="rate-plan-row" data-testid="rate-plan-row">
-                            <ng-container *ngTemplateOutlet="planStrip; context: { $implicit: pkg }"></ng-container>
-                          </span>
-                        </span>
-                      </ng-container>
-                    </ng-container>
-                  </span>
-                </article>
+                <article
+                  *ngFor="let hotel of matchedCompetitors(); index as hotelIndex"
+                  appMatchedCompetitorCard
+                  class="matched-card"
+                  [hotel]="hotel"
+                  [groups]="roomGroupsFor(hotel)"
+                  [hotelIndex]="hotelIndex"
+                  [expandedPlanKeys]="expandedPlanKeys()"
+                  (plansToggle)="togglePlans(hotelIndex, $event)"
+                ></article>
               </div>
-              <!-- One plan's price + chips, rendered identically wherever a plan shows
-                   (the opened list and a room's only plan) so the two cannot drift. -->
-              <ng-template #planStrip let-pkg>
-                <b class="rate-plan-price">{{ formatExactEuro(effectivePlanPrice(pkg)) }}</b>
-                <span *ngIf="pkg.rate_plan?.has_genius_discount" class="rate-plan-chip">Genius</span>
-                <span *ngIf="pkg.rate_plan?.discount_label" class="rate-plan-chip">{{ pkg.rate_plan?.discount_label }}</span>
-                <span *ngIf="cancellationChipLabel(pkg.rate_plan?.cancellation_type) as cancellation" class="rate-plan-chip">
-                  {{ cancellation }}
-                </span>
-                <span *ngIf="pkg.rate_plan?.payment_label" class="rate-plan-chip">{{ pkg.rate_plan?.payment_label }}</span>
-                <span *ngIf="pkg.comparable === false" class="rate-plan-chip is-not-comparable" data-testid="not-comparable-chip">Μη συγκρίσιμο</span>
-                <small *ngIf="pkg.meals" class="rate-plan-meals">{{ pkg.meals }}</small>
-                <span class="match-chip" [ngClass]="matchChipClass(pkg.match_score)">
-                  {{ formatScore(pkg.match_score) }}
-                </span>
-                <!-- Agents (spec Α.4): full-basis, so it wraps onto its own line under the chip. -->
-                <small *ngIf="pkg.match_reasoning" class="match-reasoning" data-testid="match-reasoning">{{ pkg.match_reasoning }}</small>
-              </ng-template>
             </ng-container>
           </div>
         </aside>
@@ -843,9 +402,11 @@ const FACILITY_MATCHERS = [
     </main>
   `,
 })
-export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
-  @ViewChild("mapContainer") mapContainer?: ElementRef<HTMLDivElement>;
-  @ViewChild("scrapeProgressBlock") scrapeProgressBlock?: ElementRef<HTMLDivElement>;
+export class MapPageComponent implements OnInit, OnDestroy {
+  // The Mapbox map. Its markers are imperative, so the page still decides
+  // WHEN they are redrawn (renderMarkers after a load, a tick or a filter
+  // change); what they show is read through mapSource at that moment.
+  @ViewChild(CompetitorMapComponent) private mapView?: CompetitorMapComponent;
 
   mapboxToken = environment.mapboxToken;
   // Bound to the filter checkbox's label, so the control and the two messages
@@ -911,9 +472,6 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
   // rather than by the user or the wizard (see there). Starts false with every
   // navigation, so the notice cannot outlive the visit it describes.
   readonly autoPickedRoom = signal(false);
-  // The map's OWN failure, kept strictly apart from `error`/`status`, which
-  // belong to the competitor results (chip task_8fecd58c).
-  readonly mapError = signal("");
   readonly filters = signal<MapFilters>({
     destination: "",
     check_in: DEFAULT_STAY.checkIn,
@@ -985,7 +543,7 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
   private readonly matchedRoomGroups = computed(() => {
     const groups = new Map<Competitor, RoomPlanGroup[]>();
     for (const hotel of this.matchedCompetitors()) {
-      groups.set(hotel, this.buildRoomGroups(hotel.packages ?? []));
+      groups.set(hotel, buildRoomGroups(hotel.packages ?? []));
     }
     return groups;
   });
@@ -995,7 +553,7 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
   // (after an await) write it. Cleared whenever a match load LANDS — rows the
   // server just re-sent are new rows, and an old key must not leave a list of
   // a later search pre-opened.
-  private readonly expandedPlanKeys = signal<Set<string>>(new Set());
+  readonly expandedPlanKeys = signal<Set<string>>(new Set());
 
   readonly roomOptions = computed(() =>
     this.roomTypes().map((item) => ({
@@ -1173,7 +731,7 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
   // all lack coordinates leave a genuinely empty map, and the overlay has to
   // say so instead of staying hidden behind a non-zero count.
   readonly plottableCompetitors = computed(() =>
-    this.competitors().filter((competitor) => this.isValidCoordinate(competitor)),
+    this.competitors().filter((competitor) => hasValidCoordinates(competitor)),
   );
   readonly visibleCompetitors = computed(() => {
     const plottable = this.plottableCompetitors();
@@ -1198,19 +756,6 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
   // The API knows the hotel and cannot place it: the map says so instead of
   // leaving the owner to wonder where «Εσείς» went.
   readonly ownCoordinatesMissing = computed(() => Boolean(this.ownProperty()) && !this.ownLocation());
-  // The radius (km) of the circle the map was really given, or null. Written
-  // from the map's "load" callback too, so a signal; rendered as
-  // data-radius-km on the map container, since the circle itself is WebGL.
-  readonly radiusCircleKm = signal<number | null>(null);
-  // True below PRICE_LABEL_MIN_ZOOM. Written from Mapbox's zoomend, outside the
-  // zone, so a signal; the template puts it on the map container, where the
-  // stylesheet turns the competitor pills into dots.
-  readonly mapZoomedOut = signal(false);
-  // How many times the camera has been fitted to the content. Written after
-  // awaits (render chains), so a signal; rendered as data-fit-count on the map
-  // container purely so tests can assert a re-read did NOT move the camera —
-  // the fit itself is WebGL and leaves nothing else observable in the DOM.
-  readonly mapFitCount = signal(0);
   readonly showMapLegend = computed(() =>
     Boolean(this.mapboxToken) && (this.visibleCompetitors().length > 0 || this.ownLocation() !== null));
   // The summary box renders only a summary that describes something: a read
@@ -1234,33 +779,25 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
   private ownedPropertyId = "";
   private rawDestination = "";
   private hotelMatchScores = new Map<string, number>();
-  private mapboxModule: MapboxModule | null = null;
-  private map: mapboxgl.Map | null = null;
-  // Keyed by hotel (hotelKey). Plain, not a signal: never rendered, and only
-  // the imperative marker code reads it.
-  private readonly markerEntries = new Map<string, MarkerEntry>();
-  // Map ↔ list linking, both keyed by hotelKey: the marker raised while its
-  // card is hovered or focused, and the card flashed after a marker click.
-  // Signals: the flash is written from a Mapbox DOM listener and cleared by a
-  // timer (AGENTS.md), and the template reads the card one.
-  readonly highlightedMarkerKey = signal<string | null>(null);
+  // Map ↔ list linking, keyed by hotelKey: the card flashed after a marker
+  // click (the map raises the marker of a hovered card itself). A signal: the
+  // flash is written from a Mapbox DOM listener and cleared by a timer
+  // (AGENTS.md), and the template reads it.
   readonly highlightedCardKey = signal<string | null>(null);
   private cardHighlightTimer: ReturnType<typeof window.setTimeout> | null = null;
   private readonly hostElement: ElementRef<HTMLElement> = inject(ElementRef);
-  // The «Εσείς» marker and its circle, imperative like the competitor markers:
-  // plain fields, never rendered (what the template shows reads the ownProperty
-  // and radiusCircleKm signals). `ownMapSignature` is where the last fit saw
-  // them (position and radius), so only a real move refits the map.
-  // `styleReady` flips in the "load" handler: a source can only be added to a
-  // loaded style.
-  private ownMarker: mapboxgl.Marker | null = null;
-  private ownMarkerPopup: mapboxgl.Popup | null = null;
-  private ownPopupHtml = "";
-  private ownMapSignature = "";
-  private radiusPolygon: Feature<Polygon> | null = null;
-  private styleReady = false;
-  private resizeObserver: ResizeObserver | null = null;
-  private didFitMarkers = false;
+  // What the map draws, read by the map at render time.
+  readonly mapSource: CompetitorMapSource = {
+    visibleCompetitors: () => this.visibleCompetitors(),
+    selectedKeys: () => this.selectedKeys(),
+    ownProperty: () => this.ownProperty(),
+    ownLocation: () => this.ownLocation(),
+    popupMatchScore: (hotelName) => (this.matchRoomEnabled ? this.matchScoreFor(hotelName) : null),
+  };
+  // The card/marker identities and the one format the page itself renders.
+  readonly markerKey = markerKey;
+  readonly hotelKey = hotelKey;
+  readonly formatEuro = formatEuro;
   // Signals, not plain fields (chip task_a934b51e): both are written after an
   // await inside the load/restore chains, i.e. outside the Angular zone, so
   // AGENTS.md puts them on the signal side of the line even though nothing
@@ -1342,11 +879,6 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
     }
   }
 
-  async ngAfterViewInit(): Promise<void> {
-    this.clearMarkers();
-    await this.initializeMap();
-  }
-
   ngOnDestroy(): void {
     this.destroyed = true;
     if (this.saveMessageTimeout) {
@@ -1359,11 +891,6 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
       window.clearTimeout(this.cardHighlightTimer);
     }
     this.stopScrapeProgress();
-    this.resizeObserver?.disconnect();
-    this.clearMarkers();
-    this.removeOwnMarker();
-    this.map?.remove();
-    this.map = null;
   }
 
   /**
@@ -1380,31 +907,14 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
     this.setupProgress.setAvailableCompetitors(rows.filter((row) => row.property_id).length);
   }
 
-  markerKey(marker: CompetitorMapMarker): string {
-    return marker.room_package_id || marker.property_id || `${marker.hotel_name}-${marker.latitude}-${marker.longitude}`;
-  }
-
-  /**
-   * The map marker's identity: one marker per hotel, whatever package a row
-   * carries (spec §4.5). The cards carry it too, so a card and its marker can
-   * find each other.
-   */
-  hotelKey(marker: CompetitorMapMarker): string {
-    return marker.property_id || marker.hotel_name;
-  }
-
   /** A card under the pointer or keyboard focus: its hotel's marker is raised and outlined. */
   highlightMarker(key: string): void {
-    this.highlightedMarkerKey.set(key);
-    this.applyMarkerHighlight();
+    this.mapView?.highlightMarker(key);
   }
 
   /** Only the card that raised the marker lowers it (a late mouseleave must not undo a newer focus). */
   unhighlightMarker(key: string): void {
-    if (this.highlightedMarkerKey() === key) {
-      this.highlightedMarkerKey.set(null);
-      this.applyMarkerHighlight();
-    }
+    this.mapView?.unhighlightMarker(key);
   }
 
   /**
@@ -1415,22 +925,7 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
    * what it always was.
    */
   easeToMarker(event: Event, key: string): void {
-    if (event.target instanceof HTMLInputElement) {
-      return;
-    }
-    const entry = this.markerEntries.get(key);
-    if (!this.map || !entry) {
-      return;
-    }
-    this.map.easeTo({ center: [entry.lng, entry.lat], zoom: this.map.getZoom(), duration: 600 });
-  }
-
-  /** The markers are imperative: the highlighted one is written onto them here and after every repaint. */
-  private applyMarkerHighlight(): void {
-    const key = this.highlightedMarkerKey();
-    for (const [entryKey, entry] of this.markerEntries) {
-      entry.element.classList.toggle("is-highlighted", entryKey === key);
-    }
+    this.mapView?.easeToMarker(event, key);
   }
 
   /**
@@ -1439,7 +934,7 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
    * Runs in a Mapbox DOM listener, hence the signal and a timer that ngOnDestroy
    * clears; a newer click restarts the flash for its own hotel.
    */
-  private flashCard(key: string): void {
+  flashCard(key: string): void {
     this.highlightedCardKey.set(key);
     if (this.cardHighlightTimer) {
       window.clearTimeout(this.cardHighlightTimer);
@@ -1585,7 +1080,7 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
     this.refreshSearchResultMessage();
     // Markers are created imperatively, so the computed change alone repaints
     // nothing on the map itself.
-    this.renderMarkers();
+    this.mapView?.renderMarkers();
   }
 
   /** The banner for a search that returned rooms, true for the filters as they are. */
@@ -1627,14 +1122,6 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
     }
   }
 
-  formatEuro(value: number): string {
-    return new Intl.NumberFormat("el-GR", {
-      style: "currency",
-      currency: "EUR",
-      maximumFractionDigits: 0,
-    }).format(value || 0);
-  }
-
   /**
    * The three counted phrases the page renders, each built whole in TS.
    *
@@ -1665,10 +1152,6 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
       parts.push(`Παρόμοια ${summary.similar_hotels}`);
     }
     return parts.join(" · ");
-  }
-
-  roomsLeftLabel(roomsLeft: number): string {
-    return roomsLeft === 1 ? "1 διαθέσιμο δωμάτιο" : `${roomsLeft} διαθέσιμα δωμάτια`;
   }
 
   toggleAmenity(amenity: string): void {
@@ -1849,7 +1332,7 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
     // (still possibly in flight) stop clobbering this selection.
     this.userTouchedSelection.set(true);
     this.persistCompetitorSelection();
-    this.renderMarkers();
+    this.mapView?.renderMarkers();
   }
 
   async findCompetitors(): Promise<void> {
@@ -1899,14 +1382,14 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
     // No job-scoped result on screen any more, so no job stay either: reads
     // between here and the new job's own load must fall back to the filters.
     this.activeJobScope.set(null);
-    this.didFitMarkers = false;
+    this.mapView?.resetFit();
     this.marketSummary.set(null);
     this.marketSummaryStatus.set("idle");
     this.matchedCompetitors.set([]);
     this.hotelMatchScores.clear();
     this.matchError.set("");
     this.matchStatus.set("idle");
-    this.clearMarkers();
+    this.mapView?.clearMarkers();
     // No deep_crawl_max_items any more: the server derives it from its own
     // hotel cap, which also counts the nearby areas (spec §3.1).
     const resultLimit = this.readBoundedNumber(this.filters().limit, 40, 1, 80);
@@ -1916,7 +1399,8 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
     // The block renders under the Find button, which sits at the foot of a
     // long, scrolling form: bring it into view once it is on the page. Centred,
     // because it grows by a line once the stage-2 counts arrive.
-    window.setTimeout(() => this.scrapeProgressBlock?.nativeElement.scrollIntoView({ block: "center" }), 0);
+    window.setTimeout(() => this.hostElement.nativeElement.querySelector<HTMLElement>(".scrape-progress")
+      ?.scrollIntoView({ block: "center" }), 0);
 
     try {
       const job = await this.api.post<ScrapeJobResponse>("/api/v1/scrape-jobs/", {
@@ -2039,7 +1523,7 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
 
   toggleFiltersSidebar(): void {
     this.filtersCollapsed.update((collapsed) => !collapsed);
-    window.setTimeout(() => this.map?.resize(), 0);
+    window.setTimeout(() => this.mapView?.resize(), 0);
   }
 
   private openFiltersSidebar(): void {
@@ -2058,7 +1542,7 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
       this.matchSource.set("statistical");
       this.reassessNotice.set("");
       // Rebuild popups without the match row.
-      this.renderMarkers();
+      this.mapView?.renderMarkers();
       return;
     }
     void this.refreshRoomMatches();
@@ -2080,113 +1564,17 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
     return typeof score === "number" ? score : null;
   }
 
-  matchChipClass(score: number | null | undefined): string {
-    if (score == null) {
-      return "match-chip-low";
-    }
-    if (score >= 75) {
-      return "match-chip-high";
-    }
-    if (score >= 45) {
-      return "match-chip-mid";
-    }
-    return "match-chip-low";
-  }
-
-  formatScore(score: number | null | undefined): string {
-    return score == null ? "—" : `${Math.round(score)}%`;
-  }
-
   roomGroupsFor(hotel: Competitor): RoomPlanGroup[] {
     return this.matchedRoomGroups().get(hotel) ?? [];
   }
 
-  /**
-   * The price the guest actually sees for a package (spec §5): the plan's
-   * discounted per-night price, falling back to the main column when the plan
-   * carries no discounted one (or predates the rate-plan columns).
-   */
-  effectivePlanPrice(pkg: CompetitorPackage): number {
-    return pkg.rate_plan?.discounted_price_per_night_eur ?? pkg.price_per_night_eur;
-  }
-
-  /**
-   * The ONE format for every price on a matched card — the header min/max,
-   * the room ranges and the plan rows: whole euros drop the cents (110 €),
-   * anything fractional keeps exactly two (87,50 €). One card must never mix
-   * a rounded 88 € with the 87,50 € it stands for, and two plans a few cents
-   * apart must never LOOK identical.
-   */
-  formatExactEuro(value: number): string {
-    const amount = value || 0;
-    const decimals = Number.isInteger(amount) ? 0 : 2;
-    return new Intl.NumberFormat("el-GR", {
-      style: "currency",
-      currency: "EUR",
-      minimumFractionDigits: decimals,
-      maximumFractionDigits: decimals,
-    }).format(amount);
-  }
-
-  /** The two cancellation classes worth a chip; anything unknown gets none rather than a guess. */
-  cancellationChipLabel(type: string | null | undefined): string {
-    if (type === "free_cancellation") {
-      return "Δωρεάν ακύρωση";
-    }
-    if (type === "non_refundable") {
-      return "Μη επιστρέψιμη";
-    }
-    return "";
-  }
-
-  plansExpanded(hotelIndex: number, group: RoomPlanGroup): boolean {
-    return this.expandedPlanKeys().has(this.planKey(hotelIndex, group));
-  }
-
   togglePlans(hotelIndex: number, group: RoomPlanGroup): void {
-    const key = this.planKey(hotelIndex, group);
+    const key = planKey(hotelIndex, group);
     const next = new Set(this.expandedPlanKeys());
     if (!next.delete(key)) {
       next.add(key);
     }
     this.expandedPlanKeys.set(next);
-  }
-
-  // The card's index, not the hotel's name: Competitor rows carry no property
-  // id, and one name can legitimately appear twice in a list.
-  private planKey(hotelIndex: number, group: RoomPlanGroup): string {
-    return `${hotelIndex}|${group.room_type}`;
-  }
-
-  /** One group per room_type, rooms in order of first appearance, packages in server order. */
-  private buildRoomGroups(packages: CompetitorPackage[]): RoomPlanGroup[] {
-    const byRoom = new Map<string, CompetitorPackage[]>();
-    for (const pkg of packages) {
-      const room = byRoom.get(pkg.room_type);
-      if (room) {
-        room.push(pkg);
-      } else {
-        byRoom.set(pkg.room_type, [pkg]);
-      }
-    }
-    return [...byRoom.entries()].map(([room_type, roomPackages]) => ({
-      room_type,
-      packages: roomPackages,
-      rangeLabel: this.roomRangeLabel(roomPackages),
-    }));
-  }
-
-  /**
-   * «από {min} € έως {max} €» over the room's effective prices (spec §5) —
-   * only for a room with MORE THAN ONE package and at least some rate-plan
-   * data. Old rows (rate_plan null everywhere) keep today's rendering.
-   */
-  private roomRangeLabel(packages: CompetitorPackage[]): string | null {
-    if (packages.length < 2 || !packages.some((pkg) => pkg.rate_plan)) {
-      return null;
-    }
-    const prices = packages.map((pkg) => this.effectivePlanPrice(pkg));
-    return `από ${this.formatExactEuro(Math.min(...prices))} έως ${this.formatExactEuro(Math.max(...prices))}`;
   }
 
   /**
@@ -2233,7 +1621,7 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
       this.matchSource.set(this.deriveMatchSource(this.matchedCompetitors()));
       this.matchStatus.set("ready");
       // Refresh popups so they include the newly loaded match scores.
-      this.renderMarkers();
+      this.mapView?.renderMarkers();
     } catch (error) {
       if (!this.isCurrentChain(generation)) {
         return;
@@ -2258,7 +1646,8 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
    * scores and the badge reflect whatever the run wrote. Every failure —
    * status "error" or "skipped", the 429 quota, a transport error — only
    * raises the fallback notice (spec Α.5): the list on screen is untouched
-   * and keeps working with the scores it already shows.
+   * and keeps working with the scores it already shows. A run still in
+   * progress elsewhere (skip_reason "in_progress") is said as such, quietly.
    */
   async reassessMatches(): Promise<void> {
     const scrapeJobId = this.activeJobId();
@@ -2277,13 +1666,18 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
       if (run?.status === "completed") {
         await this.refreshRoomMatches();
       } else {
-        this.reassessNotice.set(AGENT_UNAVAILABLE_NOTICE);
+        this.reassessNotice.set(agentRunNotice(run));
       }
     } catch {
       this.reassessNotice.set(AGENT_UNAVAILABLE_NOTICE);
     } finally {
       this.reassessInFlight.set(false);
     }
+  }
+
+  /** Red for a failed agent run; the quiet style for one still in progress. */
+  isAgentFailureNotice(notice: string): boolean {
+    return notice !== AGENT_IN_PROGRESS_NOTICE;
   }
 
   /**
@@ -2307,7 +1701,9 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
    * is the matching agent's verdict, so a completed job shown for a room the
    * agent has not judged yet gets the run by itself — at most ONCE per
    * (job, room) per visit, and a failure (error, skipped, 429, transport) is
-   * only the fallback notice, never an automatic retry.
+   * only the fallback notice, never an automatic retry. When the search's
+   * own run still holds the room, the server waits for it and answers with
+   * its verdicts; past that wait the notice says the run is in progress.
    *
    * "Not judged yet" is read from `/competitors/` with `match_room=true`:
    * `match_source` is only ever "agent" on that read. It asks with
@@ -2362,18 +1758,17 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
 
     this.autoMatchPending.set(true);
     this.autoMatchNotice.set("");
-    let completed = false;
+    let run: RoomMatchRunResponse | null = null;
     try {
       const body: RoomMatchRunRequest = { scrape_job_id: scrapeJobId, owned_room_type_id: ownedRoomTypeId };
-      const run = await this.api.post<RoomMatchRunResponse>("/api/v1/agents/room-matches", body);
-      completed = run?.status === "completed";
+      run = await this.api.post<RoomMatchRunResponse>("/api/v1/agents/room-matches", body);
     } catch {
-      completed = false;
+      run = null;
     } finally {
       this.autoMatchPending.set(false);
     }
-    if (!completed) {
-      this.autoMatchNotice.set(AGENT_UNAVAILABLE_NOTICE);
+    if (run?.status !== "completed") {
+      this.autoMatchNotice.set(agentRunNotice(run));
       return;
     }
     // The run rewrote the verdicts, so every read of this job is stale: the
@@ -2580,7 +1975,7 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
       this.selectedKeys.set(new Set());
     }
     if (!rereadsJobOnScreen) {
-      this.clearMarkers();
+      this.mapView?.clearMarkers();
     }
     const nextCompetitors = await this.api.get<CompetitorMapMarker[]>("/api/v1/maps/competitors", params);
     // Find was pressed while this read was in flight: everything below
@@ -2616,10 +2011,10 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
     // rows, not the ground they stand on — resetting here yanked the map away
     // from wherever the user had panned or zoomed it.
     if (!rereadsJobOnScreen) {
-      this.didFitMarkers = false;
+      this.mapView?.resetFit();
     }
     this.status.set("ready");
-    this.renderMarkers();
+    this.mapView?.renderMarkers();
     // The strip and match scores describe the same result set as the markers.
     void this.loadMarketSummary(scrapeJobId, generation);
     if (this.matchRoomEnabled) {
@@ -3020,239 +2415,6 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
     }
   }
 
-  private async initializeMap(): Promise<void> {
-    if (!this.mapboxToken || !this.mapContainer?.nativeElement || this.map) {
-      return;
-    }
-    try {
-      const mapboxModule = (await import("mapbox-gl")).default;
-      this.mapboxModule = mapboxModule;
-      mapboxModule.accessToken = this.mapboxToken;
-      this.map = new mapboxModule.Map({
-        container: this.mapContainer.nativeElement,
-        style: "mapbox://styles/mapbox/navigation-day-v1",
-        center: DEFAULT_CENTER,
-        zoom: DEFAULT_ZOOM,
-        pitch: 0,
-        bearing: 0,
-      });
-      this.map.addControl(new mapboxModule.NavigationControl({ showCompass: true }), "top-right");
-      this.map.addControl(new mapboxModule.ScaleControl({ unit: "metric" }), "bottom-right");
-      this.map.on("error", (event) => {
-        const message = event.error?.message;
-        if (message && !this.map?.loaded()) {
-          this.setMapError(message);
-        }
-      });
-      this.map.once("load", () => {
-        // It loaded after all (a retried style, a late tile server): the
-        // notice would be describing a map the user is looking at.
-        this.mapError.set("");
-        this.map?.resize();
-        this.styleReady = true;
-        // Reconciled, not rebuilt: markers drawn before the style arrived stay.
-        this.renderMarkers();
-        // The radius circle is a style source, which only now can be added.
-        this.renderOwnProperty();
-      });
-      this.resizeObserver = new ResizeObserver(() => this.map?.resize());
-      this.resizeObserver.observe(this.mapContainer.nativeElement);
-      // Prices only where they can be read: every finished zoom (a fit, the
-      // controls, the wheel) says whether the pills fit or become dots.
-      const syncZoomedOut = () => this.mapZoomedOut.set((this.map?.getZoom() ?? DEFAULT_ZOOM) < PRICE_LABEL_MIN_ZOOM);
-      this.map.on("zoomend", syncZoomedOut);
-      syncZoomedOut();
-      // Results that landed while Mapbox was still being imported: markers need
-      // no style, so they go on now rather than wait for "load".
-      this.renderMarkers();
-      this.renderOwnProperty();
-    } catch (error) {
-      this.setMapError(error instanceof Error ? error.message : "Δεν ήταν δυνατή η αρχικοποίηση του Mapbox.");
-    }
-  }
-
-  /**
-   * A map that cannot draw is a MAP failure, not a results failure (chip
-   * task_8fecd58c).
-   *
-   * Both call sites used to route through setError, which flips the RESULTS
-   * status to "error" and blanks message() — so one aborted style request wiped
-   * a perfectly good competitor list, its market snapshot and its empty states,
-   * for a purely presentational problem. Results state is never touched here;
-   * genuine results errors still go through setError. The raw Mapbox reason
-   * stays in the console for support rather than in a Greek sentence for the
-   * hotelier, and the notice says the one thing that matters to them.
-   */
-  private setMapError(reason: string): void {
-    console.warn("RoomRate: the Mapbox map failed to load —", reason);
-    this.mapError.set(MAP_LOAD_FAILED_MESSAGE);
-  }
-
-  /**
-   * Bring the competitor markers in line with what the map should show.
-   *
-   * Reconciled per hotel (hotelKey), never rebuilt (spec §4.5): a marker still
-   * wanted keeps its Mapbox Marker and Popup and only has its classes, label
-   * and popup content brought up to date, a new hotel gets a marker and a hotel
-   * no longer shown loses its own. Every repaint used to drop and recreate every
-   * marker, so ticking a card, flipping the map filter or re-reading the job
-   * closed the popup the user was reading. clearMarkers() is for teardown and a
-   * fresh start only.
-   */
-  private renderMarkers(): void {
-    const map = this.map;
-    const mapboxModule = this.mapboxModule;
-    if (!map || !mapboxModule) {
-      return;
-    }
-    map.resize();
-    // One marker per hotel: two packages of one hotel sit on the same spot,
-    // where only the top marker could ever be clicked. The first row (the
-    // API's order) speaks for the hotel, which counts as selected when any of
-    // its rows is ticked. Already coordinate-filtered by the computed itself.
-    const selectedKeys = this.selectedKeys();
-    const wanted = new Map<string, { competitor: CompetitorMapMarker; isSelected: boolean }>();
-    for (const competitor of this.visibleCompetitors()) {
-      const key = this.hotelKey(competitor);
-      const isSelected = selectedKeys.has(this.markerKey(competitor));
-      const existing = wanted.get(key);
-      if (existing) {
-        existing.isSelected = existing.isSelected || isSelected;
-      } else {
-        wanted.set(key, { competitor, isSelected });
-      }
-    }
-
-    for (const [key, entry] of this.markerEntries) {
-      if (!wanted.has(key)) {
-        entry.marker.remove();
-        this.markerEntries.delete(key);
-      }
-    }
-    // The colour bands of THIS set of markers: the map filter or a re-read
-    // moves them with what is drawn.
-    const tertiles = priceTertiles(Array.from(wanted.values(), ({ competitor }) => competitor.price_per_night_eur));
-    for (const [key, { competitor, isSelected }] of wanted) {
-      let entry = this.markerEntries.get(key);
-      if (!entry) {
-        entry = this.createMarkerEntry(map, mapboxModule, competitor);
-        this.markerEntries.set(key, entry);
-      }
-      this.updateMarkerEntry(entry, competitor, isSelected, tertiles);
-    }
-    // A marker drawn while its card is hovered comes up already raised.
-    this.applyMarkerHighlight();
-    this.fitMapToContent();
-  }
-
-  private createMarkerEntry(map: mapboxgl.Map, mapboxModule: MapboxModule, competitor: CompetitorMapMarker): MarkerEntry {
-    const element = document.createElement("button");
-    element.type = "button";
-    element.className = "roomrate-marker-dot";
-    const pricePill = document.createElement("span");
-    pricePill.className = "price-pill";
-    element.appendChild(pricePill);
-    const popup = new mapboxModule.Popup({
-      closeButton: true,
-      closeOnClick: true,
-      maxWidth: "280px",
-      // Clears the price pill, which is taller than the old 16 px dot.
-      offset: 18,
-    });
-    const marker = new mapboxModule.Marker({ element, anchor: "center" })
-      .setLngLat([competitor.longitude, competitor.latitude])
-      .setPopup(popup)
-      .addTo(map);
-    // Beside Mapbox's own click (which opens the popup): point the list at the
-    // hotel. The key is fixed for the entry's life, the map key it lives under.
-    const key = this.hotelKey(competitor);
-    element.addEventListener("click", () => this.flashCard(key));
-    return { marker, element, pricePill, popup, popupHtml: "", lng: competitor.longitude, lat: competitor.latitude };
-  }
-
-  /**
-   * Write one hotel's current state onto its marker, in place.
-   *
-   * classList, never className: Mapbox put its own classes on the element
-   * (`mapboxgl-marker`, the anchor), and overwriting them unpositions it.
-   */
-  private updateMarkerEntry(
-    entry: MarkerEntry,
-    competitor: CompetitorMapMarker,
-    isSelected: boolean,
-    tertiles: PriceTertiles | null,
-  ): void {
-    const { element, pricePill } = entry;
-    const price = this.formatEuro(competitor.price_per_night_eur);
-    // The price pill (spec §4.4): the number is readable without opening anything.
-    if (pricePill.textContent !== price) {
-      pricePill.textContent = price;
-    }
-    element.classList.remove(...PRICE_BAND_CLASSES);
-    element.classList.add(this.priceClass(competitor.price_per_night_eur, tertiles));
-    // Outlined for a room of another category, filled for the owner's own.
-    // Unknown (an older API) stays filled: nothing says it is not comparable.
-    element.classList.toggle("is-similar", competitor.category_match === "similar");
-    element.classList.toggle("is-selected", isSelected);
-    // The ring drawn by `is-selected` is styling; this attribute is the state
-    // itself, so tests (and the filter above) read it rather than a class.
-    element.dataset["selected"] = String(isSelected);
-    // A ring or an outline is invisible to a screen reader, so the label
-    // carries the same facts in words (the 4.1 a11y gap, closed in 5.1 now the
-    // page speaks Greek throughout). The hotel name stays FIRST:
-    // map-auto-plot.spec.ts finds a marker by `[aria-label*="<hotel name>"]`,
-    // and so does anyone scanning the labels by ear.
-    const category = this.categoryLabel(competitor.category_match);
-    element.setAttribute(
-      "aria-label",
-      `${competitor.hotel_name}, ${price} ανά βράδυ`
-        + (category ? `, ${category.toLocaleLowerCase("el-GR")}` : "")
-        + (isSelected ? ", επιλεγμένο για παρακολούθηση" : ""),
-    );
-    if (entry.lng !== competitor.longitude || entry.lat !== competitor.latitude) {
-      entry.marker.setLngLat([competitor.longitude, competitor.latitude]);
-      entry.lng = competitor.longitude;
-      entry.lat = competitor.latitude;
-    }
-    const popupHtml = this.buildPopupHtml(competitor);
-    if (popupHtml !== entry.popupHtml) {
-      entry.popup.setHTML(popupHtml);
-      entry.popupHtml = popupHtml;
-    }
-  }
-
-  /**
-   * Fit the map to what it shows, once per load (didFitMarkers): the
-   * competitor markers, «Εσείς» and the whole radius circle (spec §4.3).
-   */
-  private fitMapToContent(): void {
-    if (!this.map || !this.mapboxModule || this.didFitMarkers) {
-      return;
-    }
-    const bounds = new this.mapboxModule.LngLatBounds();
-    for (const entry of this.markerEntries.values()) {
-      bounds.extend([entry.lng, entry.lat]);
-    }
-    if (this.ownMarker) {
-      bounds.extend(this.ownMarker.getLngLat());
-    }
-    for (const [lng, lat] of this.radiusPolygon?.geometry.coordinates[0] ?? []) {
-      bounds.extend([lng, lat]);
-    }
-    if (bounds.isEmpty()) {
-      return;
-    }
-    this.didFitMarkers = true;
-    this.mapFitCount.update((count) => count + 1);
-    this.map.fitBounds(bounds, {
-      padding: { top: 80, right: 80, bottom: 90, left: 80 },
-      maxZoom: 14,
-      pitch: 0,
-      bearing: 0,
-      duration: 700,
-    });
-  }
-
   /**
    * Read the owner's own hotel for the map (spec §4.3): «Εσείς», its radius
    * circle and its own Booking price, for `scrapeJobId` ("" = no job).
@@ -3282,7 +2444,7 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
       return;
     }
     this.ownProperty.set(own);
-    this.renderOwnProperty();
+    this.mapView?.renderOwnProperty();
   }
 
   /** The response as OwnPropertyMapInfo, or null for anything else (a mock's `[]`, an HTML error page). */
@@ -3308,236 +2470,6 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
     };
   }
 
-  /**
-   * Put «Εσείς» and its radius circle on the map as ownProperty() stands, or
-   * take them off. Imperative like renderMarkers, and reconciled the same way:
-   * an existing marker is moved and updated, so its open popup survives.
-   */
-  private renderOwnProperty(): void {
-    const own = this.ownProperty();
-    const location = this.ownLocation();
-    if (!own || !location) {
-      this.removeOwnMarker();
-      this.setRadiusCircle(null);
-      return;
-    }
-    const map = this.map;
-    const mapboxModule = this.mapboxModule;
-    if (!map || !mapboxModule) {
-      return;
-    }
-    const lngLat: [number, number] = [location.lng, location.lat];
-    if (!this.ownMarker) {
-      const element = document.createElement("button");
-      element.type = "button";
-      element.className = "roomrate-marker-own";
-      element.textContent = "Εσείς";
-      this.ownMarkerPopup = new mapboxModule.Popup({ closeButton: true, closeOnClick: true, maxWidth: "280px", offset: 18 });
-      this.ownPopupHtml = "";
-      this.ownMarker = new mapboxModule.Marker({ element, anchor: "center" })
-        .setLngLat(lngLat)
-        .setPopup(this.ownMarkerPopup)
-        .addTo(map);
-    } else {
-      const current = this.ownMarker.getLngLat();
-      if (current.lng !== location.lng || current.lat !== location.lat) {
-        this.ownMarker.setLngLat(lngLat);
-      }
-    }
-    this.ownMarker.getElement().setAttribute("aria-label", `Εσείς: ${own.display_name}`);
-    const popupHtml = this.buildOwnPopupHtml(own);
-    if (popupHtml !== this.ownPopupHtml) {
-      this.ownMarkerPopup?.setHTML(popupHtml);
-      this.ownPopupHtml = popupHtml;
-    }
-
-    const radiusKm = typeof own.radius_km === "number" && own.radius_km > 0 ? own.radius_km : null;
-    this.setRadiusCircle(radiusKm === null ? null : circlePolygon(location.lng, location.lat, radiusKm), radiusKm);
-    // A hotel that moved or a radius that changed is new ground to show;
-    // the same answer read again is not, and must not yank the map back.
-    const signature = `${location.lng},${location.lat},${radiusKm ?? ""}`;
-    if (signature !== this.ownMapSignature) {
-      this.ownMapSignature = signature;
-      this.didFitMarkers = false;
-    }
-    this.fitMapToContent();
-  }
-
-  private buildOwnPopupHtml(own: OwnPropertyMapInfo): string {
-    const price = typeof own.price_per_night_eur === "number"
-      ? `
-        <p class="roomrate-popup__own-line">Η τιμή σας στο Booking: <strong>${this.formatEuro(own.price_per_night_eur)}</strong></p>`
-      : "";
-    const room = own.room_type ? `
-        <p class="roomrate-popup__room">${this.escapeHtml(own.room_type)}</p>` : "";
-    const radius = typeof own.radius_km === "number" && own.radius_km > 0
-      ? `
-        <p class="roomrate-popup__own-line">Ακτίνα ${this.formatRadius(own.radius_km)}</p>`
-      : "";
-    return `
-      <div class="roomrate-popup roomrate-popup--own">
-        <div class="roomrate-popup__eyebrow">Εσείς</div>
-        <h3>${this.escapeHtml(own.display_name)}</h3>${price}${room}${radius}
-      </div>
-    `;
-  }
-
-  /** «10 km», «7,5 km»: at most one decimal, with the Greek comma. */
-  private formatRadius(km: number): string {
-    return `${new Intl.NumberFormat("el-GR", { maximumFractionDigits: 1 }).format(km)} km`;
-  }
-
-  private removeOwnMarker(): void {
-    this.ownMarker?.remove();
-    this.ownMarker = null;
-    this.ownMarkerPopup = null;
-    this.ownPopupHtml = "";
-    this.ownMapSignature = "";
-  }
-
-  /**
-   * Hand the radius circle to the map, or take it off (spec §4.3).
-   *
-   * Kept even before the style has loaded — the "load" handler adds it then —
-   * so fitMapToContent can already take the whole circle into account.
-   */
-  private setRadiusCircle(polygon: Feature<Polygon> | null, radiusKm: number | null = null): void {
-    this.radiusPolygon = polygon;
-    const map = this.map;
-    if (!map || !this.styleReady) {
-      return;
-    }
-    const source = map.getSource(RADIUS_SOURCE_ID) as mapboxgl.GeoJSONSource | undefined;
-    if (!polygon) {
-      for (const layerId of [RADIUS_LINE_LAYER_ID, RADIUS_FILL_LAYER_ID]) {
-        if (map.getLayer(layerId)) {
-          map.removeLayer(layerId);
-        }
-      }
-      if (source) {
-        map.removeSource(RADIUS_SOURCE_ID);
-      }
-      this.radiusCircleKm.set(null);
-      return;
-    }
-    if (source) {
-      source.setData(polygon);
-    } else {
-      map.addSource(RADIUS_SOURCE_ID, { type: "geojson", data: polygon });
-      map.addLayer({
-        id: RADIUS_FILL_LAYER_ID,
-        type: "fill",
-        source: RADIUS_SOURCE_ID,
-        paint: { "fill-color": "#0f172a", "fill-opacity": 0.05 },
-      });
-      map.addLayer({
-        id: RADIUS_LINE_LAYER_ID,
-        type: "line",
-        source: RADIUS_SOURCE_ID,
-        paint: { "line-color": "#0f172a", "line-opacity": 0.55, "line-width": 1.5, "line-dasharray": [2, 2] },
-      });
-    }
-    this.radiusCircleKm.set(radiusKm);
-  }
-
-  private clearMarkers(): void {
-    for (const entry of this.markerEntries.values()) {
-      entry.marker.remove();
-    }
-    this.markerEntries.clear();
-    const container = this.map?.getContainer() || this.mapContainer?.nativeElement;
-    if (!container) {
-      return;
-    }
-    container.querySelectorAll(".roomrate-marker-dot").forEach((element) => {
-      (element.closest(".mapboxgl-marker") || element).remove();
-    });
-    // Competitor popups only: «Εσείς» is not a search result and outlives a new search.
-    container.querySelectorAll(".roomrate-popup:not(.roomrate-popup--own)").forEach((element) => {
-      element.closest(".mapboxgl-popup")?.remove();
-    });
-  }
-
-  private isValidCoordinate(marker: CompetitorMapMarker): boolean {
-    return Number.isFinite(marker.latitude)
-      && Number.isFinite(marker.longitude)
-      && marker.latitude >= -90
-      && marker.latitude <= 90
-      && marker.longitude >= -180
-      && marker.longitude <= 180;
-  }
-
-  private priceClass(price: number, tertiles: PriceTertiles | null): string {
-    if (!tertiles) {
-      return "roomrate-marker-dot-mid";
-    }
-    if (price <= tertiles.low) {
-      return "roomrate-marker-dot-low";
-    }
-    if (price <= tertiles.high) {
-      return "roomrate-marker-dot-mid";
-    }
-    return "roomrate-marker-dot-high";
-  }
-
-  /** «Ίδια κατηγορία» / «Παρόμοιο» (spec §3.6); empty when an older API sends no match. */
-  categoryLabel(match: CategoryMatch | null | undefined): string {
-    if (match === "same") {
-      return "Ίδια κατηγορία";
-    }
-    return match === "similar" ? "Παρόμοιο" : "";
-  }
-
-  private buildPopupHtml(marker: CompetitorMapMarker): string {
-    const propertyType = this.formatPropertyType(marker.property_type || "Κατάλυμα");
-    const roomType = marker.room_type || marker.room_type_category || "Δωμάτιο";
-    const reviewLabel = marker.review_count === 1 ? "κριτική" : "κριτικές";
-    const roomsLeftLabel = marker.rooms_left === 1 ? "δωμάτιο" : "δωμάτια";
-    const matchScore = this.matchRoomEnabled ? this.matchScoreFor(marker.hotel_name) : null;
-    const matchRow = matchScore === null ? "" : `
-          <div>
-            <dt>Ταίριασμα δωματίου</dt>
-            <dd>${Math.round(matchScore)}%</dd>
-          </div>`;
-    // Round 6 (spec §4.5): each piece only when the API sent it — an older API
-    // or an owner without coordinates leaves the line out, never shows «— km».
-    const category = this.categoryLabel(marker.category_match);
-    const distance = this.formatDistance(marker.distance_km);
-    const categoryTag = category
-      ? `<span class="roomrate-popup__category${marker.category_match === "similar" ? " is-similar" : ""}">${this.escapeHtml(category)}</span>`
-      : "";
-    const distanceTag = distance ? `<span class="roomrate-popup__distance">Απόσταση ${this.escapeHtml(distance)}</span>` : "";
-    const tags = categoryTag || distanceTag ? `
-        <div class="roomrate-popup__tags">${categoryTag}${distanceTag}</div>` : "";
-    const bookingUrl = this.safeBookingUrl(marker.booking_url);
-    const bookingLink = bookingUrl ? `
-        <div class="roomrate-popup__footer">
-          <a class="roomrate-popup__link" href="${this.escapeHtml(bookingUrl)}" target="_blank" rel="noopener">Άνοιγμα στο Booking</a>
-        </div>` : "";
-
-    return `
-      <div class="roomrate-popup">
-        <div class="roomrate-popup__eyebrow">${this.escapeHtml(propertyType)}</div>
-        <h3>${this.escapeHtml(marker.hotel_name)}</h3>${tags}
-        <div class="roomrate-popup__price">${this.formatEuro(marker.price_per_night_eur)} <span>ανά βράδυ</span></div>
-        <div class="roomrate-popup__section">
-          <span class="roomrate-popup__label">Τύπος δωματίου</span>
-          <p class="roomrate-popup__room">${this.escapeHtml(roomType)}</p>
-        </div>
-        <dl class="roomrate-popup__metrics">
-          <div>
-            <dt>Βαθμολογία</dt>
-            <dd>${marker.review_score.toFixed(1)} <span>(${marker.review_count} ${reviewLabel})</span></dd>
-          </div>
-          <div>
-            <dt>Διαθέσιμα δωμάτια</dt>
-            <dd>${marker.rooms_left} <span>${roomsLeftLabel}</span></dd>
-          </div>${matchRow}
-        </dl>${bookingLink}
-      </div>
-    `;
-  }
-
   private describeSearchWarning(code: unknown): string {
     if (typeof code !== "string") {
       return "";
@@ -3549,7 +2481,7 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
       // The radius the job ran with; the form's value for a job that predates it.
       const radiusKm = this.activeJobScope()?.radiusKm
         ?? this.readBoundedNumber(this.filters().radius_km, DEFAULT_RADIUS_KM, MIN_RADIUS_KM, MAX_RADIUS_KM);
-      return `Κανένα κατάλυμα δεν βρέθηκε μέσα στην ακτίνα των ${this.formatRadius(radiusKm)}. `
+      return `Κανένα κατάλυμα δεν βρέθηκε μέσα στην ακτίνα των ${formatRadius(radiusKm)}. `
         + "Ελέγξτε τη θέση του καταλύματός σας ή μεγαλώστε την ακτίνα.";
     }
     const nearbyPrefix = "nearby_scout_failed:";
@@ -3558,45 +2490,6 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
         + "τα υπόλοιπα αποτελέσματα εμφανίζονται κανονικά.";
     }
     return "";
-  }
-
-  /** «0,4 km»: Greek decimal comma, one decimal (spec §4.5); empty when the distance is unknown. */
-  formatDistance(km: number | null | undefined): string {
-    if (typeof km !== "number" || !Number.isFinite(km)) {
-      return "";
-    }
-    return `${new Intl.NumberFormat("el-GR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(km)} km`;
-  }
-
-  /**
-   * The listing's Booking URL, or "" for anything that is not http(s).
-   *
-   * The API already refuses other schemes; checked again here because the
-   * value lands in an href, where a `javascript:` URL would run on click.
-   */
-  private safeBookingUrl(url: string | null | undefined): string {
-    return typeof url === "string" && /^https?:\/\//i.test(url.trim()) ? url.trim() : "";
-  }
-
-  private formatPropertyType(value: string): string {
-    const normalized = value.replaceAll("_", " ").trim();
-    if (!normalized) {
-      return "Κατάλυμα";
-    }
-    return normalized
-      .split(" ")
-      .filter(Boolean)
-      .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1).toLowerCase()}`)
-      .join(" ");
-  }
-
-  private escapeHtml(value: string): string {
-    return value
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#039;");
   }
 
   private resetCompetitorSearchState(): void {
@@ -3611,7 +2504,7 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
     this.userTouchedSelection.set(false);
     this.activeScrapeJobId.set("");
     this.activeJobScope.set(null);
-    this.didFitMarkers = false;
+    this.mapView?.resetFit();
     this.marketSummary.set(null);
     this.marketSummaryStatus.set("idle");
     this.matchedCompetitors.set([]);
@@ -3621,11 +2514,11 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
     // Deliberately keep lastCompetitorJobId/lastCompetitorSelection: they feed
     // restoreLatestCompetitorSearch (stale entries clean themselves up there).
     this.message.set(START_SEARCH_MESSAGE);
-    this.clearMarkers();
+    this.mapView?.clearMarkers();
     // «Εσείς» and its circle start over with the page's context; the restore
     // (or ngOnInit, with no job) reads them again.
     this.ownProperty.set(null);
-    this.renderOwnProperty();
+    this.mapView?.renderOwnProperty();
   }
 
   private showSaveMessage(message: string, hasError: boolean): void {
@@ -3649,6 +2542,6 @@ export class MapPageComponent implements OnInit, AfterViewInit, OnDestroy {
     this.message.set("");
     // A failed re-read of the job on screen kept its markers (see loadMarkers)
     // while the rows went: bring the map back in line with the list.
-    this.renderMarkers();
+    this.mapView?.renderMarkers();
   }
 }

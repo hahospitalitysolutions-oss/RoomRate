@@ -5,7 +5,11 @@ This folder is an Angular app. Do not add Next.js, Clerk, or server-side proxy r
 Frontend browser code must call FastAPI directly with `Authorization: Bearer <Supabase JWT>`.
 Never put `INTERNAL_API_KEY`, `ROOMRATE_API_KEY`, database URLs, or other backend secrets in Angular code.
 
-The Mapbox implementation lives in `src/app/pages/map-page.component.ts` and uses Mapbox GL JS.
+The map page is `src/app/pages/map-page.component.ts` (state, load chains, results column);
+its parts live in `src/app/pages/map/`: the Mapbox GL JS map (`competitor-map.component.ts`),
+the filters sidebar, the competitor and match cards, the shared formatting helpers and the
+page's message constants. The map's markers are imperative: the page calls `renderMarkers()`
+when the shown set changes, and the map reads the page state through `CompetitorMapSource`.
 
 Any component/service state written after an `await` or inside a WebSocket/timer
 callback MUST be an Angular signal, never a plain field. supabase-js getSession()

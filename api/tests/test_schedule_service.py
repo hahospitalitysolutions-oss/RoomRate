@@ -13,7 +13,10 @@ ACCOUNT_ID = UUID("00000000-0000-0000-0000-000000000001")
 OTHER_ACCOUNT_ID = UUID("00000000-0000-0000-0000-000000000002")
 CONFIG_ID = UUID("00000000-0000-0000-0000-000000000999")
 PROPERTY_ID = UUID("00000000-0000-0000-0000-000000000456")
+# 09:00 in Athens (summer, UTC+3): a daily 08:00 schedule is due.
 NOW = datetime(2026, 6, 13, 6, 0, tzinfo=timezone.utc)
+# 08:00 in Athens in winter (UTC+2).
+WINTER_NOW = datetime(2026, 1, 15, 6, 0, tzinfo=timezone.utc)
 
 
 def _config_row(**overrides) -> dict:
@@ -22,6 +25,8 @@ def _config_row(**overrides) -> dict:
         "account_id": ACCOUNT_ID,
         "enabled": True,
         "frequency_hours": 24,
+        "hour_local": 8,
+        "timezone": "Europe/Athens",
         "hour_utc": 5,
         "lead_days": 30,
         "nights": 3,
@@ -49,7 +54,7 @@ def _property_row(**overrides) -> dict:
 class FakeScheduleRepository:
     def __init__(self, config: dict | None = None):
         self.config = config
-        self.due: list[dict] = []
+        self.enabled: list[dict] = []
         self.properties: dict[UUID, list[dict]] = {}
         self.upserts: list[tuple[UUID, dict]] = []
         self.touches: list[tuple[UUID, datetime]] = []
@@ -65,8 +70,8 @@ class FakeScheduleRepository:
         self.upserts.append((account_id, payload))
         return {**_config_row(account_id=account_id), **payload}
 
-    def list_due_configs(self, now):
-        return list(self.due)
+    def list_enabled_configs(self):
+        return list(self.enabled)
 
     def touch_last_run(self, config_id, now):
         self.touches.append((config_id, now))
@@ -121,11 +126,12 @@ class FakeAlertNotifier:
             raise RuntimeError("notifier down")
 
 
-def _service(repository=None, scrape_job_service=None, notifier=None) -> ScheduleService:
+def _service(repository=None, scrape_job_service=None, notifier=None, now=NOW) -> ScheduleService:
     return ScheduleService(
         repository=repository or FakeScheduleRepository(),
         scrape_job_service=scrape_job_service or FakeScrapeJobService(),
         notifier=notifier,
+        clock=lambda: now,
     )
 
 
@@ -142,7 +148,9 @@ def test_get_config_returns_defaults_when_account_has_no_row():
     assert config.account_id == ACCOUNT_ID
     assert config.enabled is False
     assert config.frequency_hours == 24
-    assert config.hour_utc == 5
+    assert config.hour_local == 8
+    assert config.timezone == "Europe/Athens"
+    assert config.hour_utc == 5  # 08:00 in a Greek summer
     assert config.lead_days == 30
     assert config.nights == 3
     assert config.adults == 2
@@ -153,30 +161,82 @@ def test_get_config_returns_defaults_when_account_has_no_row():
 
 
 def test_get_config_returns_persisted_row():
-    repository = FakeScheduleRepository(config=_config_row(hour_utc=7, consecutive_failures=2))
+    repository = FakeScheduleRepository(config=_config_row(hour_local=10, hour_utc=7, consecutive_failures=2))
     service = _service(repository)
 
     config = service.get_config(ACCOUNT_ID)
 
     assert config.enabled is True
-    assert config.hour_utc == 7
+    assert config.hour_local == 10
     assert config.consecutive_failures == 2
+
+
+def test_get_config_derives_the_legacy_utc_hour_for_today_not_the_stored_one():
+    """An old client converts hour_utc back with today's offset: it must see 10 all year."""
+    # Saved in summer (10:00 Athens = 07 UTC); read in winter, where 10:00 is 08 UTC.
+    repository = FakeScheduleRepository(config=_config_row(hour_local=10, hour_utc=7))
+
+    summer = _service(repository, now=NOW).get_config(ACCOUNT_ID)
+    winter = _service(repository, now=WINTER_NOW).get_config(ACCOUNT_ID)
+
+    assert (summer.hour_local, summer.hour_utc) == (10, 7)
+    assert (winter.hour_local, winter.hour_utc) == (10, 8)
 
 
 def test_update_config_merges_partial_payload_over_defaults():
     repository = FakeScheduleRepository(config=None)
     service = _service(repository)
 
-    config = service.update_config(ACCOUNT_ID, ScheduleConfigUpdate(hour_utc=8, nights=5))
+    config = service.update_config(ACCOUNT_ID, ScheduleConfigUpdate(hour_local=9, nights=5))
 
     account_id, payload = repository.upserts[0]
     assert account_id == ACCOUNT_ID
-    assert payload["hour_utc"] == 8
+    assert payload["hour_local"] == 9
     assert payload["nights"] == 5
     # Untouched fields keep their defaults so the upsert SQL stays static.
     assert payload["frequency_hours"] == 24
     assert payload["enabled"] is False
-    assert config.hour_utc == 8
+    assert config.hour_local == 9
+
+
+def test_update_config_stores_hour_utc_for_older_images_at_todays_offset():
+    """A rollback image still reads hour_utc: it follows hour_local on every save."""
+    summer_repository = FakeScheduleRepository(config=None)
+    winter_repository = FakeScheduleRepository(config=None)
+
+    _service(summer_repository, now=NOW).update_config(ACCOUNT_ID, ScheduleConfigUpdate(hour_local=8))
+    _service(winter_repository, now=WINTER_NOW).update_config(ACCOUNT_ID, ScheduleConfigUpdate(hour_local=8))
+
+    assert summer_repository.upserts[0][1]["hour_utc"] == 5
+    assert winter_repository.upserts[0][1]["hour_utc"] == 6
+
+
+def test_update_config_reads_a_legacy_hour_utc_with_todays_offset():
+    """A client built before hour_local converted 08:00 Greek time with today's offset."""
+    summer_repository = FakeScheduleRepository(config=None)
+    winter_repository = FakeScheduleRepository(config=None)
+
+    summer = _service(summer_repository, now=NOW).update_config(ACCOUNT_ID, ScheduleConfigUpdate(hour_utc=5))
+    winter = _service(winter_repository, now=WINTER_NOW).update_config(ACCOUNT_ID, ScheduleConfigUpdate(hour_utc=6))
+
+    assert summer_repository.upserts[0][1]["hour_local"] == 8
+    assert winter_repository.upserts[0][1]["hour_local"] == 8
+    # Wrap-around: 22:00 UTC is 01:00 the next day in a Greek summer.
+    wrapped_repository = FakeScheduleRepository(config=None)
+    _service(wrapped_repository, now=NOW).update_config(ACCOUNT_ID, ScheduleConfigUpdate(hour_utc=22))
+    assert wrapped_repository.upserts[0][1]["hour_local"] == 1
+    assert (summer.hour_local, winter.hour_local) == (8, 8)
+
+
+def test_update_config_prefers_hour_local_over_a_legacy_hour_utc():
+    """A current client sends both (for an API that predates hour_local): hour_local wins."""
+    repository = FakeScheduleRepository(config=None)
+
+    _service(repository).update_config(ACCOUNT_ID, ScheduleConfigUpdate(hour_local=9, hour_utc=23))
+
+    _, payload = repository.upserts[0]
+    assert payload["hour_local"] == 9
+    assert payload["hour_utc"] == 6
 
 
 def test_update_config_resets_breaker_when_enabling():
@@ -212,7 +272,7 @@ def test_update_config_keeps_breaker_when_already_enabled():
 
 def test_run_due_schedules_creates_jobs_and_touches_last_run():
     repository = FakeScheduleRepository()
-    repository.due = [_config_row()]
+    repository.enabled = [_config_row()]
     repository.properties[ACCOUNT_ID] = [_property_row()]
     scrape_job_service = FakeScrapeJobService()
     service = _service(repository, scrape_job_service)
@@ -238,9 +298,36 @@ def test_run_due_schedules_creates_jobs_and_touches_last_run():
     assert request.filters_payload == {"scheduled": True, "limit": 25}
 
 
+def test_run_due_schedules_runs_only_the_schedules_due_on_their_local_clock():
+    """Already run today (local date), or before the local hour: skipped and untouched."""
+    ran_today = _config_row(id=UUID(int=1), last_run_at=datetime(2026, 6, 13, 5, 5, tzinfo=timezone.utc))
+    later_hour = _config_row(id=UUID(int=2), hour_local=10)
+    due = _config_row(id=UUID(int=3), last_run_at=datetime(2026, 6, 12, 5, 5, tzinfo=timezone.utc))
+    repository = FakeScheduleRepository()
+    repository.enabled = [ran_today, later_hour, due]
+
+    _service(repository).run_due_schedules(NOW)
+
+    assert repository.touches == [(UUID(int=3), NOW)]
+
+
+def test_run_due_schedules_counts_lead_days_from_the_local_date():
+    """01:30 in Athens is still yesterday in UTC: the check-in follows the owner's date."""
+    just_after_midnight = datetime(2026, 6, 12, 22, 30, tzinfo=timezone.utc)
+    repository = FakeScheduleRepository()
+    repository.enabled = [_config_row(hour_local=1)]
+    repository.properties[ACCOUNT_ID] = [_property_row()]
+    scrape_job_service = FakeScrapeJobService()
+
+    _service(repository, scrape_job_service).run_due_schedules(just_after_midnight)
+
+    _, request = scrape_job_service.created[0]
+    assert request.check_in == date(2026, 7, 13)  # 13 June (Athens) + 30 days
+
+
 def test_run_due_schedules_uses_canonical_destination_when_raw_is_missing():
     repository = FakeScheduleRepository()
-    repository.due = [_config_row()]
+    repository.enabled = [_config_row()]
     repository.properties[ACCOUNT_ID] = [_property_row(raw_destination=None)]
     scrape_job_service = FakeScrapeJobService()
     service = _service(repository, scrape_job_service)
@@ -254,7 +341,7 @@ def test_run_due_schedules_uses_canonical_destination_when_raw_is_missing():
 def test_run_due_schedules_touches_last_run_even_without_schedulable_properties():
     # A broken/empty account must not re-tick on every scheduler cycle.
     repository = FakeScheduleRepository()
-    repository.due = [_config_row()]
+    repository.enabled = [_config_row()]
     service = _service(repository)
 
     created = service.run_due_schedules(NOW)
@@ -266,7 +353,7 @@ def test_run_due_schedules_touches_last_run_even_without_schedulable_properties(
 
 def test_run_due_schedules_skips_quota_errors_and_continues(caplog):
     repository = FakeScheduleRepository()
-    repository.due = [_config_row()]
+    repository.enabled = [_config_row()]
     repository.properties[ACCOUNT_ID] = [
         _property_row(),
         _property_row(id=UUID("00000000-0000-0000-0000-000000000457")),
@@ -297,7 +384,7 @@ def test_run_due_schedules_skips_quota_errors_and_continues(caplog):
 
 def test_run_due_schedules_does_not_warn_about_quota_pressure_without_skips(caplog):
     repository = FakeScheduleRepository()
-    repository.due = [_config_row()]
+    repository.enabled = [_config_row()]
     repository.properties[ACCOUNT_ID] = [_property_row()]
     service = _service(repository, FakeScrapeJobService())
 
@@ -317,7 +404,7 @@ def test_run_due_schedules_enqueues_in_repository_rotation_order():
         UUID("00000000-0000-0000-0000-000000000457"),
     ]
     repository = FakeScheduleRepository()
-    repository.due = [_config_row()]
+    repository.enabled = [_config_row()]
     repository.properties[ACCOUNT_ID] = [_property_row(id=property_id) for property_id in rotated_ids]
     scrape_job_service = FakeScrapeJobService()
     service = _service(repository, scrape_job_service)
@@ -335,7 +422,7 @@ def test_run_due_schedules_records_failure_and_continues_on_unexpected_error():
         id=UUID("00000000-0000-0000-0000-000000000998"),
         account_id=OTHER_ACCOUNT_ID,
     )
-    repository.due = [broken, healthy]
+    repository.enabled = [broken, healthy]
     repository.properties[ACCOUNT_ID] = [_property_row()]
     repository.properties[OTHER_ACCOUNT_ID] = [_property_row()]
     scrape_job_service = FakeScrapeJobService(errors=[RuntimeError("db down"), None])

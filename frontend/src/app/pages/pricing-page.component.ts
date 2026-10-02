@@ -3,22 +3,19 @@ import { Component, computed, OnInit, signal } from "@angular/core";
 import { FormsModule } from "@angular/forms";
 import { ActivatedRoute, RouterLink } from "@angular/router";
 
-import { EmptyStateComponent } from "../components/empty-state.component";
 import { NotificationBellComponent } from "../components/notification-bell.component";
 import { NotificationToastsComponent } from "../components/notification-toasts.component";
 import { ApiClientService } from "../services/api-client.service";
 import { OnboardingService } from "../services/onboarding.service";
 import { WorkflowStorageService } from "../services/workflow-storage.service";
 import { MarketSummary, OwnedPropertyRoomType, ScrapeJobResponse } from "../types/market";
-import {
-  OwnPriceSource,
-  PriceHistorySeries,
-  PricePosition,
-  PriceRecommendationResponse,
-} from "../types/pricing";
+import { PriceHistorySeries, PriceRecommendationResponse } from "../types/pricing";
 import { defaultStayDates, isPastLocalDate } from "../utils/date-defaults";
-
-type LoadingState = "idle" | "loading" | "ready" | "error";
+import { MarketStatisticsPanelComponent } from "./pricing/market-statistics-panel.component";
+import { PriceHistoryCardComponent } from "./pricing/price-history-card.component";
+import { buildHistoryChart, PriceHistoryChartView } from "./pricing/price-history-chart";
+import { formatGreekDate, LoadingState } from "./pricing/pricing-format";
+import { RecommendationCardComponent } from "./pricing/recommendation-card.component";
 
 /** The market form. Occupancy stays a string: that is what the inputs hold. */
 type PricingFilters = {
@@ -29,106 +26,6 @@ type PricingFilters = {
   rooms: string;
 };
 
-/** One scrape run as the chart draws it. */
-type HistoryRunPoint = {
-  index: number;
-  x: number;
-  y: number;
-  hitX: number;
-  hitWidth: number;
-  medianLabel: string;
-  p25Label: string;
-  p75Label: string;
-  // "" when the run has too few competitors for a meaningful spread.
-  rangeLabel: string;
-  competitorCount: number;
-  competitorLabel: string;
-  dateLabel: string;
-  timeLabel: string;
-  stampLabel: string;
-  ariaLabel: string;
-  valueY: number;
-  tooltipLeftPct: number;
-  tooltipTopPct: number;
-  tooltipAlign: "start" | "middle" | "end";
-  tooltipBelow: boolean;
-  showAxisLabel: boolean;
-  isLabelled: boolean;
-};
-
-/** One scrape run after the per-competitor prices are collapsed. */
-type AggregatedRun = {
-  runIndex: number;
-  observedAt: string | null;
-  median: number;
-  // null when the run has too few competitors for a meaningful spread.
-  p25: number | null;
-  p75: number | null;
-  competitorCount: number;
-};
-
-type PriceHistoryChartView = {
-  viewBox: string;
-  plotLeft: number;
-  plotRight: number;
-  plotTop: number;
-  plotBottom: number;
-  plotHeight: number;
-  captionY: number;
-  dateLabelY: number;
-  timeLabelY: number;
-  yTicks: Array<{ y: number; label: string }>;
-  bandSegments: string[];
-  // "" in small-sample mode: a line through 1-2 dots reads as a trend that
-  // the data cannot support.
-  linePoints: string;
-  points: HistoryRunPoint[];
-  labelledPoints: HistoryRunPoint[];
-  axisPoints: HistoryRunPoint[];
-  smallSample: boolean;
-  hasBand: boolean;
-  summaryLabel: string;
-  ariaLabel: string;
-};
-
-// Chart canvas in user units. The SVG keeps its aspect ratio while scaling to
-// the container (no preserveAspectRatio="none": that stretch distorted every
-// circle and every glyph), so these units are effectively device pixels on a
-// desktop-width card.
-const CHART_WIDTH = 560;
-const CHART_HEIGHT = 240;
-const PLOT_LEFT = 62;
-const PLOT_RIGHT = 542;
-const PLOT_TOP = 30;
-const PLOT_BOTTOM = 194;
-// Keeps the first/last dot's price label inside the canvas.
-const DOT_INSET = 26;
-// Beyond this the dots (and their hit targets) stop being separable; the
-// summary line says how many runs were left out.
-const MAX_PLOTTED_RUNS = 12;
-// Up to this many runs every dot carries its price; past it only the first,
-// last, cheapest and dearest are labelled and the rest live in the tooltip
-// and the table view.
-const MAX_LABELLED_RUNS = 4;
-const MAX_X_TICKS = 6;
-// 1-2 runs cannot show a trend, so the page shows the low-data panel instead
-// of a chart.
-const SMALL_SAMPLE_RUNS = 2;
-// A P25-P75 band needs both a history to spread across and enough
-// competitors per run for quartiles to mean anything.
-const MIN_BAND_RUNS = 3;
-const MIN_BAND_COMPETITORS = 3;
-// The y domain is padded instead of stretched edge to edge, so a two-euro
-// wobble no longer fills the canvas and reads as a collapse.
-const DOMAIN_PAD_RATIO = 0.15;
-// Sub-euro movement is not a story. Below this span the domain widens to an
-// absolute window instead of a percentage of almost nothing.
-const MIN_DOMAIN_SPAN = 2;
-// Round tick values, searched finest-first until a step leaves 2-3 of them
-// inside the domain.
-const TICK_STEPS = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000];
-const MIN_LABEL_GAP_X = 64;
-const MIN_LABEL_GAP_Y = 26;
 const DEFAULT_STAY = defaultStayDates();
 
 // Async-written state is signal-based: every fetch continuation runs outside
@@ -139,7 +36,16 @@ const DEFAULT_STAY = defaultStayDates();
 @Component({
   selector: "app-pricing-page",
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink, EmptyStateComponent, NotificationBellComponent, NotificationToastsComponent],
+  imports: [
+    CommonModule,
+    FormsModule,
+    RouterLink,
+    MarketStatisticsPanelComponent,
+    NotificationBellComponent,
+    NotificationToastsComponent,
+    PriceHistoryCardComponent,
+    RecommendationCardComponent,
+  ],
   template: `
     <main class="page-shell">
       <header class="map-header">
@@ -277,267 +183,33 @@ const DEFAULT_STAY = defaultStayDates();
             <!-- Headline first (the price, its range, how sure and from where),
                  then one sentence of why; the full reasoning waits behind a
                  toggle and the audit trail stays a quiet footer. -->
-            <div *ngIf="recommendation() as rec" class="panel recommendation-card">
-              <div class="recommendation-headline">
-                <div class="recommendation-figure">
-                  <h2 class="recommendation-label">Προτεινόμενη τιμή ανά βράδυ</h2>
-                  <div class="recommendation-price">{{ formatEuro(rec.recommended_price_eur) }}</div>
-                  <p class="recommendation-range">
-                    Εύρος {{ formatEuroFloor(rec.price_range_low_eur) }} &ndash; {{ formatEuroCeil(rec.price_range_high_eur) }}
-                  </p>
-                </div>
-                <div class="chip-row recommendation-pills">
-                  <span class="confidence-pill" [ngClass]="confidenceChipClass()" data-testid="confidence-pill">
-                    {{ confidenceLabel() }}
-                  </span>
-                  <span class="source-chip" data-testid="source-pill">
-                    {{ rec.source === "agent" ? "AI agent" : "Στατιστική" }}
-                  </span>
-                </div>
-              </div>
-              <p *ngIf="smallComparableSample()" class="alert small-sample-notice">
-                {{ smallSampleNotice() }}
-              </p>
-              <p *ngIf="reasoningSummary()" class="recommendation-summary">{{ reasoningSummary() }}</p>
-              <ul *ngIf="rec.key_factors.length" class="key-factors" aria-label="Βασικοί παράγοντες">
-                <li *ngFor="let factor of rec.key_factors" class="factor-chip">{{ factor }}</li>
-              </ul>
-              <!-- A one-sentence reasoning IS its summary: a toggle would only
-                   repeat it, so it appears when there is more to read. -->
-              <div *ngIf="hasMoreReasoning()" class="reasoning-disclosure">
-                <button
-                  type="button"
-                  class="text-button reasoning-toggle"
-                  [attr.aria-expanded]="reasoningOpen()"
-                  aria-controls="recommendation-reasoning"
-                  (click)="reasoningOpen.set(!reasoningOpen())"
-                >
-                  Γιατί αυτή η τιμή;
-                </button>
-                <p *ngIf="reasoningOpen()" id="recommendation-reasoning" class="recommendation-reasoning">
-                  {{ rec.reasoning }}
-                </p>
-              </div>
-              <p *ngIf="result()!.audit_id || result()!.cached" class="recommendation-footer">
-                <span *ngIf="result()!.cached">Από προσωρινή μνήμη</span>
-                <span *ngIf="result()!.audit_id">
-                  Ελεγμένη απόφαση {{ result()!.audit_id }}<ng-container *ngIf="result()!.model_version"> · {{ result()!.model_version }}</ng-container>
-                </span>
-              </p>
-            </div>
+            <div
+              *ngIf="recommendation() as rec"
+              appRecommendationCard
+              class="panel recommendation-card"
+              [recommendation]="rec"
+              [response]="result()!"
+              [smallSampleNotice]="smallComparableSample() ? smallSampleNotice() : ''"
+            ></div>
 
-            <div *ngIf="result()" class="panel">
-              <div class="section-title">
-                <h2>Στατιστικά αγοράς</h2>
-              </div>
-              <p *ngIf="statsScopeLabel()" class="muted pricing-hint">{{ statsScopeLabel() }}</p>
-              <p *ngIf="cancellationClassNote()" class="muted pricing-hint" data-testid="cancellation-class-note">
-                {{ cancellationClassNote() }}
-              </p>
-              <div class="stats-grid">
-                <div *ngFor="let entry of statisticEntries()">
-                  <span>{{ entry.label }}</span>
-                  <strong>{{ entry.value }}</strong>
-                </div>
-              </div>
-              <!-- Without a recommendation the not-enough-data card lists the notes. -->
-              <ul *ngIf="result()!.recommendation_available && statisticNotes().length" class="stat-notes">
-                <li *ngFor="let note of statisticNotes()" class="muted">{{ note }}</li>
-              </ul>
-            </div>
+            <div
+              *ngIf="result() as response"
+              appMarketStatisticsPanel
+              class="panel"
+              [response]="response"
+              [smallSample]="smallComparableSample()"
+              [notes]="statisticNotes()"
+            ></div>
             </ng-container>
 
-            <div class="panel history-card">
-              <div class="section-title">
-                <h2>Ιστορικό τιμών αγοράς</h2>
-                <button class="text-button" type="button" [disabled]="historyStatus() === 'loading'" (click)="loadHistory()">
-                  Ανανέωση
-                </button>
-              </div>
-              <!-- A refetch keeps the previous chart on screen (dimmed) instead
-                   of collapsing the card into a loading line and back. -->
-              <div *ngIf="historyStatus() === 'loading' && !history()" class="notification-empty">
-                Φόρτωση ιστορικού τιμών...
-              </div>
-              <div *ngIf="historyStatus() === 'error'" class="alert alert-error">{{ historyError() }}</div>
-              <div *ngIf="historyStatus() === 'ready' && !history()">
-                <app-empty-state
-                  icon="chart"
-                  title="Δεν υπάρχει ακόμη ιστορικό τιμών"
-                  explanation="Το ιστορικό χτίζεται από τις αναζητήσεις σας: χρειάζονται τουλάχιστον δύο ολοκληρωμένες αναζητήσεις για να φανεί μεταβολή."
-                ></app-empty-state>
-              </div>
-              <!-- 1-2 runs cannot show a trend: a compact panel says what would,
-                   and links to the setting that builds a history day by day. -->
-              <div
-                *ngIf="lowDataHistory() as chart"
-                class="history-low-data"
-                [class.is-refreshing]="historyStatus() === 'loading'"
-                data-testid="history-low-data"
-              >
-                <p class="history-low-data-text">Χρειάζονται αναζητήσεις σε διαφορετικές ημέρες για να φανεί τάση.</p>
-                <p class="muted pricing-hint">{{ chart.summaryLabel }}</p>
-                <a class="history-low-data-cta" routerLink="/settings" fragment="schedule">
-                  Ρύθμιση ημερήσιας αυτόματης αναζήτησης
-                </a>
-              </div>
-              <ng-container *ngIf="fullHistory() as chart">
-                <div class="history-scroll">
-                  <div class="history-chart" [class.is-refreshing]="historyStatus() === 'loading'">
-                    <svg
-                      class="history-svg"
-                      [attr.viewBox]="chart.viewBox"
-                      role="group"
-                      [attr.aria-label]="chart.ariaLabel"
-                    >
-                      <line
-                        *ngFor="let tick of chart.yTicks"
-                        class="history-gridline"
-                        [attr.x1]="chart.plotLeft"
-                        [attr.x2]="chart.plotRight"
-                        [attr.y1]="tick.y"
-                        [attr.y2]="tick.y"
-                      />
-                      <text
-                        *ngFor="let tick of chart.yTicks"
-                        class="history-y-tick"
-                        [attr.x]="chart.plotLeft - 8"
-                        [attr.y]="tick.y + 4"
-                        text-anchor="end"
-                      >{{ tick.label }}</text>
-                      <text class="history-axis-caption" x="6" [attr.y]="chart.captionY">&euro;/βράδυ</text>
-
-                      <polygon
-                        *ngFor="let band of chart.bandSegments"
-                        class="history-band"
-                        [attr.points]="band"
-                      />
-                      <polyline *ngIf="chart.linePoints" class="history-line" [attr.points]="chart.linePoints" />
-
-                      <line
-                        *ngIf="activePoint() as active"
-                        class="history-crosshair"
-                        [attr.x1]="active.x"
-                        [attr.x2]="active.x"
-                        [attr.y1]="chart.plotTop"
-                        [attr.y2]="chart.plotBottom"
-                      />
-
-                      <circle
-                        *ngFor="let point of chart.points"
-                        class="history-dot"
-                        [class.is-active]="point.index === activeRun()"
-                        [attr.cx]="point.x"
-                        [attr.cy]="point.y"
-                        [attr.r]="point.index === activeRun() ? 5.5 : 4"
-                      />
-                      <text
-                        *ngFor="let point of chart.labelledPoints"
-                        class="history-value"
-                        [attr.x]="point.x"
-                        [attr.y]="point.valueY"
-                        text-anchor="middle"
-                      >{{ point.medianLabel }}</text>
-
-                      <ng-container *ngFor="let point of chart.axisPoints">
-                        <text
-                          class="history-x-tick-date"
-                          [attr.x]="point.x"
-                          [attr.y]="chart.dateLabelY"
-                          text-anchor="middle"
-                        >{{ point.dateLabel }}</text>
-                        <text
-                          class="history-x-tick-time"
-                          [attr.x]="point.x"
-                          [attr.y]="chart.timeLabelY"
-                          text-anchor="middle"
-                        >{{ point.timeLabel }}</text>
-                      </ng-container>
-
-                      <!-- One focusable band per run: the hit target is the
-                           whole column, not the 8px dot, and keyboard focus
-                           opens the same readout as hover. -->
-                      <rect
-                        *ngFor="let point of chart.points"
-                        class="history-hit"
-                        [attr.x]="point.hitX"
-                        [attr.width]="point.hitWidth"
-                        [attr.y]="chart.plotTop"
-                        [attr.height]="chart.plotHeight"
-                        tabindex="0"
-                        role="img"
-                        [attr.aria-label]="point.ariaLabel"
-                        (mouseenter)="activeRun.set(point.index)"
-                        (mouseleave)="activeRun.set(null)"
-                        (focus)="activeRun.set(point.index)"
-                        (blur)="activeRun.set(null)"
-                      />
-                    </svg>
-                    <div
-                      *ngIf="activePoint() as active"
-                      class="history-tooltip"
-                      [ngClass]="'tip-' + active.tooltipAlign"
-                      [class.tip-below]="active.tooltipBelow"
-                      [style.left.%]="active.tooltipLeftPct"
-                      [style.top.%]="active.tooltipTopPct"
-                    >
-                      <strong>{{ active.medianLabel }}</strong>
-                      <span>Διάμεσος αγοράς</span>
-                      <span>{{ active.stampLabel }}</span>
-                      <span *ngIf="active.rangeLabel">P25&ndash;P75: {{ active.rangeLabel }}</span>
-                      <span>{{ active.competitorLabel }}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="history-meta">
-                  <span *ngIf="chart.hasBand" class="history-key">
-                    <span class="history-key-item">
-                      <svg class="history-key-mark" viewBox="0 0 18 8" aria-hidden="true">
-                        <line class="history-key-line" x1="1" y1="4" x2="17" y2="4" />
-                        <circle class="history-key-dot" cx="9" cy="4" r="3" />
-                      </svg>
-                      Διάμεσος ανά αναζήτηση
-                    </span>
-                    <span class="history-key-item">
-                      <svg class="history-key-mark" viewBox="0 0 18 8" aria-hidden="true">
-                        <rect class="history-key-band" x="1" y="1" width="16" height="6" />
-                      </svg>
-                      Εύρος P25&ndash;P75 ανταγωνιστών
-                    </span>
-                  </span>
-                  <span>{{ chart.summaryLabel }}</span>
-                </div>
-
-                <p class="muted pricing-hint">
-                  Κάθε τελεία είναι η διάμεσος από τη φθηνότερη τιμή κάθε ανταγωνιστή σε μία αναζήτηση της αγοράς.
-                </p>
-
-                <details class="history-table">
-                  <summary>Πίνακας τιμών</summary>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th scope="col">Αναζήτηση</th>
-                        <th scope="col">Διάμεσος</th>
-                        <th scope="col">P25</th>
-                        <th scope="col">P75</th>
-                        <th scope="col">Ανταγωνιστές</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr *ngFor="let point of chart.points">
-                        <td>{{ point.stampLabel }}</td>
-                        <td>{{ point.medianLabel }}</td>
-                        <td>{{ point.p25Label }}</td>
-                        <td>{{ point.p75Label }}</td>
-                        <td>{{ point.competitorCount }}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </details>
-              </ng-container>
-            </div>
+            <div
+              appPriceHistoryCard
+              class="panel history-card"
+              [historyView]="history()"
+              [status]="historyStatus()"
+              [error]="historyError()"
+              (refreshRequest)="loadHistory()"
+            ></div>
           </section>
         </div>
       </section>
@@ -584,14 +256,6 @@ export class PricingPageComponent implements OnInit {
     const response = this.result();
     return response?.recommendation_available ? response.recommendation : null;
   });
-  /** The card's one-line «why»: the reasoning's first sentence. */
-  readonly reasoningSummary = computed(() => firstSentence(this.recommendation()?.reasoning ?? ""));
-  /** True when the reasoning says more than its summary, so the toggle has something to open. */
-  readonly hasMoreReasoning = computed(() =>
-    (this.recommendation()?.reasoning ?? "").trim().length > this.reasoningSummary().length);
-  /** «Γιατί αυτή η τιμή;» — closed by default and closed again for every new recommendation. */
-  readonly reasoningOpen = signal(false);
-  readonly statisticEntries = computed(() => this.buildStatisticEntries(this.result()));
   /**
    * The statistics notes, read once: listed by the not-enough-data card when
    * there is no recommendation, otherwise by the statistics panel. A note the
@@ -603,38 +267,6 @@ export class PricingPageComponent implements OnInit {
     const reasoning = response?.recommendation?.reasoning ?? "";
     return (response?.statistics.notes ?? []).filter((note) => note.trim() && !reasoning.includes(note.trim()));
   });
-  /** «Βάση: …» — which hotels of the latest search back the statistics; "" when unknown. */
-  readonly statsScopeLabel = computed(() => {
-    const scope = this.result()?.statistics.stats_scope;
-    if (!scope) {
-      return "";
-    }
-    // The matching agent's comparable set for the owner's room backed the
-    // numbers: counted in hotels, singular/plural built whole (Greek inflects
-    // both the adjective and the noun).
-    if (scope.used === "agent") {
-      const comparable = scope.comparable ?? 0;
-      return comparable === 1
-        ? "Βάση: 1 συγκρίσιμο κατάλυμα (εκτίμηση AI)"
-        : `Βάση: ${comparable} συγκρίσιμα καταλύματα (εκτίμηση AI)`;
-    }
-    const same = `Βάση: ${scope.same_category} ίδιας κατηγορίας`;
-    if (scope.used !== "same_plus_similar") {
-      return same;
-    }
-    return `${same} + ${scope.similar} ${scope.similar === 1 ? "παρόμοιο" : "παρόμοια"}`;
-  });
-  /**
-   * Rate plans (spec §5): said only when the backend really compared within
-   * the owner's own cancellation class ("matched"). "all" (no package shared
-   * the class, the floor fell back to every package) and an older API without
-   * the field both say nothing — the sentence would then be untrue.
-   */
-  readonly cancellationClassNote = computed(() =>
-    this.result()?.statistics.stats_scope?.cancellation_class === "matched"
-      ? "Σύγκριση σε τιμές ίδιας πολιτικής ακύρωσης με το δωμάτιό σας."
-      : "");
-
   /**
    * Distinct hotels behind the CURRENT market snapshot, for the small-sample
    * notice below. Best-effort and separate from `result`: the recommendation
@@ -667,26 +299,6 @@ export class PricingPageComponent implements OnInit {
   readonly historyStatus = signal<LoadingState>("idle");
   readonly historyError = signal("");
   readonly history = signal<PriceHistoryChartView | null>(null);
-  /** 1-2 runs: the low-data panel replaces the near-empty chart. */
-  readonly lowDataHistory = computed(() => {
-    const chart = this.history();
-    return chart?.smallSample ? chart : null;
-  });
-  /** 3+ runs: the chart itself. */
-  readonly fullHistory = computed(() => {
-    const chart = this.history();
-    return chart && !chart.smallSample ? chart : null;
-  });
-  /** Run index under the pointer or the keyboard focus; null = no readout. */
-  readonly activeRun = signal<number | null>(null);
-  readonly activePoint = computed(() => {
-    const index = this.activeRun();
-    const chart = this.history();
-    if (index == null || !chart) {
-      return null;
-    }
-    return chart.points.find((point) => point.index === index) ?? null;
-  });
 
   private canonicalDestination = "";
 
@@ -828,7 +440,6 @@ export class PricingPageComponent implements OnInit {
     }
     this.recStatus.set("loading");
     this.recError.set("");
-    this.reasoningOpen.set(false);
     this.comparableCompetitors.set(null);
     const filters = this.filters();
     try {
@@ -906,7 +517,6 @@ export class PricingPageComponent implements OnInit {
     if (!this.canonicalDestination || !filters.check_in || !filters.check_out) {
       this.historyStatus.set("ready");
       this.history.set(null);
-      this.activeRun.set(null);
       return;
     }
     this.historyStatus.set("loading");
@@ -930,82 +540,14 @@ export class PricingPageComponent implements OnInit {
         params.set("owned_property_id", this.ownedPropertyId());
       }
       const series = await this.api.get<PriceHistorySeries>("/api/v1/market/price-history", params);
-      // A redraw invalidates the old run indices, so the readout closes with it.
-      this.activeRun.set(null);
-      this.history.set(this.buildHistoryChart(series));
+      // A redraw closes the card's readout: the old run indices are gone.
+      this.history.set(buildHistoryChart(series));
       this.historyStatus.set("ready");
     } catch (error) {
       this.historyError.set(error instanceof Error ? error.message : "Δεν ήταν δυνατή η φόρτωση του ιστορικού τιμών.");
       this.historyStatus.set("error");
       this.history.set(null);
-      this.activeRun.set(null);
     }
-  }
-
-  /** Υψηλή = green, Μέτρια = amber, anything else = the neutral grey of «Χαμηλή». */
-  confidenceChipClass(): string {
-    switch (this.recommendation()?.confidence) {
-      case "high":
-        return "confidence-high";
-      case "medium":
-        return "confidence-medium";
-      default:
-        return "confidence-low";
-    }
-  }
-
-  /**
-   * The confidence chip's text, MAPPED from the enum rather than interpolated.
-   * The English chip concatenated the raw API value («medium confidence»);
-   * in Greek the adjective has to agree with «βεβαιότητα», so an interpolated
-   * `{{ rec.confidence }} βεβαιότητα` would both leak the English enum value
-   * and be ungrammatical. Falls back to the low label on an unknown value,
-   * mirroring confidenceChipClass above — an unrecognised confidence must
-   * never read as MORE certain than it is.
-   */
-  confidenceLabel(): string {
-    switch (this.recommendation()?.confidence) {
-      case "high":
-        return "Υψηλή βεβαιότητα";
-      case "medium":
-        return "Μέτρια βεβαιότητα";
-      default:
-        return "Χαμηλή βεβαιότητα";
-    }
-  }
-
-  formatEuro(value: number | null | undefined): string {
-    if (value == null || !Number.isFinite(value)) {
-      return "—";
-    }
-    return new Intl.NumberFormat("el-GR", {
-      style: "currency",
-      currency: "EUR",
-      maximumFractionDigits: 0,
-    }).format(value);
-  }
-
-  /**
-   * Range bounds rounded OUTWARD — floor the low bound, ceil the high bound
-   * — instead of each rounding independently to the nearest euro. Nearest-
-   * euro rounding can NARROW a range (305.5-306.5 collapsed to "306 € –
-   * 307 €", silently dropping the true 305.5-305.99 slice); floor/ceil
-   * guarantees the shown range always CONTAINS the true range. Chosen over
-   * showing one decimal so the range keeps the same 0-decimal styling as
-   * every other price on this card.
-   */
-  formatEuroFloor(value: number | null | undefined): string {
-    if (value == null || !Number.isFinite(value)) {
-      return "—";
-    }
-    return this.formatEuro(Math.floor(value));
-  }
-
-  formatEuroCeil(value: number | null | undefined): string {
-    if (value == null || !Number.isFinite(value)) {
-      return "—";
-    }
-    return this.formatEuro(Math.ceil(value));
   }
 
   private validateDates(): string | null {
@@ -1022,73 +564,6 @@ export class PricingPageComponent implements OnInit {
     return null;
   }
 
-  private buildStatisticEntries(
-    result: PriceRecommendationResponse | null,
-  ): Array<{ label: string; value: string }> {
-    const statistics = result?.statistics;
-    if (!statistics) {
-      return [];
-    }
-    const position = this.formatPosition(statistics.position);
-    return [
-      { label: "Διάμεση τιμή αγοράς", value: this.formatEuro(statistics.market_median_eur) },
-      { label: "Χαμηλό εύρος αγοράς", value: this.formatEuro(statistics.market_p25_eur) },
-      { label: "Υψηλό εύρος αγοράς", value: this.formatEuro(statistics.market_p75_eur) },
-      {
-        label: this.referencePriceLabel(result.own_price_source),
-        value: this.formatEuro(statistics.own_reference_price_eur),
-      },
-      {
-        label: "Θέση σας στην αγορά",
-        value: this.smallComparableSample() && statistics.position
-          ? `${position} (ενδεικτικό — μικρό δείγμα)`
-          : position,
-      },
-      { label: "Στατιστική βάση αναφοράς", value: this.formatEuro(statistics.statistical_recommendation_eur) },
-      // A bare dash read as "no movement"; say what each trend is waiting for.
-      {
-        label: "Τάση (7 ημερών)",
-        value: this.formatPct(statistics.trend_7d_pct, "— (δεν υπάρχει ακόμη συγκρίσιμη αναζήτηση 7+ ημερών)"),
-      },
-      {
-        label: "Τάση (30 ημερών)",
-        value: this.formatPct(statistics.trend_30d_pct, "— (δεν υπάρχει ακόμη συγκρίσιμη αναζήτηση 30+ ημερών)"),
-      },
-      // The label already carries the unit («Ημέρες»), so the value is the bare
-      // number: «12 ημέρες» beside it would read «Ημέρες … 12 ημέρες».
-      { label: "Ημέρες μέχρι την άφιξη", value: String(statistics.lead_time_days) },
-      { label: "Αναζητήσεις που συγκρίθηκαν", value: String(statistics.sample_runs) },
-    ];
-  }
-
-  private formatPct(value: number | null | undefined, missing = "—"): string {
-    if (value == null || !Number.isFinite(value)) {
-      return missing;
-    }
-    return `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
-  }
-
-  /** «Φθηνότερα από εσάς: k από n καταλύματα» — a count the owner can check, not a percentile. */
-  private formatPosition(position: PricePosition | null | undefined): string {
-    if (!position) {
-      return "—";
-    }
-    const noun = position.total === 1 ? "κατάλυμα" : "καταλύματα";
-    return `Φθηνότερα από εσάς: ${position.cheaper_than_you} από ${position.total} ${noun}`;
-  }
-
-  /** The reference-price row names where its number came from. */
-  private referencePriceLabel(source: OwnPriceSource | null | undefined): string {
-    switch (source) {
-      case "booking_live":
-        return "Η τιμή σας στο Booking για αυτές τις ημερομηνίες";
-      case "onboarding_sample":
-        return "Τιμή αναφοράς από την εγγραφή";
-      default:
-        return "Η τιμή αναφοράς σας";
-    }
-  }
-
   private readBoundedNumber(value: string, fallback: number, min: number, max: number): number {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) {
@@ -1097,346 +572,4 @@ export class PricingPageComponent implements OnInit {
     return Math.max(min, Math.min(Math.round(parsed), max));
   }
 
-  /**
-   * Turn the raw per-(run, competitor) series into the chart's view model.
-   *
-   * One dot per scrape run = the median of every competitor's cheapest
-   * nightly price in that run; the band behind it is the P25-P75 spread of
-   * those same per-competitor prices.
-   */
-  private buildHistoryChart(series: PriceHistorySeries): PriceHistoryChartView | null {
-    const allRuns = this.aggregateRuns(series);
-    if (!allRuns.length) {
-      return null;
-    }
-    const runs = allRuns.slice(-MAX_PLOTTED_RUNS);
-    const smallSample = runs.length <= SMALL_SAMPLE_RUNS;
-    const bandSpans = runs.length < MIN_BAND_RUNS ? [] : this.bandSpans(runs);
-    const bandedRuns = new Set<number>(bandSpans.flat());
-
-    // The y domain covers only what is actually drawn, padded on both sides so
-    // the extremes never sit pinned to the plot edges.
-    const drawnValues = runs.map((run) => run.median);
-    for (const index of bandedRuns) {
-      drawnValues.push(runs[index].p25 as number, runs[index].p75 as number);
-    }
-    const [domainMin, domainMax] = this.paddedDomain(drawnValues);
-    const plotHeight = PLOT_BOTTOM - PLOT_TOP;
-    const scaleY = (value: number): number =>
-      round1(PLOT_BOTTOM - ((value - domainMin) / (domainMax - domainMin)) * plotHeight);
-
-    const firstX = PLOT_LEFT + DOT_INSET;
-    const lastX = PLOT_RIGHT - DOT_INSET;
-    const xs = runs.map((_, index) =>
-      runs.length === 1
-        ? round1((firstX + lastX) / 2)
-        : round1(firstX + (index * (lastX - firstX)) / (runs.length - 1)),
-    );
-    const ys = runs.map((run) => scaleY(run.median));
-
-    const medians = runs.map((run) => run.median);
-    const lowest = Math.min(...medians);
-    const highest = Math.max(...medians);
-    const labelled = this.pickValueLabels(medians, xs, ys);
-    const axisStep = Math.ceil(runs.length / MAX_X_TICKS);
-
-    const points: HistoryRunPoint[] = runs.map((run, index) => {
-      const x = xs[index];
-      const y = ys[index];
-      const hasSpread = run.p25 != null && run.p75 != null;
-      // The hit band runs midpoint to midpoint, so the whole column answers
-      // the pointer instead of the 8px dot.
-      const hitLeft = index === 0 ? PLOT_LEFT : round1((xs[index - 1] + x) / 2);
-      const hitRight = index === runs.length - 1 ? PLOT_RIGHT : round1((x + xs[index + 1]) / 2);
-      const above = y - 12 >= PLOT_TOP + 4;
-      const rangeLabel = hasSpread
-        ? `${this.formatEuro(run.p25)} – ${this.formatEuro(run.p75)}`
-        : "";
-      const competitorLabel = run.competitorCount === 1
-        ? "1 ανταγωνιστής"
-        : `${run.competitorCount} ανταγωνιστές`;
-      const stampLabel = this.formatRunStamp(run.observedAt);
-      const medianLabel = this.formatEuro(run.median);
-      return {
-        index,
-        x,
-        y,
-        hitX: hitLeft,
-        hitWidth: round1(hitRight - hitLeft),
-        medianLabel,
-        p25Label: hasSpread ? this.formatEuro(run.p25) : "—",
-        p75Label: hasSpread ? this.formatEuro(run.p75) : "—",
-        rangeLabel,
-        competitorCount: run.competitorCount,
-        competitorLabel,
-        dateLabel: this.formatRunDate(run.observedAt),
-        timeLabel: this.formatRunTime(run.observedAt),
-        stampLabel,
-        ariaLabel: [
-          stampLabel,
-          `διάμεσος ${medianLabel}`,
-          ...(rangeLabel ? [`P25–P75 ${rangeLabel}`] : []),
-          competitorLabel,
-        ].join(" · "),
-        valueY: above ? round1(y - 12) : round1(y + 20),
-        tooltipLeftPct: round1((x / CHART_WIDTH) * 100),
-        tooltipTopPct: round1((y / CHART_HEIGHT) * 100),
-        tooltipAlign: x < CHART_WIDTH * 0.2 ? "start" : x > CHART_WIDTH * 0.8 ? "end" : "middle",
-        tooltipBelow: y < PLOT_TOP + plotHeight * 0.3,
-        // Stepping back from the newest run keeps the latest date labelled
-        // and the labels evenly spaced whatever the run count.
-        showAxisLabel: (runs.length - 1 - index) % axisStep === 0,
-        isLabelled: labelled.has(index),
-      };
-    });
-
-    const runWord = runs.length === 1 ? "αναζήτηση" : "αναζητήσεις";
-    const countLabel = allRuns.length > runs.length
-      ? `Τελευταίες ${runs.length} από ${allRuns.length} αναζητήσεις`
-      : `${runs.length} ${runWord}`;
-    const spreadLabel = lowest === highest
-      ? `διάμεσος ${this.formatEuro(lowest)}`
-      : `εύρος ${this.formatEuro(lowest)} – ${this.formatEuro(highest)}`;
-
-    return {
-      viewBox: `0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`,
-      plotLeft: PLOT_LEFT,
-      plotRight: PLOT_RIGHT,
-      plotTop: PLOT_TOP,
-      plotBottom: PLOT_BOTTOM,
-      plotHeight,
-      captionY: PLOT_TOP - 12,
-      dateLabelY: PLOT_BOTTOM + 22,
-      timeLabelY: PLOT_BOTTOM + 36,
-      yTicks: this.buildYTicks(domainMin, domainMax).map((value) => ({
-        y: scaleY(value),
-        label: this.formatEuro(value),
-      })),
-      bandSegments: bandSpans.map((span) => this.bandPolygon(span, runs, xs, scaleY)),
-      // 1-2 runs get dots only: a line between them would read as a trend.
-      linePoints: smallSample ? "" : points.map((point) => `${point.x},${point.y}`).join(" "),
-      points,
-      labelledPoints: points.filter((point) => point.isLabelled),
-      axisPoints: points.filter((point) => point.showAxisLabel),
-      smallSample,
-      hasBand: bandSpans.length > 0,
-      summaryLabel: `${countLabel} · ${spreadLabel}`,
-      ariaLabel: `Ιστορικό τιμών αγοράς: ${countLabel.toLowerCase()}, ${spreadLabel}.`,
-    };
-  }
-
-  /** Collapse the per-(run, competitor) points into one chronological run list. */
-  private aggregateRuns(series: PriceHistorySeries): AggregatedRun[] {
-    const byRun = new Map<number, { prices: number[]; observedAt: string | null }>();
-    for (const point of series.points || []) {
-      if (point.min_price_eur == null || !Number.isFinite(point.min_price_eur)) {
-        continue;
-      }
-      const entry = byRun.get(point.run_index) || { prices: [], observedAt: null };
-      entry.prices.push(point.min_price_eur);
-      if (point.observed_at && (!entry.observedAt || point.observed_at < entry.observedAt)) {
-        entry.observedAt = point.observed_at;
-      }
-      byRun.set(point.run_index, entry);
-    }
-    return Array.from(byRun.entries())
-      .map(([runIndex, entry]) => {
-        const sorted = [...entry.prices].sort((a, b) => a - b);
-        // Quartiles of one or two prices are not a spread — they would draw a
-        // confident-looking band around what is really a single observation.
-        const hasSpread = sorted.length >= MIN_BAND_COMPETITORS;
-        return {
-          runIndex,
-          observedAt: entry.observedAt,
-          median: quantile(sorted, 0.5),
-          p25: hasSpread ? quantile(sorted, 0.25) : null,
-          p75: hasSpread ? quantile(sorted, 0.75) : null,
-          competitorCount: sorted.length,
-        };
-      })
-      .sort((a, b) => {
-        if (a.observedAt && b.observedAt) {
-          return a.observedAt.localeCompare(b.observedAt);
-        }
-        // run_index 1 is the newest run, so descending index = chronological.
-        return b.runIndex - a.runIndex;
-      });
-  }
-
-  /**
-   * Group the runs into the stretches the band may span.
-   *
-   * A run without enough competitors breaks the band instead of being
-   * interpolated across: the gap is the honest statement that nothing is
-   * known about the spread there. A lone qualifying run has no width to draw,
-   * so its quartiles stay in the readout and the table only.
-   */
-  private bandSpans(runs: AggregatedRun[]): number[][] {
-    const spans: number[][] = [];
-    let current: number[] = [];
-    runs.forEach((run, index) => {
-      if (run.p25 != null && run.p75 != null) {
-        current.push(index);
-        return;
-      }
-      if (current.length >= 2) {
-        spans.push(current);
-      }
-      current = [];
-    });
-    if (current.length >= 2) {
-      spans.push(current);
-    }
-    return spans;
-  }
-
-  /** P75 edge left to right, then the P25 edge back — one closed area. */
-  private bandPolygon(
-    span: number[],
-    runs: AggregatedRun[],
-    xs: number[],
-    scaleY: (value: number) => number,
-  ): string {
-    const top = span.map((index) => `${xs[index]},${scaleY(runs[index].p75 as number)}`);
-    const bottom = [...span].reverse().map((index) => `${xs[index]},${scaleY(runs[index].p25 as number)}`);
-    return [...top, ...bottom].join(" ");
-  }
-
-  /**
-   * Pad the value range so the chart never stretches its extremes to the edges.
-   *
-   * A span under MIN_DOMAIN_SPAN — a flat history, or one that moved by a few
-   * cents — is widened to an absolute window around its midpoint first. A
-   * ratio-only pad there would spend three quarters of the canvas on sub-euro
-   * movement (the same lie the old full-stretch scaling told) and would leave
-   * the tick search no round value to place. The floor is clamped at zero so a
-   * wide spread never opens negative euro space below the cheapest run.
-   */
-  private paddedDomain(values: number[]): [number, number] {
-    let low = Math.min(...values);
-    let high = Math.max(...values);
-    if (high - low < MIN_DOMAIN_SPAN) {
-      const middle = (low + high) / 2;
-      const half = Math.max(MIN_DOMAIN_SPAN / 2, Math.abs(middle) * 0.05);
-      low = middle - half;
-      high = middle + half;
-    }
-    const pad = (high - low) * DOMAIN_PAD_RATIO;
-    return [Math.max(0, low - pad), high + pad];
-  }
-
-  /** The 2-3 round values that fit inside the padded domain. */
-  private buildYTicks(low: number, high: number): number[] {
-    for (const step of TICK_STEPS) {
-      const ticks: number[] = [];
-      for (let value = Math.ceil(low / step) * step; value <= high && ticks.length <= 3; value += step) {
-        ticks.push(round1(value));
-      }
-      if (ticks.length >= 2 && ticks.length <= 3) {
-        return ticks;
-      }
-    }
-    return [round1(low), round1(high)];
-  }
-
-  /**
-   * Choose which dots carry a visible price.
-   *
-   * Up to MAX_LABELLED_RUNS runs every dot is labelled (the plan's "dots with
-   * their price"); past that a number on every point is unreadable, so only
-   * the newest, oldest, cheapest and dearest keep a label — and only where it
-   * does not collide with one already placed. Everything else stays reachable
-   * through the readout and the table view.
-   */
-  private pickValueLabels(medians: number[], xs: number[], ys: number[]): Set<number> {
-    if (medians.length <= MAX_LABELLED_RUNS) {
-      return new Set(medians.map((_, index) => index));
-    }
-    const highest = medians.indexOf(Math.max(...medians));
-    const lowest = medians.indexOf(Math.min(...medians));
-    const picked = new Set<number>();
-    const placed: Array<{ x: number; y: number }> = [];
-    for (const candidate of [medians.length - 1, 0, highest, lowest]) {
-      if (picked.has(candidate)) {
-        continue;
-      }
-      const collides = placed.some(
-        (mark) =>
-          Math.abs(mark.x - xs[candidate]) < MIN_LABEL_GAP_X
-          && Math.abs(mark.y - ys[candidate]) < MIN_LABEL_GAP_Y,
-      );
-      if (collides) {
-        continue;
-      }
-      picked.add(candidate);
-      placed.push({ x: xs[candidate], y: ys[candidate] });
-    }
-    return picked;
-  }
-
-  private formatRunDate(observedAt: string | null): string {
-    const parsed = parseObserved(observedAt);
-    return parsed ? parsed.toLocaleDateString("el-GR", { day: "2-digit", month: "2-digit" }) : "—";
-  }
-
-  private formatRunTime(observedAt: string | null): string {
-    const parsed = parseObserved(observedAt);
-    return parsed
-      ? parsed.toLocaleTimeString("el-GR", { hour: "2-digit", minute: "2-digit", hour12: false })
-      : "";
-  }
-
-  private formatRunStamp(observedAt: string | null): string {
-    const parsed = parseObserved(observedAt);
-    if (!parsed) {
-      return "Άγνωστη ημερομηνία";
-    }
-    const date = parsed.toLocaleDateString("el-GR", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-    });
-    return `${date} ${this.formatRunTime(observedAt)}`;
-  }
-}
-
-/**
- * The first sentence of `text`: up to the first «.», «!», «?» or Greek «;»
- * that is followed by whitespace or the end, so a decimal («110.5 €») never
- * cuts it short. The whole (trimmed) text when it has no such stop.
- */
-function firstSentence(text: string): string {
-  const trimmed = text.trim();
-  // \u037e is the Greek question mark; the ASCII semicolon is left out on
-  // purpose: in English text it joins clauses, it does not end a sentence.
-  const match = /^[\s\S]*?[.!?\u037e](?=\s|$)/.exec(trimmed);
-  return match ? match[0] : trimmed;
-}
-
-function parseObserved(observedAt: string | null): Date | null {
-  if (!observedAt) {
-    return null;
-  }
-  const parsed = new Date(observedAt);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-}
-
-/** An API timestamp as «dd/MM/yyyy» in the viewer's calendar; "" when missing or unreadable. */
-function formatGreekDate(stamp: string | null | undefined): string {
-  const parsed = parseObserved(stamp ?? null);
-  return parsed
-    ? parsed.toLocaleDateString("el-GR", { day: "2-digit", month: "2-digit", year: "numeric" })
-    : "";
-}
-
-/** Linear-interpolation quantile over an ASCENDING array (median at q=0.5). */
-function quantile(sorted: number[], q: number): number {
-  const position = (sorted.length - 1) * q;
-  const lower = Math.floor(position);
-  const upper = Math.min(lower + 1, sorted.length - 1);
-  return sorted[lower] + (position - lower) * (sorted[upper] - sorted[lower]);
-}
-
-function round1(value: number): number {
-  return Math.round(value * 10) / 10;
 }

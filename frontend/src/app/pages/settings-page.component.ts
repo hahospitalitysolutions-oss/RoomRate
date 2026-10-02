@@ -15,7 +15,7 @@ type LoadingState = "idle" | "loading" | "ready" | "error";
 type ScheduleForm = {
   enabled: boolean;
   frequency_hours: number;
-  /** Greek local hour (Europe/Athens); the API's `hour_utc` is converted on load/save. */
+  /** Greek local hour (Europe/Athens), the API's `hour_local`. */
   hour_athens: number;
   lead_days: number;
   nights: number;
@@ -26,7 +26,8 @@ type ScheduleForm = {
 
 /**
  * Current offset of Greek time from UTC in whole hours (+2 in winter, +3 in
- * summer). Read from the browser's time-zone database through Intl instead of
+ * summer), for talking to an API that predates `hour_local` (it only knows
+ * `hour_utc`). Read from the browser's time-zone database through Intl instead of
  * hard-coded, so the daylight-saving switch is handled without a date library.
  * Always Europe/Athens, never the browser's own zone: the hotel is in Greece
  * even when its owner opens the page from abroad.
@@ -134,7 +135,7 @@ function athensHourToUtc(hourAthens: number): number {
             </label>
             <label>
               <span>Ώρα ελέγχου (ώρα Ελλάδας)</span>
-              <!-- Shown and typed in Greek time; save() converts back to the UTC hour the API stores. -->
+              <!-- Shown and typed in Greek time, the hour the API stores (hour_local). -->
               <input class="roomrate-input" type="number" name="hour_athens" min="0" max="23" [ngModel]="form().hour_athens" (ngModelChange)="updateScheduleField('hour_athens', $event)">
             </label>
           </div>
@@ -308,7 +309,7 @@ export class SettingsPageComponent implements OnInit {
   readonly form = signal<ScheduleForm>({
     enabled: false,
     frequency_hours: 24,
-    hour_athens: utcHourToAthens(5),
+    hour_athens: 8,
     lead_days: 30,
     nights: 3,
     adults: 2,
@@ -370,6 +371,9 @@ export class SettingsPageComponent implements OnInit {
       const body: ScheduleConfigUpdate = {
         enabled: Boolean(form.enabled),
         frequency_hours: Math.round(Number(form.frequency_hours)),
+        hour_local: Math.round(Number(form.hour_athens)),
+        // Only for an API that predates hour_local (a rollback, or this bundle
+        // deployed first); the current API ignores it next to hour_local.
         hour_utc: athensHourToUtc(Math.round(Number(form.hour_athens))),
         lead_days: Math.round(Number(form.lead_days)),
         nights: Math.round(Number(form.nights)),
@@ -540,7 +544,9 @@ export class SettingsPageComponent implements OnInit {
     this.form.set({
       enabled: config.enabled,
       frequency_hours: config.frequency_hours,
-      hour_athens: utcHourToAthens(config.hour_utc),
+      // The owner's hour as stored, the same all year. An API without
+      // hour_local sends only the UTC hour: read it with today's offset.
+      hour_athens: config.hour_local ?? utcHourToAthens(config.hour_utc),
       lead_days: config.lead_days,
       nights: config.nights,
       adults: config.adults,

@@ -314,6 +314,27 @@ test("a failed run raises the fallback notice and the statistical list keeps wor
   await expect(matchedCardFor(page, "Hotel Pelagos")).toContainText("48%");
 });
 
+test("a re-run still in progress elsewhere says so quietly and re-reads nothing", async ({ page }) => {
+  const calls: RecordedCall[] = [];
+  const matchReads: URLSearchParams[] = [];
+  const agentRun: { current: Record<string, unknown> | number } = {
+    current: { status: "skipped", matches_written: 0, skip_reason: "in_progress", source: "agent" },
+  };
+  await mockAgentMatching(page, { agentRun, calls, matchReads });
+
+  await openMatchList(page);
+  await expect(matchedCardFor(page, "Hotel Ourania")).toContainText("62%");
+
+  await reassess(page).click();
+  const notice = page.getByTestId("reassess-notice");
+  await expect(notice).toHaveText(
+    "Η εκτίμηση AI για αυτό το δωμάτιο είναι ακόμη σε εξέλιξη· ανανεώστε τη σελίδα σε λίγο για να τη δείτε.",
+  );
+  await expect(notice).not.toHaveClass(/alert-error/);
+  await expect(reassess(page)).toBeEnabled();
+  expect(matchReads.length).toBe(1);
+});
+
 test("without a completed job on screen the button is disabled", async ({ page }) => {
   await mockAgentMatching(page, { restorable: false });
 

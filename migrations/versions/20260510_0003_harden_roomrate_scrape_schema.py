@@ -1,4 +1,4 @@
-﻿"""Harden RoomRate scrape schema.
+"""Harden RoomRate scrape schema.
 
 Revision ID: 20260510_0003
 Revises: 20260503_0002

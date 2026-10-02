@@ -82,6 +82,8 @@ def test_put_schedule_validates_ranges_like_db_checks():
     client = _client(service)
 
     for invalid_payload in (
+        {"hour_local": 24},
+        {"hour_local": -1},
         {"hour_utc": 24},
         {"hour_utc": -1},
         {"frequency_hours": 0},

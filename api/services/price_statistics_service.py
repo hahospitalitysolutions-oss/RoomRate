@@ -88,6 +88,24 @@ def compute_price_statistics(
 
     any_priced_df = _priced_history(history_rows)
 
+    if _latest_agent_run_without_basis(history_rows, any_priced_df):
+        # The matching agent judged no room of the newest search comparable,
+        # so the map shows no comparable hotel for it either. An older search
+        # is not today's market: nothing current to price on.
+        notes.append(
+            "Στην τελευταία αναζήτηση η εκτίμηση AI δεν βρήκε δωμάτιο συγκρίσιμο "
+            "με το δικό σας· δεν υπάρχει τρέχουσα βάση σύγκρισης."
+        )
+        if own_price is None:
+            notes.append("Δεν υπάρχει τιμή αναφοράς για το κατάλυμά σας.")
+        return PriceStatistics(
+            sample_runs=0,
+            own_reference_price_eur=own_price,
+            stats_scope=PriceStatsScope(same_category=0, similar=0, used="agent", comparable=0),
+            lead_time_days=lead_time_days,
+            notes=notes,
+        )
+
     if any_priced_df.empty:
         notes.append("Το ιστορικό τιμών δεν περιέχει αξιοποιήσιμες τιμές.")
         if own_price is None:
@@ -216,6 +234,26 @@ def _priced_history(history_rows: list[dict]) -> pd.DataFrame:
         history_df["rn"].notna()
         & (history_df["min_price_same"].notna() | history_df["min_price_similar"].notna())
     ]
+
+
+def _latest_agent_run_without_basis(
+    history_rows: list[dict], any_priced_df: pd.DataFrame
+) -> bool:
+    """Whether the newest search is on the agent basis with no basis price at all.
+
+    ``rn`` is the repository's dense rank over EVERY completed run of the
+    market key, so rn = 1 is the newest search whether or not any of its
+    hotels has a basis price; on the agent basis the repository returns its
+    hotels either way. Without this check the smallest PRICED rank (an
+    older search) would silently become the current market.
+    """
+    history_df = pd.DataFrame(history_rows)
+    if "rn" not in history_df or "agent_basis" not in history_df:
+        return False
+    latest_df = history_df[pd.to_numeric(history_df["rn"], errors="coerce") == 1]
+    if latest_df.empty or not _flag_column(latest_df, "agent_basis").any():
+        return False
+    return not bool((any_priced_df["rn"] == 1).any())
 
 
 def _select_basis(

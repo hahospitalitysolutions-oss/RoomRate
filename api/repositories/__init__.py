@@ -1,1 +1,1 @@
-﻿"""Database repositories for RoomRate."""
+"""Database repositories for RoomRate."""

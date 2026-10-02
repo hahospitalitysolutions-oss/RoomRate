@@ -254,5 +254,8 @@ export type RoomMatchRunRequest = {
 export type RoomMatchRunResponse = {
   status: "completed" | "error" | "skipped";
   matches_written: number;
+  // Skips only: "in_progress" means another run is still scoring this room
+  // (its rows appear on a later read); "no_api_key" means AI is off.
+  skip_reason?: string | null;
   source: "agent";
 };

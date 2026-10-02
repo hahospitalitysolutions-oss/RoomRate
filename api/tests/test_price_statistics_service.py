@@ -498,3 +498,48 @@ def test_every_note_is_greek_on_every_path():
         assert stats.notes
         # Every Greek sentence carries non-ASCII letters; an English leftover would not.
         assert not any(note.isascii() for note in stats.notes)
+
+
+def _agent_rows(rn: int, observed_at: str, prices: dict[str, float | None]) -> list[dict]:
+    return [
+        {
+            "rn": rn,
+            "observed_at": observed_at,
+            "property_id": hotel,
+            "min_price_same": price,
+            "min_price_similar": None,
+            "agent_basis": 1,
+        }
+        for hotel, price in prices.items()
+    ]
+
+
+def test_a_newest_agent_search_with_nothing_comparable_is_no_current_market():
+    """The agent rejected every room of the newest search (rn = 1 comes back
+    unpriced): the older search must not become today's market."""
+    rows = _agent_rows(1, "2026-06-30T08:00:00+00:00", {"p1": None, "p2": None})
+    rows += _agent_rows(2, "2026-06-23T08:00:00+00:00", {"p1": 100.0, "p2": 120.0})
+
+    stats = compute_price_statistics(rows, own_price=110.0, check_in=date(2026, 7, 15), as_of=date(2026, 6, 30))
+
+    assert stats.market_median_eur is None
+    assert stats.statistical_recommendation_eur is None
+    assert stats.position is None
+    assert stats.sample_runs == 0
+    assert stats.own_reference_price_eur == 110.0
+    assert stats.stats_scope == PriceStatsScope(same_category=0, similar=0, used="agent", comparable=0)
+    assert stats.notes == [
+        "Στην τελευταία αναζήτηση η εκτίμηση AI δεν βρήκε δωμάτιο συγκρίσιμο "
+        "με το δικό σας· δεν υπάρχει τρέχουσα βάση σύγκρισης."
+    ]
+
+
+def test_a_newest_agent_search_with_one_comparable_hotel_is_the_current_market():
+    rows = _agent_rows(1, "2026-06-30T08:00:00+00:00", {"p1": 105.0, "p2": None})
+    rows += _agent_rows(2, "2026-06-23T08:00:00+00:00", {"p1": 100.0, "p2": 120.0})
+
+    stats = compute_price_statistics(rows, own_price=110.0, check_in=date(2026, 7, 15), as_of=date(2026, 6, 30))
+
+    assert stats.market_median_eur == 105.0
+    assert stats.stats_scope.used == "agent"
+    assert stats.stats_scope.comparable == 1

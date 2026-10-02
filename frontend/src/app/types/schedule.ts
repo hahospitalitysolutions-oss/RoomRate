@@ -2,6 +2,10 @@ export type ScheduleConfig = {
   account_id: string;
   enabled: boolean;
   frequency_hours: number;
+  /** The owner's hour on their own clock (`timezone`); absent from an API that predates it. */
+  hour_local?: number;
+  timezone?: string;
+  /** Deprecated: `hour_local` as a UTC hour today. Only for an API without `hour_local`. */
   hour_utc: number;
   lead_days: number;
   nights: number;
@@ -16,6 +20,8 @@ export type ScheduleConfig = {
 export type ScheduleConfigUpdate = Partial<{
   enabled: boolean;
   frequency_hours: number;
+  hour_local: number;
+  /** Deprecated: read only by an API that predates `hour_local`; the current API ignores it. */
   hour_utc: number;
   lead_days: number;
   nights: number;

@@ -55,6 +55,13 @@ def _extract_attributes_from_name(name: str) -> RoomAttributes:
 # them «comparable» means the agent scored the room at least this high.
 LEGACY_COMPARABLE_MIN_SCORE = 50.0
 
+# Rows of the broad (every category but singles) pool read BEFORE the
+# agent's verdicts narrow it to the comparison set. The matching agent judges
+# up to this many rows of one job, so a comparable room priced past the
+# caller's row limit is never cut before the filter runs; the caller's limit
+# then applies to the comparison set itself.
+AGENT_POOL_READ_LIMIT = 2000
+
 
 @dataclass(frozen=True)
 class AgentMatchOverride:
@@ -123,8 +130,9 @@ class RoomRateFilters:
     # Round 6 (§3.6): True reads every stored category except single rooms
     # (other categories are labelled «Παρόμοιο»); False keeps the comparable
     # pool of room_type_category, the pre-Round-6 read. False by default so
-    # internal callers (the price advisor) stay on comparable rooms; the HTTP
-    # routes default to true in api/routers/_filters.build_filters.
+    # internal callers stay on comparable rooms; the HTTP routes store the
+    # inverse of their ``comparable_only`` (default true) here, so they read
+    # the comparable pool unless a client asks for every room.
     include_similar: bool = False
 
     @property
@@ -472,21 +480,31 @@ class MarketService:
         filters: RoomRateFilters,
         agent_matches: dict[tuple[str, str], AgentMatchOverride] | None,
     ) -> list[dict]:
-        """The rate rows of the comparison set the list, map and summary share.
+        """The rate rows of the comparison set the list, map, summary and advisor share.
 
         With agent rows the pool is the broad one the agent scored (every
         category but singles, plus the owner's pool) and, under
         ``comparable_only``, the agent's verdicts narrow it — a hotel left
-        with no comparable package disappears everywhere. Without agent rows
-        the SQL pool IS the fallback set, exactly Round 6's include_similar.
-        Amenity filters stay hard SQL filters on top in both paths.
+        with no comparable package disappears everywhere. That narrowing
+        reads up to ``AGENT_POOL_READ_LIMIT`` broad rows first and applies
+        the caller's ``limit`` to the comparison set afterwards: a LIMIT on
+        the broad pool (cheapest first) would cut comparable rooms priced
+        above hundreds of cheaper non-comparable packages. Without agent
+        rows the SQL pool IS the fallback set, exactly Round 6's
+        include_similar. Amenity filters stay hard SQL filters on top in
+        both paths.
         """
         if not agent_matches:
             return self.repository.fetch_room_rates(filters)
-        rows = self.repository.fetch_room_rates(replace(filters, include_similar=True))
         if not filters.comparable_only:
-            return rows
-        return [row for row in rows if is_comparable(row, filters.room_type_category, agent_matches)]
+            return self.repository.fetch_room_rates(replace(filters, include_similar=True))
+        rows = self.repository.fetch_room_rates(
+            replace(filters, include_similar=True, limit=max(filters.limit, AGENT_POOL_READ_LIMIT))
+        )
+        comparable_rows = [
+            row for row in rows if is_comparable(row, filters.room_type_category, agent_matches)
+        ]
+        return comparable_rows[: filters.limit]
 
     @staticmethod
     def _comparable_predicate(
@@ -501,19 +519,22 @@ class MarketService:
         filters: RoomRateFilters,
         my_hotel_name: str | None = None,
         origin: tuple[float, float] | None = None,
-        comparable_rooms: set[tuple[str, str]] | None = None,
+        agent_matches: dict[tuple[str, str], AgentMatchOverride] | None = None,
     ) -> SmartAdvisorContext:
         """Build pricing-agent context from current room rates.
 
         Args:
-            filters: Query filters for destination, dates and result limit.
+            filters: Query filters for destination, dates and result limit;
+                ``include_similar`` must mirror the statistics' scope so the
+                model reads the hotels the statistics were computed on.
             my_hotel_name: Optional hotel name to exclude from competitors.
             origin: The owner's (latitude, longitude); fills each competitor's
                 ``distance_km`` for the agent payload (spec 2026-09-29 Β.2).
-            comparable_rooms: The agent-comparable (property_id, casefolded
-                room_type) pairs when the room-matching agent chose the basis
-                (owner decision 2026-09-30); only those packages reach the
-                model, so it reads the statistics' own comparison set.
+            agent_matches: The matching agent's verdicts for the latest run
+                when they chose the statistics' basis (owner decision
+                2026-09-30); with ``comparable_only`` they narrow the rows
+                exactly as for the map (``is_comparable``: the verdict, else
+                the category pool for a room the agent left unscored).
 
         Returns:
             Structured JSON payload for the price-recommendation agent. Each
@@ -524,9 +545,7 @@ class MarketService:
         Raises:
             ValueError: If filters are invalid.
         """
-        rows = exclude_hotel(self.repository.fetch_room_rates(filters), my_hotel_name)
-        if comparable_rooms:
-            rows = [row for row in rows if _agent_match_key(row) in comparable_rooms]
+        rows = exclude_hotel(self._comparison_rows(filters, agent_matches), my_hotel_name)
         tracked_keys = self._tracked_hotel_keys(filters, rows)
         # Β.2: the agent reads honest labels — distance measured from the
         # owner and category_match judged against the requested baseline
@@ -556,16 +575,21 @@ class MarketService:
         """Hotel identities of the owner's tracked competitors in this scope.
 
         Reuses the repository's own tracked-competitor predicate (same market
-        key, pool and occupancy) rather than re-deriving it, so «tracked» here
-        means exactly the set the tracked-only read returns. A tracked-only
-        read is tracked through and through; no owned property, no tracking.
+        key and occupancy) rather than re-deriving it, so «tracked» here
+        means exactly the set the tracked-only read returns. The lookup reads
+        the broad pool: tracking is per hotel, and a hotel the agent kept for
+        a room outside the owner's category is still the one the owner
+        watches. A tracked-only read is tracked through and through; no owned
+        property, no tracking.
         """
         if not filters.owned_property_id:
             return set()
         tracked_rows = (
             rows
             if filters.selected_competitors_only
-            else self.repository.fetch_room_rates(replace(filters, selected_competitors_only=True))
+            else self.repository.fetch_room_rates(
+                replace(filters, selected_competitors_only=True, include_similar=True)
+            )
         )
         return {key for key in map(hotel_group_key, tracked_rows) if key is not None}
 

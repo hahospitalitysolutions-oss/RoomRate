@@ -4,7 +4,9 @@ Spec 2026-09-29 Α.3. Match rows are only ever written as a full replacement
 of one ``(scrape_job_id, owned_room_type_id)`` scope — DELETE + INSERT inside
 one transaction — so readers never observe a half-replaced set. The agent-run
 rows are the light audit trail («γιατί δεν βγήκε AI εκτίμηση») and the basis
-of the daily per-account run quota.
+of the daily per-account run quota. A lease row (migration 20260930_0028)
+names the run scoring a scope right now, so a second caller never pays for a
+duplicate run of the same scope.
 """
 
 from __future__ import annotations
@@ -180,6 +182,140 @@ class RoomMatchRepository:
                     "error_message": error_message,
                 },
             )
+
+    def count_matches(
+        self,
+        account_id: uuid.UUID,
+        scrape_job_id: uuid.UUID,
+        owned_room_type_id: uuid.UUID,
+    ) -> int:
+        """How many agent rows the (job, owned room) scope holds right now."""
+        with get_engine(role="api").connect() as connection:
+            value = connection.execute(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM roomrate_room_matches
+                    WHERE account_id = :account_id
+                      AND scrape_job_id = :scrape_job_id
+                      AND owned_room_type_id = :owned_room_type_id
+                    """
+                ),
+                {
+                    "account_id": account_id,
+                    "scrape_job_id": scrape_job_id,
+                    "owned_room_type_id": owned_room_type_id,
+                },
+            ).scalar()
+        return int(value or 0)
+
+    def acquire_lease(
+        self,
+        *,
+        account_id: uuid.UUID,
+        scrape_job_id: uuid.UUID,
+        owned_room_type_id: uuid.UUID,
+        stale_after_seconds: float,
+    ) -> uuid.UUID | None:
+        """Claim the in-flight lease of one (job, owned room) scope.
+
+        Returns the claiming run's token, or None while a live run holds the
+        scope. One statement: a new lease, or the takeover of a stale one
+        (older than ``stale_after_seconds``: a run that died without
+        releasing it). Two concurrent claims serialize on the primary key,
+        so exactly one of them gets a token.
+        """
+        with get_engine(role="api").begin() as connection:
+            holder = connection.execute(
+                text(
+                    """
+                    INSERT INTO roomrate_agent_leases (
+                        kind, scrape_job_id, owned_room_type_id, account_id,
+                        holder, acquired_at
+                    )
+                    VALUES (
+                        'room_matching', :scrape_job_id, :owned_room_type_id,
+                        :account_id, :holder, now()
+                    )
+                    ON CONFLICT (kind, scrape_job_id, owned_room_type_id) DO UPDATE
+                    SET account_id = EXCLUDED.account_id,
+                        holder = EXCLUDED.holder,
+                        acquired_at = EXCLUDED.acquired_at
+                    WHERE roomrate_agent_leases.acquired_at
+                          < now() - :stale_after_seconds * interval '1 second'
+                    RETURNING holder
+                    """
+                ),
+                {
+                    "account_id": account_id,
+                    "scrape_job_id": scrape_job_id,
+                    "owned_room_type_id": owned_room_type_id,
+                    "holder": uuid.uuid4(),
+                    "stale_after_seconds": float(stale_after_seconds),
+                },
+            ).scalar()
+        return holder
+
+    def release_lease(
+        self,
+        *,
+        account_id: uuid.UUID,
+        scrape_job_id: uuid.UUID,
+        owned_room_type_id: uuid.UUID,
+        holder: uuid.UUID,
+    ) -> None:
+        """Release a lease this run holds; a lease another run took over stays."""
+        with get_engine(role="api").begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    DELETE FROM roomrate_agent_leases
+                    WHERE kind = 'room_matching'
+                      AND account_id = :account_id
+                      AND scrape_job_id = :scrape_job_id
+                      AND owned_room_type_id = :owned_room_type_id
+                      AND holder = :holder
+                    """
+                ),
+                {
+                    "account_id": account_id,
+                    "scrape_job_id": scrape_job_id,
+                    "owned_room_type_id": owned_room_type_id,
+                    "holder": holder,
+                },
+            )
+
+    def lease_held(
+        self,
+        *,
+        account_id: uuid.UUID,
+        scrape_job_id: uuid.UUID,
+        owned_room_type_id: uuid.UUID,
+        stale_after_seconds: float,
+    ) -> bool:
+        """Whether a live (not stale) run is scoring the (job, owned room) scope."""
+        with get_engine(role="api").connect() as connection:
+            value = connection.execute(
+                text(
+                    """
+                    SELECT 1
+                    FROM roomrate_agent_leases
+                    WHERE kind = 'room_matching'
+                      AND account_id = :account_id
+                      AND scrape_job_id = :scrape_job_id
+                      AND owned_room_type_id = :owned_room_type_id
+                      AND acquired_at >= now() - :stale_after_seconds * interval '1 second'
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "account_id": account_id,
+                    "scrape_job_id": scrape_job_id,
+                    "owned_room_type_id": owned_room_type_id,
+                    "stale_after_seconds": float(stale_after_seconds),
+                },
+            ).scalar()
+        return value is not None
 
     def fetch_matches(
         self,

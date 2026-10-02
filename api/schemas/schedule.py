@@ -5,6 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
+from api.services.schedule_timing import DEFAULT_HOUR_LOCAL, DEFAULT_TIMEZONE
+
 
 class ScheduleConfigResponse(BaseModel):
     """Per-account scrape schedule configuration.
@@ -16,6 +18,12 @@ class ScheduleConfigResponse(BaseModel):
     account_id: UUID
     enabled: bool = False
     frequency_hours: int = 24
+    # The hour the owner picked, on their own clock (``timezone``); the
+    # schedule runs at it all year, across daylight-saving changes.
+    hour_local: int = DEFAULT_HOUR_LOCAL
+    timezone: str = DEFAULT_TIMEZONE
+    # Deprecated: ``hour_local`` as a UTC hour TODAY, for clients built before
+    # ``hour_local`` existed. Moves by one at every daylight-saving change.
     hour_utc: int = 5
     lead_days: int = 30
     nights: int = 3
@@ -31,6 +39,10 @@ class ScheduleConfigUpdate(BaseModel):
 
     enabled: bool | None = None
     frequency_hours: int | None = Field(default=None, ge=1)
+    hour_local: int | None = Field(default=None, ge=0, le=23)
+    # Deprecated: a client built before ``hour_local`` sends the UTC hour it
+    # converted with today's offset; it is read back the same way. Ignored
+    # whenever ``hour_local`` is sent too.
     hour_utc: int | None = Field(default=None, ge=0, le=23)
     lead_days: int | None = Field(default=None, ge=0)
     nights: int | None = Field(default=None, ge=1)

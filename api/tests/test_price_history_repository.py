@@ -820,7 +820,8 @@ _AGENT_SCHEMA = (
     "CREATE TABLE roomrate_owned_properties (id TEXT PRIMARY KEY, account_id TEXT,"
     " display_name TEXT, is_active BOOLEAN)",
     "CREATE TABLE roomrate_room_matches (account_id TEXT, scrape_job_id TEXT, owned_room_type_id TEXT,"
-    " property_id TEXT, room_type TEXT, score NUMERIC, comparable BOOLEAN)",
+    " property_id TEXT, room_type TEXT, score NUMERIC, comparable BOOLEAN, reasoning TEXT,"
+    " created_at TEXT)",
 )
 
 # (run id, job id, finished_at) -> hotel -> [(room_type, category, price)]
@@ -856,11 +857,8 @@ def _property_id(hotel_name: str) -> str:
     return "prop-" + hotel_name.lower().replace(" ", "-")
 
 
-@pytest.fixture()
-def agent_basis_repository():
-    """The real repository SQL over SQLite with agent match rows for one job."""
-    if sqlite3.sqlite_version_info < (3, 39, 0):
-        pytest.skip("IS DISTINCT FROM needs SQLite 3.39+")
+def _agent_basis_engine(runs=None, matches=_AGENT_MATCHES, match_job="job-new"):
+    """SQLite with the repository's tables, the given runs and one job's agent rows."""
     engine = create_engine("sqlite://", poolclass=StaticPool)
     with engine.begin() as connection:
         for statement in _AGENT_SCHEMA:
@@ -869,7 +867,7 @@ def agent_basis_repository():
             text("INSERT INTO roomrate_owned_properties VALUES ('own-1', :account_id, 'Rea Hotel', 1)"),
             {"account_id": str(ACCOUNT_ID)},
         )
-        for (run_id, job_id, finished_at), hotels in _AGENT_RUNS.items():
+        for (run_id, job_id, finished_at), hotels in (runs or _AGENT_RUNS).items():
             connection.execute(
                 text(
                     "INSERT INTO roomrate_scrape_runs VALUES (:id, :account_id, 'kallithea',"
@@ -902,14 +900,17 @@ def agent_basis_repository():
                             "price": price,
                         },
                     )
-        for owned_room, hotel_name, room_type, score, comparable in _AGENT_MATCHES:
+        for owned_room, hotel_name, room_type, score, comparable in matches:
             connection.execute(
                 text(
-                    "INSERT INTO roomrate_room_matches VALUES"
-                    " (:account_id, 'job-new', :owned_room, :property_id, :room_type, :score, :comparable)"
+                    "INSERT INTO roomrate_room_matches (account_id, scrape_job_id, owned_room_type_id,"
+                    " property_id, room_type, score, comparable, reasoning, created_at) VALUES"
+                    " (:account_id, :job_id, :owned_room, :property_id, :room_type, :score, :comparable,"
+                    " 'αιτιολόγηση', '2026-09-14T08:05:00+00:00')"
                 ),
                 {
                     "account_id": str(ACCOUNT_ID),
+                    "job_id": match_job,
                     "owned_room": owned_room,
                     "property_id": _property_id(hotel_name),
                     "room_type": room_type,
@@ -917,6 +918,19 @@ def agent_basis_repository():
                     "comparable": comparable,
                 },
             )
+    return engine
+
+
+def _skip_without_is_distinct_from() -> None:
+    if sqlite3.sqlite_version_info < (3, 39, 0):
+        pytest.skip("IS DISTINCT FROM needs SQLite 3.39+")
+
+
+@pytest.fixture()
+def agent_basis_repository():
+    """The real repository SQL over SQLite with agent match rows for one job."""
+    _skip_without_is_distinct_from()
+    engine = _agent_basis_engine()
     yield PriceHistoryRepository(engine.connect)
     engine.dispose()
 
@@ -937,8 +951,10 @@ def test_agent_basis_prices_each_hotel_at_its_cheapest_comparable_room(agent_bas
 
     # A: the 60 Double Room is scored 70 but the agent said "not comparable".
     # B: its NULL-verdict Suite counts through score >= 50, never its 50 studio.
-    # C (only a non-comparable room), D (no agent row) and the own hotel drop out.
-    assert _run_prices(rows, 1) == {"Hotel A": 90.0, "Hotel B": 120.0}
+    # D: the agent left its twin room unscored (a failed chunk, spec Α.5), so
+    # the double pool decides, exactly as the map reads the same job.
+    # C (only a non-comparable room) and the own hotel drop out.
+    assert _run_prices(rows, 1) == {"Hotel A": 90.0, "Hotel B": 120.0, "Hotel D": 80.0}
     latest = [row for row in rows if row["rn"] == 1]
     assert all(int(row["agent_basis"]) == 1 for row in latest)
     assert all(row["min_price_similar"] is None for row in latest)  # no widening pool
@@ -967,7 +983,11 @@ def test_owned_room_type_id_selects_its_own_agent_matches(agent_basis_repository
         **AGENT_KEY, room_type_category="double", include_similar=True, owned_room_type_id=ROOM_B
     )
 
-    assert _run_prices(rows, 1) == {"Hotel C": 70.0}
+    # ROOM_B's run judged only C's Double Room — comparable for this room,
+    # while ROOM_A's verdict drops it. A's and D's rooms carry no ROOM_B row,
+    # so the double pool prices them (A at its 60 Double Room, which ROOM_A's
+    # agent rejected); B sells no double-pool room.
+    assert _run_prices(rows, 1) == {"Hotel A": 60.0, "Hotel C": 70.0, "Hotel D": 80.0}
 
 
 def test_chart_and_statistics_read_the_same_agent_basis(agent_basis_repository):
@@ -980,10 +1000,10 @@ def test_chart_and_statistics_read_the_same_agent_basis(agent_basis_repository):
     chart_latest = sorted(row["min_price"] for row in basis_price_rows(chart_rows) if row["rn"] == 1)
 
     assert stats.stats_scope.used == "agent"
-    assert stats.stats_scope.comparable == 2
+    assert stats.stats_scope.comparable == 3
     assert stats.stats_scope.similar == 0
-    assert chart_latest == [90.0, 120.0]
-    assert stats.market_median_eur == 105.0  # the chart's own latest median
+    assert chart_latest == [80.0, 90.0, 120.0]
+    assert stats.market_median_eur == 90.0  # the chart's own latest median
     assert stats.position.total == len(chart_latest)
 
 
@@ -999,15 +1019,126 @@ def test_alerts_never_pair_runs_on_different_bases(agent_basis_repository):
     assert by_hotel["Hotel A"]["previous_price"] is None
 
 
-def test_agent_comparable_rooms_of_the_latest_run(agent_basis_repository):
-    rooms = agent_basis_repository.fetch_agent_comparable_rooms(
+def test_latest_run_agent_matches_are_every_verdict_of_the_latest_job(agent_basis_repository):
+    rows = agent_basis_repository.fetch_latest_run_agent_matches(
         **AGENT_KEY, owned_room_type_id=ROOM_A
     )
 
-    assert ("prop-hotel-a", "deluxe double sea view") in rooms
-    assert ("prop-hotel-b", "suite") in rooms
-    assert ("prop-hotel-a", "double room") not in rooms
-    assert ("prop-hotel-b", "studio") not in rooms
+    # Comparable and not alike: the advisor needs the whole lookup to tell a
+    # rejected room from one the agent never scored.
+    verdicts = {(row["property_id"], row["room_type"]): row["comparable"] for row in rows}
+    assert verdicts == {
+        ("prop-hotel-a", "Deluxe Double Sea View"): 1,
+        ("prop-hotel-a", "Double Room"): 0,
+        ("prop-hotel-b", "Suite"): None,
+        ("prop-hotel-b", "Studio"): None,
+        ("prop-hotel-c", "Double Room"): 0,
+        ("prop-rea-hotel", "Double Room"): 1,
+    }
+    # The write stamp the recommendation cache key folds in.
+    assert {row["created_at"] for row in rows} == {"2026-09-14T08:05:00+00:00"}
+    assert all(row["reasoning"] == "αιτιολόγηση" for row in rows)
+
+
+def test_latest_run_agent_matches_are_empty_for_a_room_without_rows(agent_basis_repository):
+    rooms = agent_basis_repository.fetch_latest_run_agent_matches(
+        **AGENT_KEY, owned_room_type_id="00000000-0000-0000-0000-0000000000rc"
+    )
+
+    assert rooms == []
+
+
+def test_an_agent_row_prices_every_spelling_of_its_room():
+    """Booking spells one room differently across packages; the agent stores
+    one row per room (case and surrounding spaces folded, like the read
+    side's lookup), and every spelling must find it."""
+    _skip_without_is_distinct_from()
+    runs = {
+        ("run-new", "job-new", "2026-09-14T08:00:00+00:00"): {
+            "Hotel A": [("studio apartment ", "studio", 60), ("Studio Apartment", "studio", 64)],
+            "Hotel B": [("Double Room", "double", 50)],
+        },
+    }
+    matches = (
+        (ROOM_A, "Hotel A", "Studio Apartment", 88, 1),
+        (ROOM_A, "Hotel B", "DOUBLE ROOM", 20, 0),
+    )
+    engine = _agent_basis_engine(runs, matches)
+    try:
+        rows = PriceHistoryRepository(engine.connect).fetch_price_series(
+            **AGENT_KEY, room_type_category="double", include_similar=True, owned_room_type_id=ROOM_A
+        )
+    finally:
+        engine.dispose()
+
+    # A's studio is comparable in both spellings, so its cheaper one (60)
+    # prices it; an exact match would leave that one unscored, outside the
+    # double pool. B's rejection binds to «Double Room» too, so B stays out
+    # instead of falling back to the double pool at 50.
+    assert _run_prices(rows, 1) == {"Hotel A": 60.0}
+
+
+def test_a_newest_run_with_no_comparable_room_is_never_replaced_by_an_older_one():
+    """The agent rejected every room of the newest search: its hotels come
+    back without a basis price, and the statistics report no current market
+    instead of promoting the older search to today's."""
+    _skip_without_is_distinct_from()
+    runs = {
+        ("run-new", "job-new", "2026-09-14T08:00:00+00:00"): {
+            "Hotel A": [("Double Room", "double", 60)],
+            "Hotel C": [("Double Room", "double", 70)],
+        },
+        ("run-old", "job-old", "2026-09-07T08:00:00+00:00"): {
+            "Hotel A": [("Double Room", "double", 55)],
+            "Hotel C": [("Double Room", "double", 65)],
+            "Hotel D": [("Twin Room", "twin", 75)],
+        },
+    }
+    matches = (
+        (ROOM_A, "Hotel A", "Double Room", 30, 0),
+        (ROOM_A, "Hotel C", "Double Room", 25, 0),
+    )
+    engine = _agent_basis_engine(runs, matches)
+    try:
+        rows = PriceHistoryRepository(engine.connect).fetch_price_series(
+            **AGENT_KEY, room_type_category="double", include_similar=True, owned_room_type_id=ROOM_A
+        )
+    finally:
+        engine.dispose()
+    stats = compute_price_statistics(rows, 100.0, check_in=AGENT_KEY["check_in"], as_of=date(2026, 6, 20))
+
+    latest = [row for row in rows if row["rn"] == 1]
+    assert {row["hotel_name"] for row in latest} == {"Hotel A", "Hotel C"}
+    assert all(row["min_price_same"] is None for row in latest)
+    assert stats.market_median_eur is None
+    assert stats.statistical_recommendation_eur is None
+    assert stats.sample_runs == 0
+    assert stats.stats_scope.used == "agent"
+    assert stats.stats_scope.comparable == 0
+    assert (
+        "Στην τελευταία αναζήτηση η εκτίμηση AI δεν βρήκε δωμάτιο συγκρίσιμο "
+        "με το δικό σας· δεν υπάρχει τρέχουσα βάση σύγκρισης."
+    ) in stats.notes
+    # The chart keeps the older searches: history, dated as such.
+    assert {row["rn"] for row in basis_price_rows(rows)} == {2}
+
+
+def test_only_the_agent_basis_returns_unpriced_latest_hotels():
+    category = FakeConnection()
+    _repository(category).fetch_price_series(**MARKET_KEY, room_type_category="double")
+    agent = FakeConnection()
+    _repository(agent).fetch_price_series(
+        **MARKET_KEY, room_type_category="double", owned_room_type_id=ROOM_A
+    )
+
+    assert "rn = 1 AND agent_basis = 1" not in category.executed_sql
+    assert "WHERE (min_price_same IS NOT NULL) OR (rn = 1 AND agent_basis = 1)" in agent.executed_sql
+    # An unscored room falls back to the category pool on the agent basis.
+    assert (
+        "COALESCE(rm.comparable, rm.score >= 50, rp.room_type_category IN"
+        " (:room_type_category_0, :room_type_category_1))"
+    ) in agent.executed_sql
+    assert "lower(trim(rm.room_type)) = lower(trim(rp.room_type))" in agent.executed_sql
 
 
 # ---------------------------------------------------------------------------

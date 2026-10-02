@@ -1,1 +1,1 @@
-﻿"""FastAPI routers for RoomRate."""
+"""FastAPI routers for RoomRate."""

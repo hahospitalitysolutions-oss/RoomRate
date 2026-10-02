@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timedelta
+from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 from api.repositories.scrape_jobs_repository import (
@@ -11,6 +12,13 @@ from api.repositories.scrape_jobs_repository import (
 )
 from api.schemas.schedule import ScheduleConfigResponse, ScheduleConfigUpdate
 from api.schemas.scrape_jobs import JOB_TYPE_COMPETITOR_SEARCH, ScrapeJobCreate
+from api.services.schedule_timing import (
+    is_schedule_due,
+    local_date,
+    local_hour_for_utc_hour,
+    schedule_zone,
+    utc_hour_for_local_hour,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +39,7 @@ class ScheduleRepositoryProtocol(Protocol):
 
     def upsert_config(self, account_id: uuid.UUID, payload: dict[str, Any]) -> dict[str, Any]: ...
 
-    def list_due_configs(self, now: datetime) -> list[dict[str, Any]]: ...
+    def list_enabled_configs(self) -> list[dict[str, Any]]: ...
 
     def touch_last_run(self, config_id: uuid.UUID, now: datetime) -> None: ...
 
@@ -63,19 +71,20 @@ class ScheduleService:
         repository: ScheduleRepositoryProtocol,
         scrape_job_service: ScrapeJobCreatorProtocol,
         notifier: ScheduleDisabledNotifierProtocol | None = None,
+        clock: Callable[[], datetime] | None = None,
     ):
         self.repository = repository
         self.scrape_job_service = scrape_job_service
         # Optional: the schedule-disabled notifier (Phase D). When unset the
         # breaker still disables schedules silently.
         self.notifier = notifier
+        # "Today" for the deprecated hour_utc field (it depends on the date).
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     def get_config(self, account_id: uuid.UUID) -> ScheduleConfigResponse:
         """Return the account's schedule config, or defaults when unset."""
         row = self.repository.get_config(account_id)
-        if row is None:
-            return ScheduleConfigResponse(account_id=account_id)
-        return ScheduleConfigResponse.model_validate(row)
+        return self._response(row if row is not None else {"account_id": account_id})
 
     def update_config(self, account_id: uuid.UUID, payload: ScheduleConfigUpdate) -> ScheduleConfigResponse:
         """Merge a partial update over the current config and upsert it.
@@ -83,11 +92,22 @@ class ScheduleService:
         Enabling a previously disabled schedule resets ``consecutive_failures``:
         re-enabling is an explicit operator "try again", so a breaker tripped
         by past failures must not immediately re-disable the schedule.
+
+        A client that predates ``hour_local`` sends ``hour_utc`` converted
+        with today's offset; it is converted back the same way. The stored
+        ``hour_utc`` keeps following ``hour_local`` so an older API image
+        (a rollback) still finds the owner's hour.
         """
+        now = self.clock()
         current = self.get_config(account_id)
         merged = current.model_dump()
         was_enabled = merged["enabled"]
-        merged.update(payload.model_dump(exclude_unset=True))
+        updates = payload.model_dump(exclude_unset=True)
+        legacy_hour_utc = updates.pop("hour_utc", None)
+        if legacy_hour_utc is not None and "hour_local" not in updates:
+            updates["hour_local"] = local_hour_for_utc_hour(legacy_hour_utc, merged["timezone"], now)
+        merged.update(updates)
+        merged["hour_utc"] = utc_hour_for_local_hour(merged["hour_local"], merged["timezone"], now)
         enabling = merged["enabled"] and not was_enabled
         if enabling:
             # Covers the insert path; existing rows are reset explicitly below
@@ -98,7 +118,31 @@ class ScheduleService:
         if enabling:
             self.repository.reset_failures(account_id)
             row = {**row, "consecutive_failures": 0}
-        return ScheduleConfigResponse.model_validate(row)
+        return self._response(row)
+
+    def _response(self, row: dict[str, Any]) -> ScheduleConfigResponse:
+        """The API view of a row, with ``hour_utc`` derived for today.
+
+        The stored ``hour_utc`` is only as fresh as the last save; the owner's
+        hour is ``hour_local``.
+        """
+        config = ScheduleConfigResponse.model_validate(row)
+        config.hour_utc = utc_hour_for_local_hour(config.hour_local, config.timezone, self.clock())
+        return config
+
+    def list_due_configs(self, now: datetime) -> list[dict[str, Any]]:
+        """Enabled schedules whose local run time has come (see schedule_timing)."""
+        return [
+            config
+            for config in self.repository.list_enabled_configs()
+            if is_schedule_due(
+                now=now,
+                last_run_at=config["last_run_at"],
+                hour_local=config["hour_local"],
+                frequency_hours=config["frequency_hours"],
+                timezone_name=config["timezone"],
+            )
+        ]
 
     def run_due_schedules(self, now: datetime) -> int:
         """Enqueue scheduled scrape jobs for every due config; returns count.
@@ -119,7 +163,7 @@ class ScheduleService:
         method must never reorder the returned properties.
         """
         created = 0
-        for config in self.repository.list_due_configs(now):
+        for config in self.list_due_configs(now):
             account_id = config["account_id"]
             try:
                 self.repository.touch_last_run(config["id"], now)
@@ -211,8 +255,13 @@ class ScheduleService:
         properties: list[dict[str, Any]],
         now: datetime,
     ) -> list[ScrapeJobCreate]:
-        """Build one competitor_search job per schedulable owned property."""
-        check_in = now.date() + timedelta(days=config["lead_days"])
+        """Build one competitor_search job per schedulable owned property.
+
+        The lead time counts from the owner's local date: at 01:00 in Athens
+        the UTC date is still yesterday.
+        """
+        today = local_date(now, schedule_zone(config.get("timezone")))
+        check_in = today + timedelta(days=config["lead_days"])
         check_out = check_in + timedelta(days=config["nights"])
         return [
             ScrapeJobCreate(

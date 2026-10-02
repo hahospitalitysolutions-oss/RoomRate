@@ -1,10 +1,26 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Numeric, String, Text, UniqueConstraint, func, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    Identity,
+    Index,
+    Numeric,
+    PrimaryKeyConstraint,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -106,6 +122,8 @@ class RoomRateOwnedProperty(TimestampMixin, Base):
             "account_id",
             "canonical_destination",
         ),
+        Index("ix_roomrate_owned_properties_matched_property", "matched_property_id"),
+        Index("ix_roomrate_owned_properties_selected_room_type", "account_id", "selected_room_type_category"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -194,6 +212,8 @@ class RoomRateScrapeJob(TimestampMixin, Base):
         # daily-quota count; the active-jobs count is covered by the partial
         # unique index below (leading account_id, active-status predicate).
         Index("ix_roomrate_scrape_jobs_account_requested", "account_id", text("requested_at DESC")),
+        Index("ix_roomrate_scrape_jobs_account_status", "account_id", "status"),
+        Index("ix_roomrate_scrape_jobs_requested", "requested_at"),
         # Executor's global oldest-first queue scan without indexing the
         # ever-growing terminal rows.
         Index(
@@ -299,6 +319,7 @@ class RoomRateScheduleConfig(TimestampMixin, Base):
         UniqueConstraint("account_id", name="uq_roomrate_schedule_configs_account"),
         CheckConstraint("frequency_hours > 0", name="ck_roomrate_schedule_configs_frequency_hours"),
         CheckConstraint("hour_utc BETWEEN 0 AND 23", name="ck_roomrate_schedule_configs_hour_utc"),
+        CheckConstraint("hour_local BETWEEN 0 AND 23", name="ck_roomrate_schedule_configs_hour_local"),
         CheckConstraint("lead_days >= 0", name="ck_roomrate_schedule_configs_lead_days"),
         CheckConstraint("nights > 0", name="ck_roomrate_schedule_configs_nights"),
         CheckConstraint("adults >= 1", name="ck_roomrate_schedule_configs_adults"),
@@ -315,6 +336,11 @@ class RoomRateScheduleConfig(TimestampMixin, Base):
     )
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     frequency_hours: Mapped[int] = mapped_column(nullable=False, default=24)
+    # The owner's hour on their own clock; the scheduler reads these two.
+    hour_local: Mapped[int] = mapped_column(nullable=False, default=8, server_default="8")
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Europe/Athens", server_default="Europe/Athens")
+    # Deprecated: hour_local as a UTC hour on the day of the last save, kept
+    # current for older API images (migration 20260930_0030).
     hour_utc: Mapped[int] = mapped_column(nullable=False, default=5)
     lead_days: Mapped[int] = mapped_column(nullable=False, default=30)
     nights: Mapped[int] = mapped_column(nullable=False, default=3)
@@ -335,6 +361,18 @@ class RoomRateScrapeRun(TimestampMixin, Base):
     __tablename__ = "roomrate_scrape_runs"
     __table_args__ = (
         UniqueConstraint("account_id", "provider", "source_run_key", name="uq_roomrate_scrape_runs_account_provider_source_key"),
+        Index(
+            "ix_roomrate_scrape_runs_market_dates",
+            "account_id",
+            "destination",
+            "check_in",
+            "check_out",
+            "adults",
+            "children",
+            "rooms",
+        ),
+        Index("ix_roomrate_scrape_runs_scrape_job", "scrape_job_id"),
+        Index("ix_roomrate_scrape_runs_status_started", "status", "started_at"),
         Index(
             "ix_roomrate_scrape_runs_market_canonical_dates",
             "account_id",
@@ -396,6 +434,8 @@ class RoomRateProperty(TimestampMixin, Base):
     __tablename__ = "roomrate_properties"
     __table_args__ = (
         UniqueConstraint("provider", "source_property_key", name="uq_roomrate_properties_provider_source_key"),
+        Index("ix_roomrate_properties_market", "city", "canonical_name"),
+        Index("ix_roomrate_properties_coordinates", "latitude", "longitude"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -428,6 +468,7 @@ class RoomRateRateObservation(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("scrape_run_id", "property_id", name="uq_roomrate_rate_observations_run_property"),
         Index("ix_roomrate_rate_observations_property_observed", "property_id", "observed_at"),
+        Index("ix_roomrate_rate_observations_review", "review_score", "review_count"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -460,6 +501,8 @@ class RoomRateRoomPackage(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("rate_observation_id", "source_record_id", name="uq_roomrate_room_packages_observation_record"),
         Index("ix_roomrate_room_packages_category_price", "room_type_category", "price_per_night_eur"),
+        Index("ix_roomrate_room_packages_price", "price_per_night_eur"),
+        Index("ix_roomrate_room_packages_room_type", "room_type"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -561,8 +604,12 @@ class RoomRatePropertyAmenity(TimestampMixin, Base):
     """Many-to-many bridge between properties and normalized amenities."""
 
     __tablename__ = "roomrate_property_amenities"
+    # Migration 0001 declared both a primary key and a UNIQUE on these two
+    # columns. PostgreSQL keeps only one of two identical constraints: the
+    # table's primary key, under the UNIQUE's name. The model says the same,
+    # so autogenerate does not try to add the UNIQUE again.
     __table_args__ = (
-        UniqueConstraint("property_id", "amenity_id", name="uq_roomrate_property_amenities_property_amenity"),
+        PrimaryKeyConstraint("property_id", "amenity_id", name="uq_roomrate_property_amenities_property_amenity"),
     )
 
     property_id: Mapped[uuid.UUID] = mapped_column(
@@ -836,6 +883,65 @@ class RoomRateAgentRun(Base):
 
     account: Mapped[RoomRateAccount] = relationship()
     scrape_job: Mapped[RoomRateScrapeJob | None] = relationship()
+
+
+class RoomRateAgentLease(Base):
+    """The run scoring one (job, owned room) scope right now (migration 20260930_0028).
+
+    At most one row per scope (the primary key): a second caller waits for
+    the holder or skips instead of paying for a duplicate run. ``holder`` is
+    the claiming run's token, so only it releases the lease; a lease older
+    than the longest possible run is stale and the next claim takes it over.
+    """
+
+    __tablename__ = "roomrate_agent_leases"
+
+    kind: Mapped[str] = mapped_column(String(30), primary_key=True)
+    scrape_job_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("roomrate_scrape_jobs.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    owned_room_type_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("roomrate_owned_property_room_types.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("roomrate_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    holder: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    acquired_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class RoomRateRateLimitHit(Base):
+    """One allowed hit on a rate-limited POST (migration 20260930_0029).
+
+    Shared by every API process, so RATE_LIMIT_PER_MINUTE holds per caller
+    across the whole deployment. ``key_hash`` is a SHA-256 of the caller key
+    (never a raw IP, token or account id); rows older than the window are
+    pruned by the checks themselves.
+    """
+
+    __tablename__ = "roomrate_rate_limit_hits"
+    __table_args__ = (
+        Index("ix_roomrate_rate_limit_hits_key_hit", "key_hash", "hit_at"),
+        Index("ix_roomrate_rate_limit_hits_hit_at", "hit_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=False), primary_key=True)
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    hit_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
 
 
 class RoomRatePriceRecommendationAudit(Base):

@@ -459,12 +459,14 @@ test.describe("settings: the check hour is in Greek time", () => {
   // not whatever zone the owner's laptop happens to be in.
   test.use({ timezoneId: "America/New_York" });
 
-  test("the stored UTC hour is shown and saved as the Greek hour, across daylight saving", async ({ page }) => {
-    const SCHEDULE = {
-      account_id: "e2e-account", enabled: true, frequency_hours: 24, hour_utc: 5,
-      lead_days: 30, nights: 3, adults: 2, children: 0, rooms: 1,
-      consecutive_failures: 0, last_run_at: null,
-    };
+  const BASE_SCHEDULE = {
+    account_id: "e2e-account", enabled: true, frequency_hours: 24,
+    lead_days: 30, nights: 3, adults: 2, children: 0, rooms: 1,
+    consecutive_failures: 0, last_run_at: null,
+  };
+
+  /** Mocks GET/PUT /schedule around `schedule`; returns the PUT bodies. */
+  async function mockSchedule(page: Page, schedule: Record<string, unknown>): Promise<Array<Record<string, unknown>>> {
     const savedBodies: Array<Record<string, unknown>> = [];
     await seedBrowserState(page);
     // LIFO: wildcard first so the specific mocks after it win. The rules route
@@ -476,34 +478,64 @@ test.describe("settings: the check hour is in Greek time", () => {
       if (route.request().method() === "PUT") {
         const body = route.request().postDataJSON() as Record<string, unknown>;
         savedBodies.push(body);
-        return route.fulfill({ json: { ...SCHEDULE, ...body } });
+        return route.fulfill({ json: { ...schedule, ...body } });
       }
-      return route.fulfill({ json: SCHEDULE });
+      return route.fulfill({ json: schedule });
+    });
+    return savedBodies;
+  }
+
+  test("the stored local hour stays the same across daylight saving and is saved as is", async ({ page }) => {
+    // The API derives hour_utc for today; this bundle must ignore it.
+    const savedBodies = await mockSchedule(page, {
+      ...BASE_SCHEDULE, hour_local: 8, timezone: "Europe/Athens", hour_utc: 5,
     });
     const hourField = page.getByLabel("Ώρα ελέγχου (ώρα Ελλάδας)");
     const saveButton = page.getByRole("button", { name: "Αποθήκευση προγράμματος" });
 
-    // Summer: Greece is UTC+3, so the stored 05:00 UTC is 08:00 Greek time.
     await page.clock.setFixedTime(new Date("2026-07-15T09:00:00Z"));
     await page.goto("/settings");
     await expect(hourField).toHaveValue("8");
     await saveButton.click();
     await expect(page.getByText("Η αυτόματη αναζήτηση ενεργοποιήθηκε. Θα βλέπετε νέες τιμές ανταγωνιστών σε κάθε έλεγχο.")).toBeVisible();
+    expect(savedBodies.at(-1)?.["hour_local"]).toBe(8);
+    // Also sent for an API that predates hour_local: 08:00 is 05:00 UTC in summer.
     expect(savedBodies.at(-1)?.["hour_utc"]).toBe(5);
 
-    // Wrap-around: 01:00 Greek time is 22:00 UTC the previous day.
+    // Wrap-around for that older API: 01:00 Greek time is 22:00 UTC the day before.
     await hourField.fill("1");
     await saveButton.click();
     await expect.poll(() => savedBodies.length).toBe(2);
+    expect(savedBodies.at(-1)?.["hour_local"]).toBe(1);
     expect(savedBodies.at(-1)?.["hour_utc"]).toBe(22);
     await expect(hourField).toHaveValue("1");
 
-    // Winter: Greece is UTC+2, so the same stored 05:00 UTC is 07:00.
+    // Winter: still the owner's 08:00, whatever the UTC hour is now.
+    await page.clock.setFixedTime(new Date("2026-01-15T09:00:00Z"));
+    await page.reload();
+    await expect(hourField).toHaveValue("8");
+    await saveButton.click();
+    await expect.poll(() => savedBodies.length).toBe(3);
+    expect(savedBodies.at(-1)?.["hour_local"]).toBe(8);
+    expect(savedBodies.at(-1)?.["hour_utc"]).toBe(6);
+  });
+
+  test("an API without hour_local: the UTC hour is read with today's offset", async ({ page }) => {
+    const savedBodies = await mockSchedule(page, { ...BASE_SCHEDULE, hour_utc: 5 });
+    const hourField = page.getByLabel("Ώρα ελέγχου (ώρα Ελλάδας)");
+    const saveButton = page.getByRole("button", { name: "Αποθήκευση προγράμματος" });
+
+    // Summer: Greece is UTC+3, so 05:00 UTC is 08:00 Greek time.
+    await page.clock.setFixedTime(new Date("2026-07-15T09:00:00Z"));
+    await page.goto("/settings");
+    await expect(hourField).toHaveValue("8");
+    await saveButton.click();
+    await expect.poll(() => savedBodies.length).toBe(1);
+    expect(savedBodies.at(-1)?.["hour_utc"]).toBe(5);
+
+    // Winter: Greece is UTC+2, so the same 05:00 UTC is 07:00.
     await page.clock.setFixedTime(new Date("2026-01-15T09:00:00Z"));
     await page.reload();
     await expect(hourField).toHaveValue("7");
-    await saveButton.click();
-    await expect.poll(() => savedBodies.length).toBe(3);
-    expect(savedBodies.at(-1)?.["hour_utc"]).toBe(5);
   });
 });
