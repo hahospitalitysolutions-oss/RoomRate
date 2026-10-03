@@ -1,8 +1,91 @@
 import { Page, Request, Route } from "@playwright/test";
 
 export const API = "http://127.0.0.1:8000";
-// supabase-js v2 default storage key: sb-<project-ref>-auth-token.
-export const SUPABASE_STORAGE_KEY = "sb-nycfqostjdjaynstaloo-auth-token";
+// The dev build's Neon Auth base URL (src/environments/environment.development.ts).
+export const NEON_AUTH_URL = "https://ep-holy-fog-b2lft4e6.neonauth.c-6.eu-central-1.aws.neon.tech/neondb/auth";
+
+/** An unsigned JWT the auth SDK can read `exp` from; the mocked API never verifies it. */
+export function fakeAccessToken(claims: Record<string, unknown> = {}): string {
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const payload = {
+    sub: "e2e-user",
+    email: "e2e@roomrate.test",
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    ...claims,
+  };
+  return `${encode({ alg: "EdDSA", typ: "JWT" })}.${encode(payload)}.e2e-signature`;
+}
+
+export const E2E_AUTH_USER = {
+  id: "e2e-user",
+  email: "e2e@roomrate.test",
+  emailVerified: true,
+  name: "E2E Owner",
+  image: null,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+};
+
+/** Better Auth's GET /get-session body for a signed-in user. */
+export function neonAuthSessionBody(user = E2E_AUTH_USER) {
+  const now = Date.now();
+  return {
+    session: {
+      id: "e2e-session",
+      token: "e2e-session-token",
+      userId: user.id,
+      expiresAt: new Date(now + 7 * 24 * 3600 * 1000).toISOString(),
+      createdAt: new Date(now).toISOString(),
+      updatedAt: new Date(now).toISOString(),
+    },
+    user,
+  };
+}
+
+/**
+ * Answer a Neon Auth request the way its server does, CORS included: the app
+ * runs on 127.0.0.1:4200 and calls the auth origin with credentials, and the
+ * SDK reads the JWT from the exposed `set-auth-jwt` header.
+ */
+export function fulfillNeonAuth(route: Route, json: unknown, headers: Record<string, string> = {}, status = 200): Promise<void> {
+  const request = route.request();
+  const cors = {
+    "access-control-allow-origin": request.headers()["origin"] ?? "http://127.0.0.1:4200",
+    "access-control-allow-credentials": "true",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-headers": request.headers()["access-control-request-headers"] ?? "content-type",
+    "access-control-expose-headers": "set-auth-jwt",
+  };
+  if (request.method() === "OPTIONS") {
+    return route.fulfill({ status: 204, headers: cors });
+  }
+  return route.fulfill({
+    status,
+    contentType: "application/json",
+    headers: { ...cors, ...headers },
+    body: JSON.stringify(json),
+  });
+}
+
+/**
+ * Hermetic Neon Auth: nothing reaches the real auth server. `signedIn` decides
+ * what GET /get-session answers (a session plus its JWT, or null); a spec can
+ * flip it later through the returned state, e.g. after a mocked sign-in.
+ */
+export async function mockNeonAuth(page: Page, options: { signedIn?: boolean } = {}): Promise<{ signedIn: boolean }> {
+  const state = { signedIn: options.signedIn ?? true };
+  // LIFO: the catch-all goes first so the specific routes registered after it win.
+  await page.route(`${NEON_AUTH_URL}/**`, (route) => route.abort());
+  await page.route(`${NEON_AUTH_URL}/get-session**`, (route) =>
+    state.signedIn
+      ? fulfillNeonAuth(route, neonAuthSessionBody(), { "set-auth-jwt": fakeAccessToken() })
+      : fulfillNeonAuth(route, null));
+  await page.route(`${NEON_AUTH_URL}/sign-out**`, (route) => {
+    state.signedIn = false;
+    return fulfillNeonAuth(route, { success: true });
+  });
+  return state;
+}
 
 export const ACCOUNT_ID = "00000000-0000-0000-0000-000000000001";
 export const OWNED_PROPERTY_ID = "11111111-1111-1111-1111-111111111111";
@@ -21,24 +104,10 @@ export const CURRENT_USER = {
   selected_room_type_category: "double",
 };
 
-/** Seed a non-expiring Supabase session + RoomRate workflow storage. */
+/** A signed-in Neon Auth session + RoomRate workflow storage. */
 export async function seedBrowserState(page: Page): Promise<void> {
   await page.addInitScript(
-    ({ storageKey, ownedPropertyId, roomTypeId, jobId }) => {
-      const session = {
-        access_token: "e2e-fake-access-token",
-        refresh_token: "e2e-fake-refresh-token",
-        token_type: "bearer",
-        expires_in: 3600,
-        expires_at: Math.floor(Date.now() / 1000) + 3600,
-        user: {
-          id: "e2e-user",
-          aud: "authenticated",
-          role: "authenticated",
-          email: "e2e@roomrate.test",
-        },
-      };
-      window.localStorage.setItem(storageKey, JSON.stringify(session));
+    ({ ownedPropertyId, roomTypeId, jobId }) => {
       window.localStorage.setItem("roomrate_owned_property_id", ownedPropertyId);
       window.localStorage.setItem("roomrate_property_name", "E2E Test Hotel");
       window.localStorage.setItem("roomrate_property_city", "Faliraki");
@@ -49,12 +118,12 @@ export async function seedBrowserState(page: Page): Promise<void> {
       window.localStorage.setItem("roomrate_last_competitor_job_id", jobId);
     },
     {
-      storageKey: SUPABASE_STORAGE_KEY,
       ownedPropertyId: OWNED_PROPERTY_ID,
       roomTypeId: ROOM_TYPE_ID,
       jobId: JOB_ID,
     },
   );
+  await mockNeonAuth(page);
   await mockNotificationBell(page);
 }
 
@@ -82,19 +151,9 @@ export async function mockMapbox(page: Page): Promise<void> {
     }));
 }
 
-/** Seed only the Supabase session — a brand-new user with no workflow state. */
+/** Only a signed-in Neon Auth session — a brand-new user with no workflow state. */
 export async function seedSessionOnly(page: Page): Promise<void> {
-  await page.addInitScript((storageKey) => {
-    const session = {
-      access_token: "e2e-fake-access-token",
-      refresh_token: "e2e-fake-refresh-token",
-      token_type: "bearer",
-      expires_in: 3600,
-      expires_at: Math.floor(Date.now() / 1000) + 3600,
-      user: { id: "e2e-user", aud: "authenticated", role: "authenticated", email: "e2e@roomrate.test" },
-    };
-    window.localStorage.setItem(storageKey, JSON.stringify(session));
-  }, SUPABASE_STORAGE_KEY);
+  await mockNeonAuth(page);
   await mockNotificationBell(page);
 }
 

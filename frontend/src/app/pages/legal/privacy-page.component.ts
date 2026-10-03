@@ -6,7 +6,7 @@ import { RouterLink } from "@angular/router";
  *
  * This is a DRAFT, and the page says so in a notice the reader cannot miss.
  * It is written against what RoomRate actually stores today, not against a
- * generic template: the account e-mail lives in Supabase auth, the owned
+ * generic template: the account e-mail lives in Neon Auth, the owned
  * property (name, destination, Booking listing) and its selected room type in
  * `roomrate_owned_properties` / `roomrate_owned_property_room_types`, the
  * tracked competitors in `roomrate_tracked_competitors`, and the price
@@ -32,8 +32,8 @@ import { RouterLink } from "@angular/router";
  * hard-coding days here would create a promise the operator can silently break.
  *
  * The cookie section is a verified factual claim: `document.cookie` appears
- * nowhere in `frontend/src`, and supabase-js keeps the session in localStorage
- * under `sb-<project-ref>-auth-token`. e2e/legal-pages.spec.ts pins it, so if
+ * nowhere in `frontend/src`; the only cookie is Neon Auth's session cookie on
+ * its own domain, and the setup progress lives in localStorage. e2e/legal-pages.spec.ts pins it, so if
  * an analytics cookie ever lands the spec is the place that argues back.
  *
  * No "@" character may appear in this template: Angular's block syntax claims
@@ -137,8 +137,9 @@ import { RouterLink } from "@angular/router";
           </p>
           <ul data-testid="legal-processors">
             <li>
-              <strong>Supabase</strong> — ταυτοποίηση χρηστών και διαχείριση συνεδρίας. Επεξεργάζεται
-              τη διεύθυνση ηλεκτρονικού ταχυδρομείου και τα διαπιστευτήρια εισόδου σας.
+              <strong>Neon</strong> — φιλοξενία της βάσης δεδομένων, ταυτοποίηση χρηστών και
+              διαχείριση συνεδρίας. Επεξεργάζεται τη διεύθυνση ηλεκτρονικού ταχυδρομείου, τα
+              διαπιστευτήρια εισόδου σας και τα δεδομένα του λογαριασμού σας.
             </li>
             <li>
               <strong>Apify / Booking</strong> — άντληση δημόσια διαθέσιμων τιμών και στοιχείων
@@ -208,11 +209,11 @@ import { RouterLink } from "@angular/router";
               δεν υπάρχει τέτοια συλλογή.
             </p>
             <p>
-              Χρησιμοποιούμε αποκλειστικά την τοπική αποθήκευση (localStorage) του browser σας για
-              δύο πράγματα: τη συνεδρία εισόδου που δημιουργεί ο πάροχος ταυτοποίησης Supabase και
-              την πρόοδό σας στη ρύθμιση του καταλύματος, ώστε να μη χάνεται αν κλείσετε τη
-              σελίδα. Τα δεδομένα αυτά παραμένουν στη συσκευή σας και διαγράφονται με την
-              αποσύνδεσή σας ή με τον καθαρισμό των δεδομένων του browser.
+              Η συνεδρία εισόδου σας διατηρείται σε ένα απαραίτητο cookie σύνδεσης που ορίζει ο
+              πάροχος ταυτοποίησης Neon. Επιπλέον χρησιμοποιούμε την τοπική αποθήκευση
+              (localStorage) του browser σας για την πρόοδό σας στη ρύθμιση του καταλύματος, ώστε
+              να μη χάνεται αν κλείσετε τη σελίδα. Τα δεδομένα αυτά παραμένουν στη συσκευή σας και
+              διαγράφονται με την αποσύνδεσή σας ή με τον καθαρισμό των δεδομένων του browser.
             </p>
           </div>
 

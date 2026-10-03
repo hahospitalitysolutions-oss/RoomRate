@@ -1,4 +1,9 @@
-"""Local Supabase access-token verification (Phase F).
+"""Local access-token verification: Neon Auth, or Supabase (Phase F).
+
+Neon Auth (Better Auth managed by Neon) is used when ``NEON_AUTH_URL`` is set:
+its tokens are verified against ``<NEON_AUTH_URL>/.well-known/jwks.json`` by
+``NeonAuthService`` below. Without it, Supabase tokens are verified as
+described here.
 
 Supabase access tokens are JWTs. Previously this module verified them by calling
 Supabase ``/auth/v1/user`` over HTTP on every request and caching the remote
@@ -34,7 +39,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
+from typing import Any, Protocol
 
 import jwt
 from fastapi import HTTPException
@@ -46,11 +51,19 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class SupabaseAuthUser:
-    """Verified Supabase Auth identity."""
+    """Verified identity from the configured auth provider."""
 
     auth_subject: str
     email: str | None = None
     display_name: str | None = None
+    # roomrate_user_identities.auth_provider: one account per (provider, subject).
+    auth_provider: str = "supabase"
+
+
+class AccessTokenVerifier(Protocol):
+    """What the account resolution needs from an auth provider."""
+
+    async def verify_access_token(self, token: str) -> SupabaseAuthUser: ...
 
 
 # Algorithms we accept. Supabase signs access tokens with one of these; the
@@ -234,4 +247,78 @@ class SupabaseAuthService:
             auth_subject=str(auth_subject),
             email=email,
             display_name=display_name,
+        )
+
+
+# Neon Auth signs with the Better Auth JWT plugin: EdDSA (Ed25519) by default,
+# or a configured asymmetric key pair. Never HMAC: there is no shared secret.
+_NEON_ALGORITHMS = frozenset({"EdDSA", "ES256", "RS256", "PS256"})
+NEON_AUTH_PROVIDER = "neon_auth"
+
+
+def neon_auth_enabled() -> bool:
+    """True when browser tokens come from Neon Auth instead of Supabase."""
+    return bool(settings.neon_auth_url or settings.neon_auth_jwks_url)
+
+
+def _neon_jwks_url() -> str:
+    """Configured JWKS URL, or the Neon Auth endpoint derived from NEON_AUTH_URL."""
+    if settings.neon_auth_jwks_url:
+        return settings.neon_auth_jwks_url
+    if settings.neon_auth_url:
+        return settings.neon_auth_url.rstrip("/") + "/.well-known/jwks.json"
+    return ""
+
+
+class NeonAuthService:
+    """Validate Neon Auth (Better Auth) JWTs locally against the project JWKS.
+
+    The JWT is what the browser SDK returns as the session's access token; it
+    lasts 15 minutes and the SDK renews it. Signature, ``exp`` and ``sub`` are
+    always checked; ``iss`` and ``aud`` (Better Auth sets both to its base URL)
+    only when NEON_AUTH_JWT_ISSUER / NEON_AUTH_JWT_AUDIENCE are set. The JWKS
+    is per project, so a valid signature already means "issued by this
+    project's Neon Auth".
+    """
+
+    _jwks_cache = _JWKSCache()
+
+    async def verify_access_token(self, token: str) -> SupabaseAuthUser:
+        jwks_url = _neon_jwks_url()
+        if not jwks_url:
+            raise HTTPException(status_code=500, detail="Neon Auth is not configured")
+        try:
+            algorithm = jwt.get_unverified_header(token).get("alg")
+        except jwt.PyJWTError as exc:
+            raise _invalid_token() from exc
+        if algorithm not in _NEON_ALGORITHMS:
+            raise _invalid_token()
+        key = self._jwks_cache.get_signing_key(token, jwks_url)
+        audience = settings.neon_auth_jwt_audience or None
+        issuer = settings.neon_auth_jwt_issuer or None
+        try:
+            claims = jwt.decode(
+                token,
+                key,
+                algorithms=[algorithm],
+                audience=audience,
+                issuer=issuer,
+                leeway=timedelta(seconds=60),
+                options={
+                    "require": ["exp", "sub"],
+                    "verify_aud": audience is not None,
+                    "verify_iss": issuer is not None,
+                },
+            )
+        except jwt.PyJWTError as exc:
+            raise _invalid_token() from exc
+        auth_subject = claims.get("sub")
+        if not auth_subject:
+            raise _invalid_token("Invalid Neon Auth user payload")
+        email = claims.get("email")
+        return SupabaseAuthUser(
+            auth_subject=str(auth_subject),
+            email=email,
+            display_name=claims.get("name") or email,
+            auth_provider=NEON_AUTH_PROVIDER,
         )

@@ -10,8 +10,7 @@
 #   The Angular app does NOT read environment variables, and no API URL is
 #   compiled into the bundle. index.html loads /runtime-config.js, which sets
 #   window.__ROOMRATE_CONFIG__; src/environments/environment.ts reads that
-#   object at startup for apiBaseUrl, supabaseUrl, supabaseAnonKey and
-#   mapboxToken. (The NG_APP_* names still mentioned in some older notes are
+#   object at startup for apiBaseUrl, neonAuthUrl and mapboxToken. (The NG_APP_* names still mentioned in some older notes are
 #   dead — nothing in the codebase reads them.)
 #
 #   Consequence: this image has NO build arguments for configuration and the
@@ -93,8 +92,7 @@ ENV NGINX_ENVSUBST_FILTER="^ROOMRATE_"
 # reverse-proxied onto this same origin: relying on 'self' covering wss: is a
 # CSP Level 3 detail, and stating the origin costs nothing.
 ENV ROOMRATE_API_BASE_URL="" \
-    ROOMRATE_SUPABASE_URL="" \
-    ROOMRATE_SUPABASE_ANON_KEY="" \
+    ROOMRATE_NEON_AUTH_URL="" \
     ROOMRATE_MAPBOX_TOKEN="" \
     ROOMRATE_CSP_API_ORIGINS=""
 

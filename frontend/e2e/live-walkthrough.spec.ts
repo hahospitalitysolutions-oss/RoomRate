@@ -2,7 +2,7 @@
  * Manual walkthrough of the REAL app against the REAL backend.
  *
  * Not a regression test — a driver that screenshots the live UI. The only
- * thing faked is the Supabase browser session (a signed-in user's password is
+ * thing faked is the Neon Auth browser session (a signed-in user's password is
  * not available here); every /api/v1 call is proxied to the running FastAPI
  * with the internal API key + account header, so the pages render genuine
  * database rows.
@@ -13,8 +13,9 @@
 
 import { expect, Page, test } from "@playwright/test";
 
+import { mockNeonAuth } from "./helpers";
+
 const API = "http://127.0.0.1:8000";
-const SUPABASE_STORAGE_KEY = "sb-nycfqostjdjaynstaloo-auth-token";
 const INTERNAL_KEY = process.env.ROOMRATE_E2E_API_KEY ?? "";
 const ACCOUNT_ID = process.env.ROOMRATE_E2E_ACCOUNT_ID ?? "";
 const SHOTS = "../output/walkthrough";
@@ -22,25 +23,8 @@ const SHOTS = "../output/walkthrough";
 test.skip(!INTERNAL_KEY || !ACCOUNT_ID, "needs ROOMRATE_E2E_API_KEY + ROOMRATE_E2E_ACCOUNT_ID");
 
 async function signedInWithLiveBackend(page: Page): Promise<void> {
-  await page.addInitScript(
-    ({ storageKey }) => {
-      window.localStorage.setItem(
-        storageKey,
-        JSON.stringify({
-          access_token: "walkthrough-session",
-          refresh_token: "walkthrough-refresh",
-          token_type: "bearer",
-          expires_in: 3600,
-          expires_at: Math.floor(Date.now() / 1000) + 3600,
-          user: { id: "walkthrough-user", aud: "authenticated", role: "authenticated" },
-        }),
-      );
-    },
-    { storageKey: SUPABASE_STORAGE_KEY },
-  );
-
-  // Supabase itself is never contacted; the session above is enough for the guard.
-  await page.route(/https:\/\/nycfqostjdjaynstaloo\.supabase\.co\/.*/, (route) => route.abort());
+  // Neon Auth itself is never contacted; the mocked session is enough for the guard.
+  await mockNeonAuth(page);
 
   // Swap the (fake) browser bearer token for the internal key so the real API
   // answers with this account's real rows.

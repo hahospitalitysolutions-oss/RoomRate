@@ -322,10 +322,11 @@ def check_jwt_config() -> CheckResult:
     name = "JWKS / JWT config"
     from api.config import settings
 
-    jwks_url = settings.supabase_jwks_url
-    if not jwks_url and settings.supabase_url:
-        # Same derivation rule as api.services.auth_service._resolved_jwks_url.
-        jwks_url = settings.supabase_url.rstrip("/") + "/auth/v1/.well-known/jwks.json"
+    from api.services.auth_service import _neon_jwks_url, _resolved_jwks_url, neon_auth_enabled
+
+    # Same derivation rules as api.services.auth_service: Neon Auth when
+    # NEON_AUTH_URL is set, else Supabase.
+    jwks_url = _neon_jwks_url() if neon_auth_enabled() else _resolved_jwks_url()
     try:
         if jwks_url:
             import httpx
@@ -353,7 +354,7 @@ def check_jwt_config() -> CheckResult:
             )
             return CheckResult(name, PASS, "HS256 token minted and verified with SUPABASE_JWT_SECRET")
         return CheckResult(
-            name, SKIP, "no SUPABASE_JWKS_URL / SUPABASE_URL / SUPABASE_JWT_SECRET configured"
+            name, SKIP, "no NEON_AUTH_URL / SUPABASE_JWKS_URL / SUPABASE_URL / SUPABASE_JWT_SECRET configured"
         )
     except Exception as exc:
         return _failure(name, exc)

@@ -1,15 +1,16 @@
 /**
  * Regression tests: data must appear WITHOUT a second click or manual refresh.
  *
- * Why these exist: supabase-js v2 acquires a Web Locks API lock inside
- * getSession(), and zone.js cannot patch navigator.locks. Every API call
+ * Why these exist: the auth SDK (supabase-js then, Neon Auth now) resolves
+ * getSession() through APIs zone.js cannot always patch (supabase-js used a
+ * navigator.locks lock). Every API call
  * awaits getAccessToken() first, so the continuation after that await runs
  * OUTSIDE the Angular zone — plain-field mutations there never triggered
  * change detection and the UI only caught up on the next unrelated click.
  * Component state is signal-based precisely so out-of-zone completions still
  * schedule change detection; these tests pin that behavior in a real browser.
  *
- * The FastAPI backend, the /ws/alerts WebSocket and the Supabase session are
+ * The FastAPI backend, the /ws/alerts WebSocket and the auth session are
  * all mocked, so the only moving part is the Angular app itself.
  */
 
@@ -24,7 +25,6 @@ import {
   OWNED_PROPERTY_ID,
   ROOM_TYPE_ID,
   seedBrowserState,
-  SUPABASE_STORAGE_KEY,
 } from "./helpers";
 
 const PROP_ALPHA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
@@ -205,8 +205,6 @@ async function mockBackend(page: Page, options: MockOptions = {}): Promise<void>
   // assert on `status` or message() call mockMapbox afterwards, because a
   // FAILED style is not neutral for those — see the helper.
   await page.route(/https:\/\/(api|events)\.mapbox\.com\/.*/, (route) => route.abort());
-  // Safety net: a session refresh would mean the seeded session was rejected.
-  await page.route(/https:\/\/nycfqostjdjaynstaloo\.supabase\.co\/.*/, (route) => route.abort());
 
   await page.route(`${API}/**`, async (route) => {
     const request = route.request();

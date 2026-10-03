@@ -1,47 +1,51 @@
 import { Injectable } from "@angular/core";
-import {
-  AuthChangeEvent,
-  createClient,
-  Session,
-  Subscription,
-  SupabaseClient,
-} from "@supabase/supabase-js";
+import { createAuthClient } from "@neondatabase/auth";
+import { SupabaseAuthAdapter } from "@neondatabase/auth/vanilla/adapters";
 
 import { environment } from "../../environments/environment";
+
+/**
+ * Login through Neon Auth (Better Auth managed by Neon).
+ *
+ * The Supabase-compatible adapter keeps the method names this app was built
+ * on (signInWithPassword, getSession, onAuthStateChange...). The session's
+ * access_token is the Neon Auth JWT (15 minutes, renewed by the SDK) that the
+ * API verifies against the project JWKS.
+ */
+function createNeonAuthClient(url: string) {
+  return createAuthClient(url, { adapter: SupabaseAuthAdapter() });
+}
+
+type NeonAuthClient = ReturnType<typeof createNeonAuthClient>;
+export type AuthSession = NonNullable<Awaited<ReturnType<NeonAuthClient["getSession"]>>["data"]["session"]>;
+type AuthStateCallback = Parameters<NeonAuthClient["onAuthStateChange"]>[0];
+export type AuthChangeEvent = Parameters<AuthStateCallback>[0];
+export type AuthSubscription = ReturnType<NeonAuthClient["onAuthStateChange"]>["data"]["subscription"];
 
 export type SignUpResult = {
   needsEmailConfirmation: boolean;
 };
 
-type SupabasePasswordGrantResponse = {
-  access_token?: string;
-  refresh_token?: string;
-  error?: string;
-  error_description?: string;
-  msg?: string;
-  message?: string;
-};
+const NOT_CONFIGURED = "Λείπει η ρύθμιση σύνδεσης (neonAuthUrl) του RoomRate.";
 
 @Injectable({ providedIn: "root" })
 export class AuthService {
-  private readonly supabase: SupabaseClient | null;
+  private readonly client: NeonAuthClient | null;
 
   constructor() {
-    this.supabase = environment.supabaseUrl && environment.supabaseAnonKey
-      ? createClient(environment.supabaseUrl, environment.supabaseAnonKey)
-      : null;
+    this.client = environment.neonAuthUrl ? createNeonAuthClient(environment.neonAuthUrl) : null;
   }
 
   isConfigured(): boolean {
-    return Boolean(this.supabase);
+    return Boolean(this.client);
   }
 
-  async getSession(): Promise<Session | null> {
-    if (!this.supabase) {
+  async getSession(): Promise<AuthSession | null> {
+    if (!this.client) {
       return null;
     }
-    const { data } = await this.supabase.auth.getSession();
-    return data.session;
+    const { data } = await this.client.getSession();
+    return data.session ?? null;
   }
 
   async getAccessToken(): Promise<string> {
@@ -53,29 +57,24 @@ export class AuthService {
   }
 
   async signIn(email: string, password: string): Promise<void> {
-    if (!this.supabase) {
-      throw new Error("Λείπουν οι ρυθμίσεις περιβάλλοντος του Supabase.");
-    }
-    const payload = await this.passwordGrant(email, password);
-    if (!payload.access_token || !payload.refresh_token) {
-      const message = payload.error_description || payload.msg || payload.message || payload.error || "Το Supabase δεν επέστρεψε συνεδρία.";
-      throw new Error(this.toFriendlyAuthError(message));
-    }
-    const { error } = await this.supabase.auth.setSession({
-      access_token: payload.access_token,
-      refresh_token: payload.refresh_token,
-    });
+    const client = this.requireClient();
+    const { data, error } = await this.withTimeout(
+      client.signInWithPassword({ email, password }),
+      "Η σύνδεση έληξε μετά από 20 δευτερόλεπτα. Ελέγξτε το δίκτυό σας και δοκιμάστε ξανά.",
+      20_000,
+    );
     if (error) {
       throw new Error(this.toFriendlyAuthError(error.message));
+    }
+    if (!data.session) {
+      throw new Error("Η σύνδεση δεν επέστρεψε συνεδρία. Δοκιμάστε ξανά.");
     }
   }
 
   async signUp(email: string, password: string): Promise<SignUpResult> {
-    if (!this.supabase) {
-      throw new Error("Λείπουν οι ρυθμίσεις περιβάλλοντος του Supabase.");
-    }
+    const client = this.requireClient();
     const { data, error } = await this.withTimeout(
-      this.supabase.auth.signUp({
+      client.signUp({
         email,
         password,
         options: {
@@ -91,11 +90,9 @@ export class AuthService {
   }
 
   async resendSignUpConfirmation(email: string): Promise<void> {
-    if (!this.supabase) {
-      throw new Error("Λείπουν οι ρυθμίσεις περιβάλλοντος του Supabase.");
-    }
+    const client = this.requireClient();
     const { error } = await this.withTimeout(
-      this.supabase.auth.resend({
+      client.resend({
         type: "signup",
         email,
         options: {
@@ -110,27 +107,26 @@ export class AuthService {
   }
 
   async signOut(): Promise<void> {
-    if (!this.supabase) {
+    if (!this.client) {
       return;
     }
-    await this.supabase.auth.signOut();
+    await this.client.signOut();
   }
 
   onAuthStateChange(
-    callback: (event: AuthChangeEvent, session: Session | null) => void,
-  ): Subscription | null {
-    if (!this.supabase) {
+    callback: (event: AuthChangeEvent, session: AuthSession | null) => void,
+  ): AuthSubscription | null {
+    if (!this.client) {
       return null;
     }
-    return this.supabase.auth.onAuthStateChange(callback).data.subscription;
+    return this.client.onAuthStateChange(callback).data.subscription;
   }
 
+  /** Emails a reset link; Neon Auth sends the browser back to /auth?recovery=1&token=…. */
   async requestPasswordReset(email: string): Promise<void> {
-    if (!this.supabase) {
-      throw new Error("Λείπουν οι ρυθμίσεις περιβάλλοντος του Supabase.");
-    }
+    const client = this.requireClient();
     const { error } = await this.withTimeout(
-      this.supabase.auth.resetPasswordForEmail(email, {
+      client.resetPasswordForEmail(email, {
         redirectTo: `${window.location.origin}/auth?recovery=1`,
       }),
       "Το αίτημα επαναφοράς κωδικού διαρκεί υπερβολικά. Ελέγξτε τη σύνδεσή σας και δοκιμάστε ξανά.",
@@ -140,17 +136,36 @@ export class AuthService {
     }
   }
 
-  async updatePassword(password: string): Promise<void> {
-    if (!this.supabase) {
-      throw new Error("Λείπουν οι ρυθμίσεις περιβάλλοντος του Supabase.");
+  /**
+   * Sets the new password with the token from the reset link. Better Auth
+   * resets by token (POST /reset-password); there is no recovery session to
+   * update the user through, as Supabase had.
+   */
+  async updatePassword(password: string, token: string | null): Promise<void> {
+    this.requireClient();
+    if (!token) {
+      throw new Error("Ο σύνδεσμος επαναφοράς δεν είναι έγκυρος ή έχει λήξει. Ζητήστε νέο email επαναφοράς.");
     }
-    const { error } = await this.withTimeout(
-      this.supabase.auth.updateUser({ password }),
+    const response = await this.withTimeout(
+      fetch(`${environment.neonAuthUrl}/reset-password`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ newPassword: password, token }),
+      }),
       "Η ενημέρωση του κωδικού διαρκεί υπερβολικά. Ελέγξτε τη σύνδεσή σας και δοκιμάστε ξανά.",
     );
-    if (error) {
-      throw new Error(this.toFriendlyAuthError(error.message));
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({})) as { message?: string; code?: string };
+      throw new Error(this.toFriendlyAuthError(body.message || body.code || "Δεν ήταν δυνατή η ενημέρωση του κωδικού πρόσβασης."));
     }
+  }
+
+  private requireClient(): NeonAuthClient {
+    if (!this.client) {
+      throw new Error(NOT_CONFIGURED);
+    }
+    return this.client;
   }
 
   private async withTimeout<T>(promise: Promise<T>, message: string, timeoutMs = 15000): Promise<T> {
@@ -167,45 +182,25 @@ export class AuthService {
     }
   }
 
-  private async passwordGrant(email: string, password: string): Promise<SupabasePasswordGrantResponse> {
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 20_000);
-    try {
-      const response = await fetch(`${environment.supabaseUrl.replace(/\/$/, "")}/auth/v1/token?grant_type=password`, {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          "apikey": environment.supabaseAnonKey,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ email, password }),
-      });
-      const payload = await response.json().catch(() => ({})) as SupabasePasswordGrantResponse;
-      if (!response.ok) {
-        const message = payload.error_description || payload.msg || payload.message || payload.error || "Η σύνδεση μέσω Supabase απέτυχε.";
-        throw new Error(this.toFriendlyAuthError(message));
-      }
-      return payload;
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        throw new Error("Η σύνδεση μέσω Supabase έληξε μετά από 20 δευτερόλεπτα. Ελέγξτε το δίκτυό σας και την κατάσταση του Supabase project, ή δοκιμάστε ξανά.");
-      }
-      if (error instanceof Error) {
-        throw error;
-      }
-      throw new Error("Η σύνδεση μέσω Supabase απέτυχε πριν προλάβει το RoomRate να φορτώσει τον χώρο εργασίας σας.");
-    } finally {
-      window.clearTimeout(timeoutId);
-    }
-  }
-
   private toFriendlyAuthError(message: string): string {
     const normalized = message.toLowerCase();
-    if (normalized.includes("email rate limit")) {
-      return "Ζητήθηκαν πάρα πολλά email επιβεβαίωσης. Το Supabase περιόρισε προσωρινά αυτό το project. Περιμένετε λίγα λεπτά και ελέγξτε τα εισερχόμενα και τα ανεπιθύμητα, ή απενεργοποιήστε την επιβεβαίωση email για τοπική ανάπτυξη.";
+    if (normalized.includes("invalid email or password") || normalized.includes("invalid login credentials")) {
+      return "Λάθος email ή κωδικός πρόσβασης.";
     }
-    if (normalized.includes("email not confirmed")) {
+    if (normalized.includes("user already exists") || normalized.includes("already registered")) {
+      return "Υπάρχει ήδη λογαριασμός με αυτό το email. Συνδεθείτε ή ζητήστε επαναφορά κωδικού.";
+    }
+    if (normalized.includes("password too short") || normalized.includes("password should be")) {
+      return "Ο κωδικός είναι πολύ μικρός. Χρησιμοποιήστε τουλάχιστον 8 χαρακτήρες.";
+    }
+    if (normalized.includes("too many requests") || normalized.includes("rate limit")) {
+      return "Έγιναν πάρα πολλές προσπάθειες. Περιμένετε λίγα λεπτά και δοκιμάστε ξανά.";
+    }
+    if (normalized.includes("email not confirmed") || normalized.includes("email not verified")) {
       return "Το email σας δεν έχει επιβεβαιωθεί ακόμη. Ελέγξτε τα εισερχόμενα και τον φάκελο ανεπιθύμητων και πατήστε τον σύνδεσμο επιβεβαίωσης.";
+    }
+    if (normalized.includes("invalid token") || normalized.includes("invalid_token") || normalized.includes("token expired")) {
+      return "Ο σύνδεσμος επαναφοράς δεν είναι έγκυρος ή έχει λήξει. Ζητήστε νέο email επαναφοράς.";
     }
     return message;
   }

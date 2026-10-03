@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     supabase_jwt_secret: str = Field(default="", alias="SUPABASE_JWT_SECRET")
     supabase_jwks_url: str = Field(default="", alias="SUPABASE_JWKS_URL")
     supabase_jwt_audience: str = Field(default="authenticated", alias="SUPABASE_JWT_AUDIENCE")
+    # Neon Auth (Better Auth managed by Neon). When NEON_AUTH_URL is set, browser
+    # tokens are verified against <NEON_AUTH_URL>/.well-known/jwks.json instead
+    # of Supabase. Issuer/audience are checked only when set (Better Auth uses
+    # its base URL for both).
+    neon_auth_url: str = Field(default="", alias="NEON_AUTH_URL")
+    neon_auth_jwks_url: str = Field(default="", alias="NEON_AUTH_JWKS_URL")
+    neon_auth_jwt_issuer: str = Field(default="", alias="NEON_AUTH_JWT_ISSUER")
+    neon_auth_jwt_audience: str = Field(default="", alias="NEON_AUTH_JWT_AUDIENCE")
     roomrate_default_account_id: UUID = Field(
         default=UUID("00000000-0000-0000-0000-000000000001"),
         alias="ROOMRATE_DEFAULT_ACCOUNT_ID",
@@ -206,11 +214,15 @@ def validate_production_settings(candidate: Settings) -> None:
         if len(candidate.internal_api_key) < 24:
             violations.append("INTERNAL_API_KEY must be at least 24 characters long")
         if not (
-            candidate.supabase_jwt_secret or candidate.supabase_jwks_url or candidate.supabase_url
+            candidate.neon_auth_url
+            or candidate.neon_auth_jwks_url
+            or candidate.supabase_jwt_secret
+            or candidate.supabase_jwks_url
+            or candidate.supabase_url
         ):
             violations.append(
-                "at least one of SUPABASE_JWT_SECRET / SUPABASE_JWKS_URL / SUPABASE_URL must be set "
-                "(browser access tokens cannot be verified otherwise)"
+                "NEON_AUTH_URL (or one of SUPABASE_JWT_SECRET / SUPABASE_JWKS_URL / SUPABASE_URL) "
+                "must be set (browser access tokens cannot be verified otherwise)"
             )
     if candidate.process_role == "worker" and not candidate.scheduler_enabled:
         violations.append("ROOMRATE_SCHEDULER_ENABLED must be true for the worker process")

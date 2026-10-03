@@ -22,8 +22,7 @@ Set browser-safe values in `src/environments/environment.ts` for local developme
 ```ts
 export const environment = {
   apiBaseUrl: "http://127.0.0.1:8000",
-  supabaseUrl: "https://YOUR_PROJECT.supabase.co",
-  supabaseAnonKey: "YOUR_SUPABASE_ANON_KEY",
+  neonAuthUrl: "https://ep-YOUR-ENDPOINT.neonauth.REGION.aws.neon.tech/neondb/auth",
   mapboxToken: "YOUR_MAPBOX_PUBLIC_TOKEN",
 };
 ```

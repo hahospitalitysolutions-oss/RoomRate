@@ -23,7 +23,12 @@ from api.repositories.tracking_repository import TrackingRepository
 from api.services.market_service import MarketService
 from api.services.price_recommendation_agent import PriceRecommendationAgent
 from api.services.room_matching_agent import RoomMatchingAgentService
-from api.services.auth_service import SupabaseAuthService
+from api.services.auth_service import (
+    AccessTokenVerifier,
+    NeonAuthService,
+    SupabaseAuthService,
+    neon_auth_enabled,
+)
 from api.services.notification_broadcaster import NotificationBroadcaster
 from api.services.onboarding_service import OnboardingService
 from api.services.price_alert_service import PriceAlertService
@@ -75,8 +80,10 @@ def build_account_context(
     return AccountContext(account_id=account_id)
 
 
-def get_auth_service() -> SupabaseAuthService:
-    """Build SupabaseAuthService for browser bearer token verification."""
+def get_auth_service() -> AccessTokenVerifier:
+    """The browser token verifier: Neon Auth when NEON_AUTH_URL is set, else Supabase."""
+    if neon_auth_enabled():
+        return NeonAuthService()
     return SupabaseAuthService()
 
 
@@ -87,19 +94,19 @@ def get_accounts_repository() -> AccountsRepository:
 
 async def resolve_token_account(
     token: str,
-    auth_service: SupabaseAuthService,
+    auth_service: AccessTokenVerifier,
     accounts_repository: AccountsRepository,
 ) -> AccountContext:
-    """Resolve a tenant account from a verified Supabase access token.
+    """Resolve a tenant account from a verified access token.
 
     The single token→account path: verify the token, then map (or lazily
-    create) the account for the Supabase identity. Shared by the HTTP
+    create) the account for the identity (Neon Auth or Supabase). Shared by the HTTP
     dependency (via ``resolve_account_context``) and the WebSocket handshake
     so token verification lives in exactly one place.
     """
     user = await auth_service.verify_access_token(token)
     account_id = accounts_repository.get_or_create_account_for_identity(
-        auth_provider="supabase",
+        auth_provider=user.auth_provider,
         auth_subject=user.auth_subject,
         email=user.email,
         display_name=user.display_name,
@@ -107,7 +114,7 @@ async def resolve_token_account(
     return AccountContext(
         account_id=account_id,
         auth_subject=user.auth_subject,
-        auth_provider="supabase",
+        auth_provider=user.auth_provider,
         email=user.email,
     )
 
@@ -116,10 +123,10 @@ async def resolve_account_context(
     token: str | None,
     api_key: str | None,
     account_id_header: str | None,
-    auth_service: SupabaseAuthService,
+    auth_service: AccessTokenVerifier,
     accounts_repository: AccountsRepository,
 ) -> AccountContext:
-    """Resolve a tenant account from a Supabase token or the internal API key.
+    """Resolve a tenant account from a browser token or the internal API key.
 
     HTTP entry point (``get_account_context``). The token branch is delegated
     to ``resolve_token_account``, which the WebSocket handshake also calls —
@@ -141,7 +148,7 @@ async def get_account_context(
     credentials: HTTPAuthorizationCredentials | None = Security(bearer_auth),
     api_key: str | None = Security(api_key_header),
     account_id_header: str | None = Header(default=None, alias="X-RoomRate-Account-ID"),
-    auth_service: SupabaseAuthService = Depends(get_auth_service),
+    auth_service: AccessTokenVerifier = Depends(get_auth_service),
     accounts_repository: AccountsRepository = Depends(get_accounts_repository),
 ) -> AccountContext:
     """Resolve the tenant account for this request.

@@ -66,14 +66,17 @@ test("the privacy policy names the third parties and the GDPR rights", async ({ 
   // SENTRY_DSN is set), and an exception report can carry an account id -- a
   // processor the policy omits is exactly the gap a DPA finds first.
   const processors = page.locator("[data-testid='legal-processors']");
-  for (const processor of ["Supabase", "Apify", "Mapbox", "Anthropic", "Sentry"]) {
+  for (const processor of ["Neon", "Apify", "Mapbox", "Anthropic", "Sentry"]) {
     await expect(processors).toContainText(processor);
   }
 
   // The cookie claim is a factual one about this app: no tracking cookies,
-  // only the Supabase auth session in localStorage. If that ever stops being
-  // true the copy must change, and this assertion is the reminder.
+  // only Neon Auth's session cookie and the setup progress in localStorage.
+  // If that ever stops being true the copy must change, and this assertion is
+  // the reminder.
   const cookieSection = page.locator("[data-testid='legal-cookies']");
+  await expect(cookieSection).toContainText("cookie σύνδεσης");
+  await expect(cookieSection).toContainText("Neon");
   await expect(cookieSection).toContainText("localStorage");
 });
 

@@ -1,8 +1,6 @@
 import { Component, OnDestroy, OnInit } from "@angular/core";
 import { RouterOutlet } from "@angular/router";
-import { Subscription } from "@supabase/supabase-js";
-
-import { AuthService } from "./services/auth.service";
+import { AuthService, AuthSubscription } from "./services/auth.service";
 import { NotificationsService } from "./services/notifications.service";
 import { SetupProgressService } from "./services/setup-progress.service";
 import { WorkflowStorageService } from "./services/workflow-storage.service";
@@ -14,7 +12,7 @@ import { WorkflowStorageService } from "./services/workflow-storage.service";
   template: "<router-outlet />",
 })
 export class AppComponent implements OnInit, OnDestroy {
-  private authSubscription: Subscription | null = null;
+  private authSubscription: AuthSubscription | null = null;
 
   constructor(
     private readonly auth: AuthService,
@@ -38,8 +36,8 @@ export class AppComponent implements OnInit, OnDestroy {
         return;
       }
       this.workflow.bindToSubject(nextSession.user.id);
-      // Supabase recommends returning quickly from this callback. Start REST
-      // synchronization on the next task to avoid nesting auth lock calls.
+      // Return quickly from the auth callback and start REST synchronization
+      // on the next task, so no auth call nests inside another.
       window.setTimeout(() => void this.notifications.start(), 0);
     });
   }

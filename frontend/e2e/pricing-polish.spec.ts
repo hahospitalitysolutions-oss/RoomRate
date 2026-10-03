@@ -187,7 +187,6 @@ async function mockPricingPage(page: Page, mocks: PolishMocks = {}): Promise<Pol
 
   // LIFO: the catch-alls go FIRST so every specific mock registered after them
   // wins; an unmocked call fails loudly instead of reaching a live backend.
-  await page.route(/https:\/\/[a-z0-9]+\.supabase\.co\/.*/, (route) => route.abort());
   await page.route("**/api/v1/**", (route) =>
     route.fulfill({
       status: 404,
