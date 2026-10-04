@@ -143,6 +143,10 @@ function athensHourToUtc(hourAthens: number): number {
             <label>
               <span>Ημέρες πριν από την άφιξη</span>
               <input class="roomrate-input" type="number" name="lead_days" min="0" [ngModel]="form().lead_days" (ngModelChange)="updateScheduleField('lead_days', $event)">
+              <small class="muted field-hint" data-testid="tracked-arrival-hint">
+                Άφιξη Παρασκευή, τουλάχιστον τόσες ημέρες μπροστά. Μένει ίδια για 2 εβδομάδες,
+                ώστε να βλέπετε πώς αλλάζουν οι τιμές για την ίδια διαμονή.
+              </small>
             </label>
             <label>
               <span>Διανυκτερεύσεις ανά διαμονή</span>

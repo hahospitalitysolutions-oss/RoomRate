@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 
 from api.repositories.scrape_jobs_repository import (
@@ -287,8 +287,9 @@ def test_run_due_schedules_creates_jobs_and_touches_last_run():
     assert request.job_type == "competitor_search"
     assert request.destination == "Φαληράκι"
     assert request.room_type_category == "double"
-    assert request.check_in == date(2026, 7, 13)  # now + 30 lead days
-    assert request.check_out == date(2026, 7, 16)  # check_in + 3 nights
+    # now + 30 lead days = Mon 13 July; the tracked arrival is the grid Friday after it.
+    assert request.check_in == date(2026, 7, 17)
+    assert request.check_out == date(2026, 7, 20)  # check_in + 3 nights
     assert request.adults == 2
     assert request.children == 0
     assert request.rooms == 1
@@ -322,7 +323,7 @@ def test_run_due_schedules_counts_lead_days_from_the_local_date():
     _service(repository, scrape_job_service).run_due_schedules(just_after_midnight)
 
     _, request = scrape_job_service.created[0]
-    assert request.check_in == date(2026, 7, 13)  # 13 June (Athens) + 30 days
+    assert request.check_in == date(2026, 7, 17)  # 13 June (Athens) + 30 days -> grid Friday
 
 
 def test_run_due_schedules_uses_canonical_destination_when_raw_is_missing():
@@ -519,3 +520,17 @@ def test_breaker_disable_without_notifier_still_works():
 
     assert failures == FAILURE_DISABLE_THRESHOLD
     assert repository.disable_calls == [ACCOUNT_ID]
+
+
+def test_the_tracked_arrival_holds_for_two_weeks_so_runs_compare_the_same_stay():
+    """Alerts and trends pair runs of one stay; a daily-rolling check-in never paired."""
+    from api.services.schedule_service import tracked_check_in
+
+    earliest_dates = [date(2026, 7, 13) + timedelta(days=offset) for offset in range(28)]
+    arrivals = [tracked_check_in(earliest) for earliest in earliest_dates]
+
+    assert sorted(set(arrivals)) == [date(2026, 7, 17), date(2026, 7, 31), date(2026, 8, 14)]
+    assert all(arrival.weekday() == 4 for arrival in arrivals)  # Fridays
+    assert all(0 <= (arrival - earliest).days < 14 for arrival, earliest in zip(arrivals, earliest_dates))
+    # Earliest dates 18-31 July share one arrival.
+    assert arrivals[5:19] == [date(2026, 7, 31)] * 14
