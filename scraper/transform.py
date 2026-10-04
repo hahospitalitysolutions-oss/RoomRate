@@ -141,13 +141,11 @@ def process_and_flatten_data(
                 max_persons = _safe_int(opt.get("persons", room.get("persons")), default=0)
 
                 choices = opt.get("yourChoices", []) or []
-                meals   = _detect_meal(choices)
-                if not meals:
-                    meals = (
-                        "Πρωινό (Από Ξενοδοχείο)"
-                        if property_item.get("breakfast")
-                        else "Δεν περιλαμβάνεται"
-                    )
+                # Only what the RATE includes. The property's own «breakfast»
+                # field says what breakfast it serves, not that this rate pays
+                # for it, so it no longer turns room-only rates into
+                # «Πρωινό (Από Ξενοδοχείο)».
+                meals   = _detect_meal(choices) or "Δεν περιλαμβάνεται"
 
                 price_per_night = round(room_price / nights, 2) if nights > 0 else room_price
 

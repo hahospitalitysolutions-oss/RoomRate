@@ -291,6 +291,29 @@ def test_a_sold_out_option_never_takes_another_rooms_price():
     assert df["room_type"].tolist() == ["Double Room"]
 
 
+@pytest.mark.parametrize(
+    ("choices", "meals"),
+    [
+        (["Breakfast included"], "Breakfast included"),
+        (["Πολύ καλό πρωινό συμπεριλαμβάνεται"], "Πολύ καλό πρωινό συμπεριλαμβάνεται"),
+        (["Πρωινό 12 € (προαιρετικό)"], "Δεν περιλαμβάνεται"),
+        (["Breakfast €12 (optional)"], "Δεν περιλαμβάνεται"),
+        (["Δεν περιλαμβάνεται γεύμα"], "Δεν περιλαμβάνεται"),
+        ([], "Δεν περιλαμβάνεται"),
+    ],
+)
+def test_flattening_keeps_only_the_meal_the_rate_includes(choices, meals):
+    raw = _raw_property()
+    # The property serves breakfast; that alone does not put it in the rate.
+    raw[0]["breakfast"] = "Continental, Buffet"
+    raw[0]["rooms"][0]["options"][0]["yourChoices"] = choices
+
+    config = ScraperConfig(destination="Faliraki", check_in=datetime(2026, 6, 15), check_out=datetime(2026, 6, 20))
+    df = process_and_flatten_data(raw, _hotel_meta(), config)
+
+    assert df.iloc[0]["meals"] == meals
+
+
 def test_flattening_skips_zero_price_options_instead_of_persisting_them():
     raw = _raw_property()
     raw[0]["price"] = None  # no base price either
