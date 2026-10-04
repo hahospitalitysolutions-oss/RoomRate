@@ -227,6 +227,13 @@ def validate_production_settings(candidate: Settings) -> None:
                 "NEON_AUTH_URL (or one of SUPABASE_JWT_SECRET / SUPABASE_JWKS_URL / SUPABASE_URL) "
                 "must be set (browser access tokens cannot be verified otherwise)"
             )
+    if candidate.roomrate_rate_source == "legacy":
+        # The legacy room_rates table has no account column: every account
+        # would read every other account's market data.
+        violations.append(
+            "ROOMRATE_RATE_SOURCE must be 'normalized' in production "
+            "(the legacy source is not scoped to an account)"
+        )
     if candidate.process_role == "worker" and not candidate.scheduler_enabled:
         violations.append("ROOMRATE_SCHEDULER_ENABLED must be true for the worker process")
     if candidate.scrape_job_max_attempts < 1 or candidate.scrape_job_max_attempts > 10:

@@ -65,6 +65,12 @@ def test_production_with_good_settings_passes():
     validate_production_settings(make_settings())  # must not raise
 
 
+def test_production_rejects_the_unscoped_legacy_rate_source():
+    """room_rates has no account column: every account would read every market."""
+    with pytest.raises(RuntimeError, match="ROOMRATE_RATE_SOURCE"):
+        validate_production_settings(make_settings(ROOMRATE_RATE_SOURCE="legacy"))
+
+
 def test_production_rejects_combined_api_and_worker_role():
     with pytest.raises(RuntimeError, match="ROOMRATE_PROCESS_ROLE"):
         validate_production_settings(make_settings(ROOMRATE_PROCESS_ROLE="all"))
