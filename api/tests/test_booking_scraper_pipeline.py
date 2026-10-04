@@ -1952,3 +1952,65 @@ def test_build_config_from_args_round6_defaults():
 def test_scraper_config_rejects_half_an_origin_and_non_positive_round6_limits(overrides):
     with pytest.raises(ValueError):
         ScraperConfig(**overrides)
+
+
+class _FakeApify:
+    """An ApifyClient whose runs end in the given statuses, one per call()."""
+
+    def __init__(self, statuses):
+        self.statuses = list(statuses)
+        self.calls: list[dict] = []
+        self.aborted: list[str] = []
+
+    def actor(self, actor_id):
+        fake = self
+
+        class _Actor:
+            def call(self, **kwargs):
+                fake.calls.append(kwargs)
+                number = len(fake.calls)
+                return {"id": f"run-{number}", "status": fake.statuses.pop(0), "defaultDatasetId": f"ds-{number}"}
+
+        return _Actor()
+
+    def dataset(self, dataset_id):
+        class _Dataset:
+            def iterate_items(self):
+                return iter([{"name": f"hotel from {dataset_id}"}])
+
+        return _Dataset()
+
+    def run(self, run_id):
+        fake = self
+
+        class _Run:
+            def abort(self):
+                fake.aborted.append(run_id)
+
+        return _Run()
+
+
+def test_a_failed_apify_run_is_retried_instead_of_read_as_a_result(monkeypatch):
+    """call() returns FAILED/TIMED-OUT runs without raising; their dataset is partial."""
+    from scraper.actor import ACTOR_RUN_TIMEOUT_SECS, _run_actor
+
+    monkeypatch.setattr("scraper.actor.time.sleep", lambda seconds: None)
+    client = _FakeApify(["FAILED", "TIMED-OUT", "SUCCEEDED"])
+
+    items = _run_actor(client, {"search": "Σαλαμίνα"}, max_retries=3, retry_delay=1)
+
+    assert items == [{"name": "hotel from ds-3"}]
+    assert client.calls[0]["timeout_secs"] == ACTOR_RUN_TIMEOUT_SECS
+    assert client.calls[0]["wait_secs"] > ACTOR_RUN_TIMEOUT_SECS
+
+
+def test_runs_that_never_succeed_fail_the_stage_and_a_run_past_the_wait_is_aborted(monkeypatch):
+    from scraper.actor import _run_actor
+
+    monkeypatch.setattr("scraper.actor.time.sleep", lambda seconds: None)
+    client = _FakeApify(["ABORTED", "RUNNING"])
+
+    with pytest.raises(ActorRunError):
+        _run_actor(client, {"search": "Σαλαμίνα"}, max_retries=2, retry_delay=1)
+
+    assert client.aborted == ["run-2"]  # still running after the wait: stopped, not left billing
