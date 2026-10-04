@@ -12,6 +12,22 @@ import { environment } from "../../environments/environment";
  * access_token is the Neon Auth JWT (15 minutes, renewed by the SDK) that the
  * API verifies against the project JWKS.
  */
+/** Neon Auth's password rule (Better Auth defaults): length only, 8 to 128. */
+export const PASSWORD_MIN_LENGTH = 8;
+export const PASSWORD_MAX_LENGTH = 128;
+export const PASSWORD_REQUIREMENTS = `Ο κωδικός πρέπει να έχει από ${PASSWORD_MIN_LENGTH} έως ${PASSWORD_MAX_LENGTH} χαρακτήρες.`;
+
+/** The Greek reason a password would be rejected, or null when it passes. */
+export function passwordRequirementError(password: string): string | null {
+  if (password.length < PASSWORD_MIN_LENGTH) {
+    return `Ο κωδικός είναι πολύ μικρός (${password.length} χαρακτήρες). ${PASSWORD_REQUIREMENTS}`;
+  }
+  if (password.length > PASSWORD_MAX_LENGTH) {
+    return `Ο κωδικός είναι πολύ μεγάλος (${password.length} χαρακτήρες). ${PASSWORD_REQUIREMENTS}`;
+  }
+  return null;
+}
+
 function createNeonAuthClient(url: string) {
   return createAuthClient(url, { adapter: SupabaseAuthAdapter() });
 }
@@ -190,8 +206,15 @@ export class AuthService {
     if (normalized.includes("user already exists") || normalized.includes("already registered")) {
       return "Υπάρχει ήδη λογαριασμός με αυτό το email. Συνδεθείτε ή ζητήστε επαναφορά κωδικού.";
     }
-    if (normalized.includes("password too short") || normalized.includes("password should be")) {
-      return "Ο κωδικός είναι πολύ μικρός. Χρησιμοποιήστε τουλάχιστον 8 χαρακτήρες.";
+    // The adapter turns PASSWORD_TOO_SHORT / PASSWORD_TOO_LONG into
+    // "Password does not meet security requirements", which names no rule.
+    if (
+      normalized.includes("does not meet security requirements")
+      || normalized.includes("password too short")
+      || normalized.includes("password too long")
+      || normalized.includes("password should be")
+    ) {
+      return `Ο κωδικός δεν πληροί τις απαιτήσεις. ${PASSWORD_REQUIREMENTS}`;
     }
     if (normalized.includes("too many requests") || normalized.includes("rate limit")) {
       return "Έγιναν πάρα πολλές προσπάθειες. Περιμένετε λίγα λεπτά και δοκιμάστε ξανά.";

@@ -3,7 +3,7 @@ import { CommonModule } from "@angular/common";
 import { FormsModule } from "@angular/forms";
 import { ActivatedRoute, Router, RouterLink } from "@angular/router";
 
-import { AuthService } from "../services/auth.service";
+import { AuthService, PASSWORD_REQUIREMENTS, passwordRequirementError } from "../services/auth.service";
 import { OnboardingService } from "../services/onboarding.service";
 import { WorkflowStorageService } from "../services/workflow-storage.service";
 import { CurrentUser } from "../types/market";
@@ -76,6 +76,7 @@ type AuthStep =
                 [(ngModel)]="password"
                 required
                 [autocomplete]="isRecovery() || mode() === 'sign-up' ? 'new-password' : 'current-password'"
+                [attr.aria-describedby]="isRecovery() || mode() === 'sign-up' ? 'roomrate-password-requirements' : null"
               >
               <button
                 class="password-toggle"
@@ -90,6 +91,15 @@ type AuthStep =
                 {{ showPassword ? "Απόκρυψη" : "Εμφάνιση" }}
               </button>
             </div>
+            <p
+              *ngIf="mode() === 'sign-up' || isRecovery()"
+              id="roomrate-password-requirements"
+              class="password-requirements"
+              [class.password-requirements-met]="passwordMeetsRequirements()"
+            >
+              {{ passwordRequirements }}
+              <span *ngIf="password">({{ password.length }} χαρακτήρες{{ passwordMeetsRequirements() ? " ✓" : "" }})</span>
+            </p>
           </div>
 
           <div *ngIf="message() && !loading()" class="alert" [class.alert-error]="hasError()">{{ message() }}</div>
@@ -143,6 +153,8 @@ type AuthStep =
   styles: [`
     .settings-legal { gap: 1rem; }
     .settings-legal a { color: var(--muted); font-size: 0.85rem; }
+    .password-requirements { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.85rem; }
+    .password-requirements-met { color: var(--teal); }
   `],
 })
 export class AuthPageComponent {
@@ -151,6 +163,7 @@ export class AuthPageComponent {
   email = "";
   password = "";
   showPassword = false;
+  readonly passwordRequirements = PASSWORD_REQUIREMENTS;
   readonly mode = signal<"sign-in" | "sign-up">("sign-in");
   readonly message = signal("");
   readonly hasError = signal(false);
@@ -193,6 +206,10 @@ export class AuthPageComponent {
     this.hasError.set(false);
   }
 
+  passwordMeetsRequirements(): boolean {
+    return passwordRequirementError(this.password) === null;
+  }
+
   loadingLabel(): string {
     const labels: Record<AuthStep, string> = {
       idle: this.isRecovery() ? "Ενημέρωση κωδικού" : this.mode() === "sign-in" ? "Σύνδεση" : "Δημιουργία λογαριασμού",
@@ -216,6 +233,12 @@ export class AuthPageComponent {
     if (this.mode() === "sign-up" && (!this.propertyName.trim() || !this.location.trim())) {
       this.hasError.set(true);
       this.message.set("Συμπληρώστε όνομα καταλύματος και τοποθεσία πριν δημιουργήσετε τον λογαριασμό.");
+      return;
+    }
+    const passwordProblem = this.mode() === "sign-up" ? passwordRequirementError(this.password) : null;
+    if (passwordProblem) {
+      this.hasError.set(true);
+      this.message.set(passwordProblem);
       return;
     }
 
@@ -308,9 +331,10 @@ export class AuthPageComponent {
   }
 
   async updatePassword(): Promise<void> {
-    if (this.password.length < 8) {
+    const passwordProblem = passwordRequirementError(this.password);
+    if (passwordProblem) {
       this.hasError.set(true);
-      this.message.set("Χρησιμοποιήστε κωδικό με τουλάχιστον 8 χαρακτήρες.");
+      this.message.set(passwordProblem);
       return;
     }
     this.loading.set(true);

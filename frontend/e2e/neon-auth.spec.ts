@@ -139,3 +139,52 @@ test("an expired reset link says so instead of showing a form that cannot work",
 
   await expect(page.getByText("Ο σύνδεσμος επαναφοράς δεν είναι έγκυρος ή έχει λήξει. Ζητήστε νέο email επαναφοράς.")).toBeVisible();
 });
+
+test("sign-up states the password rule and stops a short password before Neon Auth sees it", async ({ page }) => {
+  await mockNeonAuth(page, { signedIn: false });
+  await mockNotificationBell(page);
+  const signUps: unknown[] = [];
+  await page.route(`${NEON_AUTH_URL}/sign-up/email**`, (route) => {
+    if (route.request().method() === "POST") {
+      signUps.push(route.request().postDataJSON());
+    }
+    return fulfillNeonAuth(route, { token: "e2e-session-token", user: E2E_AUTH_USER });
+  });
+
+  await page.goto("/auth");
+  const requirements = page.locator("#roomrate-password-requirements");
+  await expect(requirements).toHaveCount(0);
+  await page.getByRole("button", { name: /δημιουργία νέου λογαριασμού/i }).click();
+  await expect(requirements).toHaveText("Ο κωδικός πρέπει να έχει από 8 έως 128 χαρακτήρες.");
+  await expect(page.locator("#roomrate-password")).toHaveAttribute("aria-describedby", "roomrate-password-requirements");
+
+  await page.getByLabel(/όνομα καταλύματος/i).fill("Test Hotel");
+  await page.getByLabel(/^τοποθεσία$/i).fill("Faliraki");
+  await page.getByLabel(/email/i).fill("new.owner@roomrate.test");
+  await page.locator("#roomrate-password").fill("2006");
+  await expect(requirements).toContainText("(4 χαρακτήρες)");
+  await page.getByRole("button", { name: /^δημιουργία λογαριασμού$/i }).click();
+
+  await expect(page.getByText("Ο κωδικός είναι πολύ μικρός (4 χαρακτήρες). Ο κωδικός πρέπει να έχει από 8 έως 128 χαρακτήρες.")).toBeVisible();
+  await page.locator("#roomrate-password").fill("20062006");
+  await expect(requirements).toContainText("(8 χαρακτήρες ✓)");
+  expect(signUps).toEqual([]);
+});
+
+test("Neon Auth's 'does not meet security requirements' reads as the rule, in Greek", async ({ page }) => {
+  await mockNeonAuth(page, { signedIn: false });
+  await mockNotificationBell(page);
+  await page.route(`${NEON_AUTH_URL}/sign-up/email**`, (route) =>
+    fulfillNeonAuth(route, { code: "PASSWORD_TOO_SHORT", message: "Password too short" }, {}, 400));
+
+  await page.goto("/auth");
+  await page.getByRole("button", { name: /δημιουργία νέου λογαριασμού/i }).click();
+  await page.getByLabel(/όνομα καταλύματος/i).fill("Test Hotel");
+  await page.getByLabel(/^τοποθεσία$/i).fill("Faliraki");
+  await page.getByLabel(/email/i).fill("new.owner@roomrate.test");
+  await page.locator("#roomrate-password").fill("long-enough-1");
+  await page.getByRole("button", { name: /^δημιουργία λογαριασμού$/i }).click();
+
+  await expect(page.locator(".alert-error")).toHaveText("Ο κωδικός δεν πληροί τις απαιτήσεις. Ο κωδικός πρέπει να έχει από 8 έως 128 χαρακτήρες.");
+  await expect(page.getByText(/security requirements/i)).toHaveCount(0);
+});

@@ -62,5 +62,9 @@ Passwords cannot move from Supabase.
 - The session cookie belongs to the Neon Auth domain. Browsers that block
   third-party cookies (e.g. Safari) may not keep the login across reloads until
   the app and its auth live under one site.
+- Passwords must have 8 to 128 characters, the Better Auth default Neon uses.
+  The sign-up form states this rule and checks it before sending. If the rule
+  changes in Neon, update `PASSWORD_MIN_LENGTH` / `PASSWORD_MAX_LENGTH` in
+  `frontend/src/app/services/auth.service.ts`.
 - Neon currently lets anyone sign up. A new sign-up gets an empty account, and
   the per-account scrape quotas still apply.
