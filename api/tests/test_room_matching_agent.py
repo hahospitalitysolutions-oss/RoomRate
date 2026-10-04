@@ -410,7 +410,7 @@ def test_each_call_uses_8k_output_the_matching_timeout_and_a_single_retry():
     _run(service)
 
     assert client.options == {"max_retries": 1, "timeout": 77.5}
-    assert client.messages.parse_kwargs["max_tokens"] == 8000
+    assert client.messages.parse_kwargs["max_tokens"] == 16_000
 
 
 def test_matching_service_wiring_uses_the_matching_timeout(monkeypatch):
@@ -634,7 +634,7 @@ def test_400_candidates_run_as_10_chunks_on_8_workers_with_per_chunk_indexing(mo
             range(len(payload["candidates"]))
         )
         assert payload["reference_room"]["room_type"] == "Double Room with Sea View"
-        assert call["max_tokens"] == 8000
+        assert call["max_tokens"] == 16_000
         assert call["system"] == ROOM_MATCHING_SYSTEM_PROMPT
     offered = [(cand["hotel_name"], cand["room_type"]) for p in payloads for cand in p["candidates"]]
     assert len(set(offered)) == 400

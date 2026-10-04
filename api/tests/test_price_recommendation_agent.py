@@ -105,6 +105,8 @@ def test_agent_passthrough_sets_source_agent():
     # Effort rides in output_config — the installed anthropic 0.115.0 merges
     # ``output_format`` into it as ``format`` on the wire.
     assert kwargs["output_config"] == {"effort": "medium"}
+    # max_tokens caps thinking + answer; 2048 truncated answers into the fallback.
+    assert kwargs["max_tokens"] == 16_000
     assert set(kwargs) == {
         "model",
         "max_tokens",
@@ -1015,3 +1017,16 @@ def test_llm_system_prompt_reports_the_basis_count_not_the_shown_or_tracked_coun
     # The earlier directives survive the addition.
     assert "cheapest_same_cancellation_eur" in system
     assert "Απάντησε αποκλειστικά στα ελληνικά" in system
+
+
+def test_the_sdk_client_waits_long_enough_for_a_thinking_answer(monkeypatch):
+    """Thinking is always on: 30 s with 2 retries timed out into the fallback."""
+    from api.config import Settings
+
+    captured = {}
+    monkeypatch.setattr(anthropic, "Anthropic", lambda **kwargs: captured.update(kwargs) or object())
+
+    PriceRecommendationAgent(api_key="test-key", model="claude-opus-5-5")._build_client()
+
+    assert Settings.model_fields["anthropic_timeout_seconds"].default == 75.0
+    assert captured == {"api_key": "test-key", "timeout": 75.0, "max_retries": 1}

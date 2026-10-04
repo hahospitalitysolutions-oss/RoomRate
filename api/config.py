@@ -114,7 +114,10 @@ class Settings(BaseSettings):
     # depth is steered only via output_config.effort in the agent call.
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
     anthropic_model: str = Field(default="claude-opus-5-5", alias="ANTHROPIC_MODEL")
-    anthropic_timeout_seconds: float = Field(default=30.0, alias="ANTHROPIC_TIMEOUT_SECONDS")
+    # Thinking is always on for claude-opus-5-5: a medium-effort answer can
+    # take longer than 30 s, which timed out into the statistical fallback.
+    # With one SDK retry, 2 x 75 s stays inside the browser's 180 s budget.
+    anthropic_timeout_seconds: float = Field(default=75.0, alias="ANTHROPIC_TIMEOUT_SECONDS")
     # Room-matching agent (spec 2026-09-29 Μέρος Α). Shares the API key
     # above; the model is separate so matching can ride a different
     # (cheaper/newer) model than pricing without touching ANTHROPIC_MODEL.

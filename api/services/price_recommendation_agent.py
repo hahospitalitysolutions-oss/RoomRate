@@ -18,7 +18,7 @@ endpoint reports ``recommendation_available=false`` instead of a made-up €0.
 
 Anthropic SDK call shape (authoritative — keep it minimal):
     client.messages.parse(
-        model=..., max_tokens=2048, system=SYSTEM_PROMPT,
+        model=..., max_tokens=_MAX_OUTPUT_TOKENS, system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": <json str>}],
         output_format=PriceRecommendation,
         output_config={"effort": "medium"},
@@ -47,6 +47,12 @@ from api.schemas.agents import PriceRecommendation, PriceStatistics
 
 logger = logging.getLogger(__name__)
 
+# max_tokens caps thinking AND the answer together, and thinking is always on
+# for claude-opus-5-5. At 2048 a medium-effort reasoning pass could use up the
+# budget before the JSON was complete: the answer truncated (stop_reason
+# max_tokens) and the endpoint quietly served the statistical fallback.
+# Only the tokens actually generated are billed.
+_MAX_OUTPUT_TOKENS = 16_000
 # Max competitors forwarded to the model. Bounds the token budget for what is a
 # synchronous endpoint; the statistical signals already summarize the full set.
 _MAX_COMPETITORS = 15
@@ -109,7 +115,7 @@ class PriceRecommendationAgent:
         self,
         api_key: str,
         model: str,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = 75.0,
         client_factory: Callable[[], Any] | None = None,
     ):
         self.api_key = api_key
@@ -152,7 +158,7 @@ class PriceRecommendationAgent:
             # always on for claude-opus-5-5 and explicit values would 400.
             response = client.messages.parse(
                 model=self.model,
-                max_tokens=2048,
+                max_tokens=_MAX_OUTPUT_TOKENS,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_payload}],
                 output_format=PriceRecommendation,
@@ -192,7 +198,9 @@ class PriceRecommendationAgent:
     def _build_client(self) -> Any:
         import anthropic
 
-        return anthropic.Anthropic(api_key=self.api_key, timeout=self.timeout_seconds)
+        # One retry at most: the SDK default of 2 turned a slow answer into
+        # 3 x timeout before the fallback, past the browser's 180 s budget.
+        return anthropic.Anthropic(api_key=self.api_key, timeout=self.timeout_seconds, max_retries=1)
 
     def _build_user_payload(
         self,

@@ -66,9 +66,13 @@ from api.services.room_matching import attributes_from_dict, extract_room_attrib
 logger = logging.getLogger(__name__)
 
 # Output budget PER CHUNK: at most _CHUNK_SIZE index-keyed rows at ~60-150
-# tokens each (Greek reasoning dominates). A truncated answer fails parsing
-# and costs only that chunk (its rooms keep the statistical score).
-_MAX_OUTPUT_TOKENS = 8000
+# tokens each (Greek reasoning dominates), PLUS the model's thinking:
+# claude-sonnet-5-5 thinks by default (effort high), and max_tokens caps
+# thinking and answer together. 8000 left a full 40-room answer (up to ~6000
+# tokens) little room to think. A truncated answer fails parsing and costs
+# only that chunk (its rooms keep the statistical score); only the tokens
+# actually generated are billed.
+_MAX_OUTPUT_TOKENS = 16_000
 # One call scoring 150 candidates needed ~20k output tokens — beyond the
 # timeout at normal generation speed — so candidates go out in chunks that
 # are scored in parallel. Up to 8 at once: a typical 4-6-chunk job runs in a
