@@ -81,6 +81,30 @@ export class ApiClientService {
         : Array.isArray(detail)
           ? detail.map((item: { msg?: string }) => item?.msg).filter(Boolean).join("; ")
           : "";
+      if (message.includes("APIFY_TOKEN")) {
+        // This API has no Apify token, so it cannot search Booking.
+        throw new ApiClientError(
+          "Η αναζήτηση στο Booking δεν είναι ρυθμισμένη στο RoomRate API: προσθέστε το APIFY_TOKEN στο .env του API και ξεκινήστε ξανά το API.",
+          "http",
+          response.status,
+        );
+      }
+      if (response.status === 500 && message === "Internal Server Error") {
+        throw new ApiClientError(
+          "Σφάλμα στο RoomRate API (500). Οι λεπτομέρειες είναι στο terminal όπου τρέχει το API.",
+          "http",
+          500,
+        );
+      }
+      if (response.status === 500 && message.includes("NEON_AUTH_URL")) {
+        // The API cannot verify logins (its .env lacks NEON_AUTH_URL, or it
+        // was started before it was added): name the fix, in Greek.
+        throw new ApiClientError(
+          "Το RoomRate API δεν έχει ρυθμιστεί για σύνδεση: προσθέστε το NEON_AUTH_URL στο .env του API και ξεκινήστε ξανά το API.",
+          "http",
+          500,
+        );
+      }
       throw new ApiClientError(message || "Το αίτημα προς το RoomRate API απέτυχε.", "http", response.status);
     }
     return payload as T;

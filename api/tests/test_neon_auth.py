@@ -161,3 +161,29 @@ def test_a_neon_identity_gets_its_own_provider_on_the_account(neon_settings):
     }]
     assert context.auth_provider == "neon_auth"
     assert context.account_id == UUID("00000000-0000-0000-0000-000000000777")
+
+
+def test_a_neon_token_at_a_supabase_only_api_names_the_missing_setting(monkeypatch):
+    """Not a 401: that would sign the user out in a loop instead of naming the fix."""
+    monkeypatch.setattr(settings, "neon_auth_url", "")
+    monkeypatch.setattr(settings, "neon_auth_jwks_url", "")
+    monkeypatch.setattr(settings, "supabase_url", "https://example.supabase.co")
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(get_auth_service().verify_access_token(_token()))
+
+    assert exc_info.value.status_code == 500
+    assert "NEON_AUTH_URL" in exc_info.value.detail
+
+
+def test_an_api_with_no_login_settings_names_neon_auth_url(monkeypatch):
+    for name in ("neon_auth_url", "neon_auth_jwks_url", "supabase_url", "supabase_jwks_url", "supabase_jwt_secret"):
+        monkeypatch.setattr(settings, name, "")
+
+    assert not auth_module.login_verification_configured()
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(get_auth_service().verify_access_token(_token()))
+
+    assert exc_info.value.status_code == 500
+    assert "NEON_AUTH_URL" in exc_info.value.detail
+    assert "Supabase" not in exc_info.value.detail

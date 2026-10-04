@@ -41,6 +41,11 @@ def _candidate_match_score(property_name: str, candidate: PropertyCandidate) -> 
     return overlap * 70.0 + review_bonus
 
 
+# 422 detail when this API has no Apify token; the frontend shows it in Greek.
+BOOKING_SEARCH_NOT_CONFIGURED = (
+    "Booking search is not configured on this API: set APIFY_TOKEN in .env and restart the API."
+)
+
 class OnboardingRepositoryProtocol(Protocol):
     def create_owned_property(self, account_id: uuid.UUID, request: OwnedPropertyOnboardingCreate) -> dict:
         """Persist a selected owned property."""
@@ -150,7 +155,12 @@ class BookingPropertyCandidateProvider:
         """
         from scraper import ActorRunError, build_client, fetch_hotel_list
 
-        client = build_client()
+        try:
+            client = build_client()
+        except OSError as exc:
+            # No APIFY_TOKEN in this API's .env: a setup gap, not a crash.
+            logger.warning("Booking candidate search is not configured: %s", exc)
+            raise ValueError(BOOKING_SEARCH_NOT_CONFIGURED) from exc
         scout_limit = min(max(limit, 12), 25)
         # Resolved once so the location search and its name-retry fallback
         # share one engine (and therefore one cache read/write path).

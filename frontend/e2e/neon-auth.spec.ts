@@ -75,6 +75,27 @@ test("signing in posts the credentials to Neon Auth and opens the workspace", as
   expect(signInBodies).toEqual([{ email: "e2e@roomrate.test", password: "e2e-password-1" }]);
 });
 
+test("an API without NEON_AUTH_URL says what to set, in Greek, after a good sign-in", async ({ page }) => {
+  const auth = await mockNeonAuth(page, { signedIn: false });
+  await mockNotificationBell(page);
+  await page.route(`${NEON_AUTH_URL}/sign-in/email**`, (route) => {
+    auth.signedIn = true;
+    return fulfillNeonAuth(route, { redirect: false, token: "e2e-session-token", user: E2E_AUTH_USER });
+  });
+  await page.route(`${API}/api/v1/**`, (route) => route.fulfill({
+    status: 500,
+    json: { detail: "Login is not configured on this API: set NEON_AUTH_URL in .env and restart the API." },
+  }));
+
+  await page.goto("/auth");
+  await page.getByLabel(/email/i).fill("e2e@roomrate.test");
+  await page.locator("#roomrate-password").fill("e2e-password-1");
+  await page.getByRole("button", { name: /^σύνδεση$/i }).click();
+
+  await expect(page.getByText(/Το RoomRate API δεν έχει ρυθμιστεί για σύνδεση: προσθέστε το NEON_AUTH_URL/)).toBeVisible();
+  await expect(page.getByText(/Supabase/)).toHaveCount(0);
+});
+
 test("a wrong password reads as a Greek message, not the provider's English one", async ({ page }) => {
   await mockNeonAuth(page, { signedIn: false });
   await mockNotificationBell(page);

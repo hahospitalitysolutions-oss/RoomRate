@@ -77,6 +77,25 @@ _SUPPORTED_ALGORITHMS = _HMAC_ALGORITHMS | _ASYMMETRIC_ALGORITHMS
 _JWKS_MIN_REFRESH_SECONDS = 60.0
 
 
+# The one 500 for "this API cannot verify browser logins". It names the fix,
+# because the usual cause is a developer's .env missing NEON_AUTH_URL (or an
+# API started before it was added): the frontend shows it in Greek.
+AUTH_NOT_CONFIGURED_DETAIL = (
+    "Login is not configured on this API: set NEON_AUTH_URL in .env and restart the API."
+)
+
+
+def login_verification_configured() -> bool:
+    """True when the API can verify browser tokens (Neon Auth or Supabase)."""
+    return bool(
+        settings.neon_auth_url
+        or settings.neon_auth_jwks_url
+        or settings.supabase_jwt_secret
+        or settings.supabase_jwks_url
+        or settings.supabase_url
+    )
+
+
 def _invalid_token(detail: str = "Invalid or expired access token") -> HTTPException:
     """The single 401 raised for every kind of token rejection."""
     return HTTPException(status_code=401, detail=detail)
@@ -197,6 +216,12 @@ class SupabaseAuthService:
         except jwt.PyJWTError as exc:
             raise _invalid_token() from exc
         algorithm = header.get("alg")
+        if algorithm == "EdDSA":
+            # Supabase never signs with EdDSA; Neon Auth (Better Auth) does. A
+            # Neon login reaching an API without NEON_AUTH_URL is a
+            # configuration gap, not an expired session: say so instead of a
+            # 401 that would sign the user out in a loop.
+            raise HTTPException(status_code=500, detail=AUTH_NOT_CONFIGURED_DETAIL)
         if algorithm not in _SUPPORTED_ALGORITHMS:
             raise _invalid_token()
         return algorithm
@@ -232,7 +257,7 @@ class SupabaseAuthService:
     @staticmethod
     def _not_configured() -> HTTPException:
         """Raised when no secret/JWKS is available to verify the token."""
-        return HTTPException(status_code=500, detail="Supabase auth is not configured")
+        return HTTPException(status_code=500, detail=AUTH_NOT_CONFIGURED_DETAIL)
 
     @staticmethod
     def _user_from_claims(claims: dict) -> SupabaseAuthUser:
@@ -286,7 +311,7 @@ class NeonAuthService:
     async def verify_access_token(self, token: str) -> SupabaseAuthUser:
         jwks_url = _neon_jwks_url()
         if not jwks_url:
-            raise HTTPException(status_code=500, detail="Neon Auth is not configured")
+            raise HTTPException(status_code=500, detail=AUTH_NOT_CONFIGURED_DETAIL)
         try:
             algorithm = jwt.get_unverified_header(token).get("alg")
         except jwt.PyJWTError as exc:

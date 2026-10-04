@@ -996,3 +996,31 @@ def test_delete_owned_property_delegates_to_the_repository():
         candidate_provider=FakeCandidateProvider([]),
     )
     assert service.delete_owned_property(ACCOUNT_ID, OWNED_PROPERTY_ID) is False
+
+
+def test_booking_search_without_an_apify_token_is_a_clear_setup_error(monkeypatch):
+    """Not a raw OSError (a CORS-less 500): a 422 the onboarding routes pass on."""
+    import pytest
+
+    from api.services.onboarding_service import BOOKING_SEARCH_NOT_CONFIGURED
+
+    def missing_token():
+        raise OSError("Δεν βρέθηκε APIFY_TOKEN.")
+
+    monkeypatch.setattr("scraper.build_client", missing_token)
+
+    with pytest.raises(ValueError) as exc_info:
+        BookingPropertyCandidateProvider().search(
+            property_name="Aegean View",
+            location="Faliraki",
+            check_in=date(2026, 7, 1),
+            check_out=date(2026, 7, 5),
+            adults=2,
+            children=0,
+            rooms=1,
+            limit=3,
+            cache_hours=24,
+        )
+
+    assert str(exc_info.value) == BOOKING_SEARCH_NOT_CONFIGURED
+    assert "APIFY_TOKEN" in BOOKING_SEARCH_NOT_CONFIGURED
