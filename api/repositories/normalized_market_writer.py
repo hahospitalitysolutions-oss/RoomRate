@@ -355,6 +355,75 @@ def _json_or_none(value: Any) -> str | None:
     return None if value is None else json.dumps(value)
 
 
+def upsert_properties_bulk(connection: Any, rates: list[NormalizedRoomRate]) -> dict[str, uuid.UUID]:
+    """Every hotel of the batch in one upsert; returns its id keyed by source_property_key.
+
+    The FIRST rate of a hotel supplies its fields, as the per-key cache of
+    the row-by-row loop did (every package of a hotel carries the same ones).
+    """
+    first: dict[str, NormalizedRoomRate] = {}
+    for rate in rates:
+        first.setdefault(rate.source_property_key, rate)
+    if not first:
+        return {}
+    hotels = list(first.values())
+    result = connection.execute(
+        text(
+            """
+            INSERT INTO roomrate_properties (
+                id, provider, source_property_key, canonical_name, display_name,
+                city, country, address, property_type, latitude, longitude, stars, booking_url
+            )
+            SELECT gen_random_uuid(), p.provider, p.source_property_key, p.canonical_name, p.display_name,
+                   p.city, p.country, p.address, p.property_type, p.latitude, p.longitude, p.stars,
+                   p.booking_url
+            FROM unnest(
+                CAST(:providers AS text[]),
+                CAST(:source_property_keys AS text[]),
+                CAST(:canonical_names AS text[]),
+                CAST(:display_names AS text[]),
+                CAST(:cities AS text[]),
+                CAST(:countries AS text[]),
+                CAST(:addresses AS text[]),
+                CAST(:property_types AS text[]),
+                CAST(:latitudes AS numeric[]),
+                CAST(:longitudes AS numeric[]),
+                CAST(:stars AS numeric[]),
+                CAST(:booking_urls AS text[])
+            ) AS p(provider, source_property_key, canonical_name, display_name, city, country, address,
+                   property_type, latitude, longitude, stars, booking_url)
+            ON CONFLICT (provider, source_property_key) DO UPDATE SET
+                updated_at = now(),
+                display_name = EXCLUDED.display_name,
+                city = EXCLUDED.city,
+                country = COALESCE(EXCLUDED.country, roomrate_properties.country),
+                address = COALESCE(EXCLUDED.address, roomrate_properties.address),
+                property_type = COALESCE(EXCLUDED.property_type, roomrate_properties.property_type),
+                latitude = COALESCE(EXCLUDED.latitude, roomrate_properties.latitude),
+                longitude = COALESCE(EXCLUDED.longitude, roomrate_properties.longitude),
+                stars = COALESCE(EXCLUDED.stars, roomrate_properties.stars),
+                booking_url = COALESCE(EXCLUDED.booking_url, roomrate_properties.booking_url)
+            RETURNING id, source_property_key
+            """
+        ),
+        {
+            "providers": [rate.provider for rate in hotels],
+            "source_property_keys": [rate.source_property_key for rate in hotels],
+            "canonical_names": [rate.canonical_name for rate in hotels],
+            "display_names": [rate.display_name for rate in hotels],
+            "cities": [rate.city for rate in hotels],
+            "countries": [rate.country for rate in hotels],
+            "addresses": [rate.address for rate in hotels],
+            "property_types": [rate.property_type for rate in hotels],
+            "latitudes": [rate.latitude for rate in hotels],
+            "longitudes": [rate.longitude for rate in hotels],
+            "stars": [rate.stars for rate in hotels],
+            "booking_urls": [rate.booking_url for rate in hotels],
+        },
+    )
+    return {row.source_property_key: row.id for row in result}
+
+
 def upsert_observations_bulk(
     connection: Any,
     rows: list[tuple[NormalizedRoomRate, uuid.UUID, uuid.UUID]],
@@ -590,18 +659,17 @@ def write_normalized_rates(
         else uuid.UUID(str(scrape_job_id))
     )
     job_destination = (raw_destination or "").strip()
-    # Per-batch caches: one scrape-run upsert per run key (the job, or the
-    # normalizer's per-city key without a job) and one property upsert per
-    # source property key (every package of a hotel in a live scrape carries
-    # identical property fields), plus one set-based amenity write at the end
-    # of the transaction. Caveat: within one batch the FIRST occurrence of a
+    # One scrape-run upsert per run key (the job, or the normalizer's per-city
+    # key without a job), then set-based writes for the hotels (one row per
+    # source property key: every package of a hotel in a live scrape carries
+    # identical property fields), observations, packages, raw events and
+    # amenities. Caveat: within one batch the FIRST occurrence of a
     # key wins — callers that replay historical rows spanning many runs
     # (scripts/backfill_roomrate_market.py) end up with the oldest row's
     # property metadata until the next live scrape refreshes it.
     scrape_run_ids: dict[tuple[str, str], uuid.UUID] = {}
-    property_ids: dict[str, uuid.UUID] = {}
     amenities_by_property: dict[uuid.UUID, set[str]] = {}
-    resolved: list[tuple[NormalizedRoomRate, uuid.UUID, uuid.UUID]] = []
+    with_runs: list[tuple[NormalizedRoomRate, uuid.UUID]] = []
     # Writer role: no API statement timeout — bulk scrape writes can be long.
     with get_engine(role="writer").begin() as connection:
         for normalized_rate in rates:
@@ -627,15 +695,16 @@ def write_normalized_rates(
                     raw_destination=raw_destination,
                     canonical_destination=canonical_destination,
                 )
-            scrape_run_id = scrape_run_ids[run_key]
-            if rate.source_property_key not in property_ids:
-                property_ids[rate.source_property_key] = upsert_property(connection, rate)
-            property_id = property_ids[rate.source_property_key]
-            resolved.append((rate, scrape_run_id, property_id))
+            with_runs.append((rate, scrape_run_ids[run_key]))
+        # One statement each for every hotel, observation, package and raw
+        # event of the batch, instead of round trips per row.
+        property_ids = upsert_properties_bulk(connection, [rate for rate, _ in with_runs])
+        resolved = [
+            (rate, scrape_run_id, property_ids[rate.source_property_key]) for rate, scrape_run_id in with_runs
+        ]
+        for rate, _, property_id in resolved:
             if rate.amenities:
                 amenities_by_property.setdefault(property_id, set()).update(rate.amenities)
-        # One statement each for every observation, package and raw event of
-        # the batch, instead of three round trips per package.
         observation_ids = upsert_observations_bulk(connection, resolved)
         upsert_packages_bulk(
             connection,

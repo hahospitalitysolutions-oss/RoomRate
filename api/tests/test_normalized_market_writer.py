@@ -28,22 +28,27 @@ class FakeScalarResult:
 
 
 class FakeRowsResult(FakeScalarResult):
-    """RETURNING id, scrape_run_id, property_id of the set-based observation upsert."""
+    """RETURNING rows of a set-based upsert, one per input row, each with a new id."""
 
-    def __init__(self, params: dict):
+    def __init__(self, rows: list[SimpleNamespace]):
         super().__init__(uuid4())
-        self.rows = [
-            SimpleNamespace(id=uuid4(), scrape_run_id=run_id, property_id=property_id)
-            for run_id, property_id in zip(params["scrape_run_ids"], params["property_ids"])
-        ]
+        self.rows = rows
 
     def __iter__(self):
         return iter(self.rows)
 
 
 def _fake_result(statement, params, issued_id: UUID) -> FakeScalarResult:
-    if "INSERT INTO roomrate_rate_observations" in str(statement):
-        return FakeRowsResult(params)
+    sql = str(statement)
+    if "INSERT INTO roomrate_rate_observations" in sql:
+        return FakeRowsResult([
+            SimpleNamespace(id=uuid4(), scrape_run_id=run_id, property_id=property_id)
+            for run_id, property_id in zip(params["scrape_run_ids"], params["property_ids"])
+        ])
+    if "INSERT INTO roomrate_properties" in sql and "unnest" in sql:
+        return FakeRowsResult([
+            SimpleNamespace(id=uuid4(), source_property_key=key) for key in params["source_property_keys"]
+        ])
     return FakeScalarResult(issued_id)
 
 
@@ -396,10 +401,11 @@ def test_write_normalized_rates_upserts_each_distinct_property_once(monkeypatch)
     write_normalized_rates([hotel_a_double, hotel_a_suite, hotel_b])
 
     executed_sql = [str(statement) for statement, _ in connection.calls]
-    # Two distinct source_property_keys → exactly two property upserts. The
-    # observations, packages and raw events go out set-based: one statement
-    # each, not one round trip per row (~40 ms each against Neon).
-    assert sum("INSERT INTO roomrate_properties " in sql for sql in executed_sql) == 2
+    # Hotels, observations, packages and raw events go out set-based: one
+    # statement each, not one round trip per row (~40 ms each against Neon).
+    assert sum("INSERT INTO roomrate_properties " in sql for sql in executed_sql) == 1
+    [properties] = [params for statement, params in connection.calls if "INSERT INTO roomrate_properties" in str(statement)]
+    assert properties["source_property_keys"] == ["property-1", "property-2"]  # each distinct hotel once
     assert sum("INSERT INTO roomrate_rate_observations" in sql for sql in executed_sql) == 1
     assert sum("INSERT INTO roomrate_room_packages" in sql for sql in executed_sql) == 1
     assert sum("INSERT INTO roomrate_raw_ingestion_events" in sql for sql in executed_sql) == 1
@@ -495,10 +501,10 @@ def test_write_normalized_rates_puts_a_whole_scrape_job_in_one_run(monkeypatch, 
     assert observations["scrape_run_ids"] == [str(run_id)] * 3
     [raw_events] = connection.params_of("INSERT INTO roomrate_raw_ingestion_events")
     assert set(zip(raw_events["scrape_run_ids"], raw_events["source_run_ids"])) == {(str(run_id), JOB_RUN_KEY)}
-    # Property identity never changes: one upsert per hotel with its own key.
-    properties = connection.params_of("INSERT INTO roomrate_properties ")
-    assert [params["source_property_key"] for params in properties] == ["property-1", "property-2", "property-3"]
-    assert [params["city"] for params in properties] == ["Φαληράκι", "Ιξιά", "Κολύμπια"]
+    # Property identity never changes: every hotel keeps its own key and city.
+    [properties] = connection.params_of("INSERT INTO roomrate_properties ")
+    assert properties["source_property_keys"] == ["property-1", "property-2", "property-3"]
+    assert properties["cities"] == ["Φαληράκι", "Ιξιά", "Κολύμπια"]
 
 
 def test_write_normalized_rates_job_run_falls_back_to_the_first_rate_destination(monkeypatch):
