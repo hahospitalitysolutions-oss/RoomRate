@@ -10,6 +10,7 @@ from api.scheduler import (
     run_queued_job_executor,
     run_schedule_tick,
     run_price_recommendation_audit_cleanup,
+    run_raw_ingestion_cleanup,
     run_scout_cache_cleanup,
     run_scrape_csv_cleanup,
     run_stale_job_sweeper,
@@ -461,6 +462,7 @@ def test_settings_expose_scheduler_defaults():
     assert fresh_settings.executor_batch_size == 3
     assert fresh_settings.stale_job_minutes == 5
     assert fresh_settings.scrape_csv_retention_days == 30
+    assert fresh_settings.raw_ingestion_retention_days == 30
 
 
 # ----------------------------------------------------------------------------
@@ -501,3 +503,35 @@ def test_audit_cleanup_is_disabled_by_zero_retention():
 
     assert deleted == 0
     assert connection.calls == []
+
+
+# ----------------------------------------------------------------------------
+# run_raw_ingestion_cleanup
+# ----------------------------------------------------------------------------
+
+
+def test_raw_ingestion_cleanup_deletes_payload_copies_past_retention():
+    """Raw events duplicate each package's payload and nothing reads them."""
+    connection = FakeLockConnection(scalar_results=[_ScalarResult(None, rowcount=4200)])
+
+    deleted = run_raw_ingestion_cleanup(engine=FakeEngine(connection), retention_days=30)
+
+    assert deleted == 4200
+    delete_sql, delete_params = next(
+        (sql, params) for sql, params in connection.calls if "DELETE FROM roomrate_raw_ingestion_events" in sql
+    )
+    assert "captured_at < now() - make_interval(days => :days)" in delete_sql
+    assert delete_params == {"days": 30}
+
+
+def test_raw_ingestion_cleanup_is_disabled_by_zero_retention_and_never_raises():
+    connection = FakeLockConnection(scalar_results=[])
+
+    assert run_raw_ingestion_cleanup(engine=FakeEngine(connection), retention_days=0) == 0
+    assert connection.calls == []
+
+    class BrokenEngine:
+        def begin(self):
+            raise RuntimeError("database unavailable")
+
+    assert run_raw_ingestion_cleanup(engine=BrokenEngine(), retention_days=30) == 0

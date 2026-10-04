@@ -86,6 +86,10 @@ class Settings(BaseSettings):
     # than this many days; results live in PostgreSQL, the CSVs are debugging
     # artifacts. 0 disables the cleanup.
     scrape_csv_retention_days: int = Field(default=30, alias="SCRAPE_CSV_RETENTION_DAYS")
+    # roomrate_raw_ingestion_events keeps every scraped row's raw payload, a
+    # copy of the package's own package_payload that nothing reads: about a
+    # third of a scrape's storage. 0 keeps them forever.
+    raw_ingestion_retention_days: int = Field(default=30, alias="RAW_INGESTION_RETENTION_DAYS")
     max_concurrent_scrape_jobs_per_account: int = Field(default=2, alias="MAX_CONCURRENT_SCRAPE_JOBS_PER_ACCOUNT")
     max_daily_scrape_jobs_per_account: int = Field(default=20, alias="MAX_DAILY_SCRAPE_JOBS_PER_ACCOUNT")
     # GET /api/v1/onboarding/property-candidates (the setup wizard's «Δείξε

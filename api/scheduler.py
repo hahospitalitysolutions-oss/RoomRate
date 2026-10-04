@@ -265,6 +265,39 @@ def run_price_recommendation_audit_cleanup(
     return deleted
 
 
+def run_raw_ingestion_cleanup(engine: Any = None, retention_days: int | None = None) -> int:
+    """Delete raw ingestion events past retention; returns the count. Never raises.
+
+    Each scraped row is stored twice: as its package (package_payload, read by
+    the app) and as a raw event (read by nothing). At ~1.7 KB a row the raw
+    copies alone are ~3 MB per 2,000-row scrape, against Neon's 0.5 GB free
+    storage. ``retention_days <= 0`` disables the sweep.
+    """
+    retention = retention_days if retention_days is not None else settings.raw_ingestion_retention_days
+    if retention <= 0:
+        return 0
+    try:
+        # Writer role: no API statement timeout for a large first sweep.
+        engine = engine if engine is not None else get_engine(role="writer")
+        with engine.begin() as connection:
+            result = connection.execute(
+                text(
+                    """
+                    DELETE FROM roomrate_raw_ingestion_events
+                    WHERE captured_at < now() - make_interval(days => :days)
+                    """
+                ),
+                {"days": retention},
+            )
+    except Exception:
+        logger.exception("Raw-ingestion cleanup crashed")
+        return 0
+    deleted = result.rowcount if result.rowcount and result.rowcount > 0 else 0
+    if deleted:
+        logger.info("Raw-ingestion cleanup deleted %s row(s) past retention", deleted)
+    return deleted
+
+
 def purge_old_scrape_csvs(directory: Path, older_than_days: int, now: datetime | None = None) -> int:
     """Delete ``*.csv`` files and leftover job checkpoints older than ``older_than_days``.
 
@@ -407,6 +440,14 @@ def create_scheduler(
         minute=40,
         id="scrape_csv_cleanup",
         name="Delete scrape CSVs past retention",
+    )
+    scheduler.add_job(
+        run_raw_ingestion_cleanup,
+        trigger="cron",
+        hour=4,
+        minute=55,
+        id="raw_ingestion_cleanup",
+        name="Delete raw ingestion events past retention",
     )
     scheduler.add_job(
         run_price_recommendation_audit_cleanup,
