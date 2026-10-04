@@ -629,7 +629,12 @@ test("scenario 3: picking a room PUTs selected-room-type and reaches step 3", as
   });
   await page.route(`${API}/api/v1/scrape-jobs/${JOB_ID}`, (route) => {
     recordCall(calls, route);
-    return route.fulfill({ json: { id: JOB_ID, status: "completed", scrape_runs_count: 1 } });
+    return route.fulfill({
+      json: {
+        id: JOB_ID, status: "completed", scrape_runs_count: 1,
+        check_in: "2026-11-03", check_out: "2026-11-07", adults: 2, children: 0, rooms: 1,
+      },
+    });
   });
   await page.route(`${API}/api/v1/onboarding/owned-property/${OWNED_PROPERTY_ID}/room-types`, (route) => {
     recordCall(calls, route);
@@ -675,6 +680,10 @@ test("scenario 3: picking a room PUTs selected-room-type and reaches step 3", as
   await page.getByRole("button", { name: "Ναι, αυτό είναι" }).click();
   await expect(page.getByTestId("setup-step-title")).toContainText("Βήμα 2");
   await expect(page.getByTestId("room-double")).toContainText("0 € / διανυκτέρευση");
+  // The prices say which search they come from, so the owner checks the same one on Booking.
+  await expect(page.getByTestId("room-price-basis")).toHaveText(
+    "Τιμές για 2 ενήλικες, μέση τιμή ανά διανυκτέρευση για 3/11–7/11/2026, όπως τις έδειξε το Booking.",
+  );
   // Non-default pick on purpose: the SECOND room catches a component that
   // forwards rooms[0] instead of the user's choice.
   await page.getByTestId("room-suite").click();

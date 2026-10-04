@@ -75,6 +75,16 @@ def process_and_flatten_data(
         rooms_list = property_item.get("rooms", [])
         if not isinstance(rooms_list, list):
             continue
+        # The property's «from» price is the cheapest rate of ANY room. It
+        # stands in for an option without a price only when Booking priced no
+        # option at all; otherwise a sold-out option took another room's
+        # (often the 1-person) price and undercut the real one.
+        property_has_option_prices = any(
+            _safe_float(opt.get("price")) > 0
+            for room in rooms_list if isinstance(room, dict)
+            for opt in (room.get("options") or []) if isinstance(opt, dict)
+        )
+        fallback_price = 0.0 if property_has_option_prices else base_price
 
         for room in rooms_list:
             room_name  = room.get("roomType", "Standard Δωμάτιο")
@@ -114,11 +124,11 @@ def process_and_flatten_data(
                 seen_ids.add(record_id)
 
                 guests      = config.adults + config.children
-                # "price": null (συχνό σε sold-out πακέτα) πρέπει να πέφτει στο
-                # base_price — το dict.get default ισχύει μόνο όταν ΛΕΙΠΕΙ το
-                # key, οπότε null θα γινόταν 0.0 και θα μόλυνε κάθε MIN(price).
+                # "price": null (συχνό σε sold-out πακέτα): το fallback_price
+                # (βλ. παραπάνω) ή 0, που παραλείπεται παρακάτω. Ποτέ 0.0 στη
+                # βάση: θα μόλυνε κάθε MIN(price).
                 raw_price    = opt.get("price")
-                room_price   = _safe_float(raw_price if raw_price is not None else base_price)
+                room_price   = _safe_float(raw_price if raw_price is not None else fallback_price)
                 if room_price <= 0:
                     skipped_zero_price += 1
                     continue

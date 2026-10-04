@@ -4,11 +4,31 @@ import { Component, EventEmitter, Input, OnDestroy, OnInit, Output, signal } fro
 import { EmptyStateComponent } from "../components/empty-state.component";
 import { IconComponent } from "../components/icon.component";
 import { OnboardingService } from "../services/onboarding.service";
-import { OwnedPropertyRoomType } from "../types/market";
+import { OwnedPropertyRoomType, ScrapeJobResponse } from "../types/market";
 import { remainingDeadlineMs, settleBeforeDeadline } from "./poll-deadline";
 
 const DISCOVERY_POLL_INTERVAL_MS = 5_000;
 const DISCOVERY_TIMEOUT_MS = 5 * 60_000;
+
+/** «Τιμές για 2 ενήλικες, μέση τιμή ανά διανυκτέρευση για 3/11–7/11/2026.» */
+function describePriceBasis(job: Pick<ScrapeJobResponse, "check_in" | "check_out" | "adults" | "children" | "rooms">): string {
+  if (!job.check_in || !job.check_out || !job.adults) {
+    return "";
+  }
+  const day = (value: string) => {
+    const [year, month, date] = value.split("-").map(Number);
+    return { year, label: `${date}/${month}` };
+  };
+  const checkIn = day(job.check_in);
+  const checkOut = day(job.check_out);
+  const party = [
+    job.adults === 1 ? "1 ενήλικα" : `${job.adults} ενήλικες`,
+    job.children ? (job.children === 1 ? "1 παιδί" : `${job.children} παιδιά`) : "",
+    job.rooms > 1 ? `${job.rooms} δωμάτια` : "",
+  ].filter(Boolean).join(", ");
+  return `Τιμές για ${party}, μέση τιμή ανά διανυκτέρευση για ${checkIn.label}–${checkOut.label}/${checkOut.year}, όπως τις έδειξε το Booking.`;
+}
+
 const LOAD_ERROR = "Δεν μπορέσαμε να φορτώσουμε τα δωμάτια. Δοκιμάστε ξανά.";
 const SAVE_ERROR = "Δεν μπορέσαμε να αποθηκεύσουμε το δωμάτιο. Δοκιμάστε ξανά.";
 const TIMEOUT_ERROR = "Η ανακάλυψη δωματίων διαρκεί ασυνήθιστα πολύ. Δοκιμάστε ξανά σε λίγο.";
@@ -45,6 +65,9 @@ type FailedAction = "load" | "save" | null;
         <div *ngIf="!rooms().length && !error()" class="setup-actions">
           <button class="text-button" type="button" (click)="skip()">Συνέχεια στον χάρτη</button>
         </div>
+        <p class="muted room-price-basis" *ngIf="rooms().length && priceBasis()" data-testid="room-price-basis">
+          {{ priceBasis() }}
+        </p>
         <ul class="room-list" *ngIf="rooms().length">
           <li *ngFor="let room of rooms()">
             <button type="button" class="candidate-option"
@@ -76,6 +99,7 @@ type FailedAction = "load" | "save" | null;
     </section>
   `,
   styles: [`
+    .room-price-basis { margin: 0 0 0.75rem; }
     .room-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
     .room-details { display: flex; flex-wrap: wrap; gap: 0.25rem; }
     .room-details span + span::before { content: "·"; margin-right: 0.25rem; }
@@ -94,6 +118,10 @@ export class SetupRoomStepComponent implements OnInit, OnDestroy {
   readonly selectedCategory = signal("");
   readonly saving = signal(false);
   readonly error = signal("");
+  /** What the sample prices are for (stay and party of the discovery job),
+   * so the owner compares them with the same search on Booking. Empty when
+   * the catalog is read without a job. */
+  readonly priceBasis = signal("");
 
   private readonly failedAction = signal<FailedAction>(null);
   private readonly pendingDelayCancel = signal<(() => void) | null>(null);
@@ -246,6 +274,7 @@ export class SetupRoomStepComponent implements OnInit, OnDestroy {
       }
       const job = outcome.value;
       if (job.status === "completed") {
+        this.priceBasis.set(describePriceBasis(job));
         return true;
       }
       if (job.status === "failed") {

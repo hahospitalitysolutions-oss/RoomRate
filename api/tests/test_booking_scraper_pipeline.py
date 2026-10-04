@@ -274,6 +274,23 @@ def test_flattening_null_option_price_falls_back_to_base_price():
     assert row["price_per_night_eur"] > 0
 
 
+def test_a_sold_out_option_never_takes_another_rooms_price():
+    """The property's «from» price (400) belongs to the cheapest room, not to this one."""
+    raw = _raw_property()
+    raw[0]["rooms"].append(
+        {"roomType": "Suite", "options": [{"id": "suite-1", "persons": 2, "price": None}]}
+    )
+
+    config = ScraperConfig(
+        destination="Faliraki",
+        check_in=datetime(2026, 6, 15),
+        check_out=datetime(2026, 6, 20),
+    )
+    df = process_and_flatten_data(raw, _hotel_meta(), config)
+
+    assert df["room_type"].tolist() == ["Double Room"]
+
+
 def test_flattening_skips_zero_price_options_instead_of_persisting_them():
     raw = _raw_property()
     raw[0]["price"] = None  # no base price either
@@ -921,8 +938,51 @@ def test_persist_results_round6_filters_are_skipped_for_room_discovery():
 
     result = persist_results(df, config)
 
+    # The owner's single room stays in the catalog: it has no rate for 2.
     assert result.rows_seen == 1
-    assert result.result_summary["filter_counts"] == {}
+    assert result.result_summary["filter_counts"] == {"room_capacity": {"before": 1, "after": 1}}
+
+
+def test_room_discovery_prices_each_room_for_the_searched_party(monkeypatch):
+    """Booking's 1-person rate (80 €) is not the 2-adult price (100 €) of the room."""
+    config = ScraperConfig(job_type="owned_property_room_discovery", adults=2, output_csv="/dev/null")
+    written: list = []
+    monkeypatch.setattr("scraper.persistence.write_normalized_rates", lambda rates, **_: written.extend(rates) or len(rates))
+    monkeypatch.setattr("scraper.persistence.normalize_room_rate_row", lambda row, provider: row)
+    url = "https://www.booking.com/hotel/gr/sabbal.html"
+    df = pd.DataFrame(
+        [
+            {"hotel_url": url, "room_type": "Διαμέρισμα 1/3", "max_persons": 1, "price_per_night_eur": 80.0},
+            {"hotel_url": url, "room_type": "Διαμέρισμα 2/3", "max_persons": 2, "price_per_night_eur": 100.0},
+            {"hotel_url": url, "room_type": "Studio", "max_persons": 1, "price_per_night_eur": 100.0},
+            {"hotel_url": url, "room_type": "Studio", "max_persons": 0, "price_per_night_eur": 110.0},
+            {"hotel_url": url, "room_type": "Μονόκλινο", "max_persons": 1, "price_per_night_eur": 50.0},
+        ]
+    )
+
+    result = persist_results(df, config)
+
+    kept = sorted((row["room_type"], row["price_per_night_eur"]) for row in written)
+    assert kept == [("Studio", 110.0), ("Διαμέρισμα 2/3", 100.0), ("Μονόκλινο", 50.0)]
+    assert result.result_summary["filter_counts"] == {"room_capacity": {"before": 5, "after": 3}}
+
+
+@pytest.mark.parametrize(("adults", "rooms", "kept"), [(1, 1, 3), (2, 1, 2), (4, 2, 2), (3, 1, 1)])
+def test_room_discovery_compares_rates_with_the_party_per_room(adults, rooms, kept):
+    config = ScraperConfig(dry_run=True, job_type="owned_property_room_discovery", adults=adults, rooms=rooms)
+    df = pd.DataFrame(
+        [
+            {"room_type": "Διαμέρισμα", "max_persons": 1},
+            {"room_type": "Διαμέρισμα", "max_persons": 2},
+            {"room_type": "Διαμέρισμα", "max_persons": 0},  # unknown capacity always stays
+        ]
+    )
+
+    result = persist_results(df, config)
+
+    # (3, 1): no rate is known to fit 3, but the unknown one might, so the
+    # known 1- and 2-person rates go.
+    assert result.result_summary["filter_counts"]["room_capacity"] == {"before": 3, "after": kept}
 
 
 def test_persist_results_records_the_filter_that_emptied_the_pipeline():
