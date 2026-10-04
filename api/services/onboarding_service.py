@@ -41,6 +41,15 @@ def _candidate_match_score(property_name: str, candidate: PropertyCandidate) -> 
     return overlap * 70.0 + review_bonus
 
 
+# An exact name, or one name containing the other (_candidate_match_score).
+STRONG_NAME_MATCH = 85.0
+
+
+def _candidate_url_key(candidate: PropertyCandidate) -> str:
+    """One Booking listing whatever its query string: the URL without ?…/#…."""
+    return candidate.booking_url.split("#", 1)[0].split("?", 1)[0].rstrip("/").lower()
+
+
 # 422 detail when this API has no Apify token; the frontend shows it in Greek.
 BOOKING_SEARCH_NOT_CONFIGURED = (
     "Booking search is not configured on this API: set APIFY_TOKEN in .env and restart the API."
@@ -162,14 +171,15 @@ class BookingPropertyCandidateProvider:
             logger.warning("Booking candidate search is not configured: %s", exc)
             raise ValueError(BOOKING_SEARCH_NOT_CONFIGURED) from exc
         scout_limit = min(max(limit, 12), 25)
-        # Resolved once so the location search and its name-retry fallback
-        # share one engine (and therefore one cache read/write path).
+        # Resolved once so the location search and its name search share one
+        # engine (and therefore one cache read/write path).
         engine = self._resolve_engine()
-        try:
-            hotels = fetch_hotel_list(
+
+        def scout(destination: str) -> list[dict]:
+            return fetch_hotel_list(
                 client,
                 self._search_config(
-                    destination=location.strip(),
+                    destination=destination,
                     check_in=check_in,
                     check_out=check_out,
                     adults=adults,
@@ -180,32 +190,33 @@ class BookingPropertyCandidateProvider:
                 ),
                 engine=engine,
             )
-            if not hotels:
+
+        try:
+            hotels = scout(location.strip())
+            candidates = [self._candidate_from_hotel(hotel, fallback_city=location) for hotel in hotels]
+            # The location scout returns Booking's top hotels of the area,
+            # cached for a day. A property outside them never appeared, and
+            # «Αναζήτηση ξανά» returned the same list however the name was
+            # corrected. Without a clear name match, search by name as well.
+            if not any(_candidate_match_score(property_name, c) >= STRONG_NAME_MATCH for c in candidates):
                 logger.info(
-                    "Booking location scout returned no candidates; retrying property-name search: property=%s location=%s",
+                    "Booking location scout has no clear name match; searching by property name: "
+                    "property=%s location=%s",
                     property_name,
                     location,
                 )
-                hotels = fetch_hotel_list(
-                    client,
-                    self._search_config(
-                        destination=f"{property_name.strip()}, {location.strip()}",
-                        check_in=check_in,
-                        check_out=check_out,
-                        adults=adults,
-                        children=children,
-                        rooms=rooms,
-                        limit=scout_limit,
-                        cache_hours=cache_hours,
-                    ),
-                    engine=engine,
-                )
+                named = [
+                    self._candidate_from_hotel(hotel, fallback_city=location)
+                    for hotel in scout(f"{property_name.strip()}, {location.strip()}")
+                ]
+                seen_urls = {_candidate_url_key(c) for c in named}
+                candidates = named + [c for c in candidates if _candidate_url_key(c) not in seen_urls]
         except ActorRunError as exc:
             logger.warning("Booking candidate search failed (actor error): %s", exc)
             raise ValueError(
                 "Booking search is temporarily unavailable; please try again shortly"
             ) from exc
-        return [self._candidate_from_hotel(hotel, fallback_city=location) for hotel in hotels]
+        return candidates
 
     @staticmethod
     def _search_config(

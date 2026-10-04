@@ -48,6 +48,14 @@ export type CompetitorSearchRequest = {
  * (competitors, market, scrape-jobs). Apart from the /me navigation cache
  * below, methods are thin typed delegations.
  */
+/**
+ * Live finding 2026-08-11: a cold live scout takes 1-4 minutes, and the
+ * default 45s GET aborted every try. The search runs a second scout, by
+ * property name, when the area list lacks the property, so it gets room
+ * for two.
+ */
+const PROPERTY_SEARCH_TIMEOUT_MS = 360_000;
+
 @Injectable({ providedIn: "root" })
 export class OnboardingService {
   constructor(private readonly api: ApiClientService) {}
@@ -79,7 +87,11 @@ export class OnboardingService {
     limit: number;
   }): Promise<AutomaticSetupResponse> {
     try {
-      return await this.api.post<AutomaticSetupResponse>("/api/v1/onboarding/auto-setup", body);
+      return await this.api.post<AutomaticSetupResponse>(
+        "/api/v1/onboarding/auto-setup",
+        body,
+        PROPERTY_SEARCH_TIMEOUT_MS,
+      );
     } finally {
       // finally, not after: the server may have committed before a 5xx, and
       // over-invalidating costs one fetch while a stale /me routes wrong.
@@ -102,13 +114,10 @@ export class OnboardingService {
       check_out: query.check_out,
       limit: String(query.limit ?? 8),
     });
-    // Live finding 2026-08-11: a cold live scout scrape takes 1-4 minutes,
-    // but this GET aborted at the default 45s -- three user-style retries
-    // over ~7 minutes all fell back. Matches the 180s budget POSTs get.
     return this.api.get<PropertyCandidate[]>(
       "/api/v1/onboarding/property-candidates",
       params,
-      180_000,
+      PROPERTY_SEARCH_TIMEOUT_MS,
     );
   }
 
