@@ -18,6 +18,7 @@ Running multiple API processes is safe by construction:
 from __future__ import annotations
 
 import logging
+import shutil
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -265,7 +266,7 @@ def run_price_recommendation_audit_cleanup(
 
 
 def purge_old_scrape_csvs(directory: Path, older_than_days: int, now: datetime | None = None) -> int:
-    """Delete ``*.csv`` files in ``directory`` older than ``older_than_days``.
+    """Delete ``*.csv`` files and leftover job checkpoints older than ``older_than_days``.
 
     Pure helper (filesystem only) so it unit-tests with ``tmp_path`` and an
     injected ``now``. Retention <= 0 disables deletion entirely; a missing
@@ -284,6 +285,15 @@ def purge_old_scrape_csvs(directory: Path, older_than_days: int, now: datetime |
                 deleted += 1
         except OSError:
             logger.warning("Could not delete old scrape CSV %s", csv_path, exc_info=True)
+    # What a finally failed job left for a retry that never came
+    # (scraper/checkpoint.py); a successful job removes its own.
+    for checkpoint_dir in directory.glob("checkpoint_*"):
+        try:
+            if checkpoint_dir.is_dir() and checkpoint_dir.stat().st_mtime < cutoff_ts:
+                shutil.rmtree(checkpoint_dir)
+                deleted += 1
+        except OSError:
+            logger.warning("Could not delete old scrape checkpoint %s", checkpoint_dir, exc_info=True)
     return deleted
 
 

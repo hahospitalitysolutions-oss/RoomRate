@@ -11,6 +11,7 @@ from api.services.room_rates_normalizer import normalize_room_rate_row
 from scraper.utils import _append_error_log
 from scraper import (
     ActorRunError,
+    PersistResult,
     ScraperConfig,
     build_config_from_args,
     fetch_deep_room_data,
@@ -1379,7 +1380,7 @@ def test_main_dry_run_skips_database_cache_and_uses_config_output(monkeypatch):
         calls["fetch_engine"] = engine
         return _hotel_meta()
 
-    def fake_fetch_deep_room_data(client, hotels, config, progress=None):
+    def fake_fetch_deep_room_data(client, hotels, config, progress=None, checkpoint=None):
         return _raw_property()
 
     monkeypatch.setattr("scraper.cli.build_client", fake_build_client)
@@ -2014,3 +2015,99 @@ def test_runs_that_never_succeed_fail_the_stage_and_a_run_past_the_wait_is_abort
         _run_actor(client, {"search": "Σαλαμίνα"}, max_retries=2, retry_delay=1)
 
     assert client.aborted == ["run-2"]  # still running after the wait: stopped, not left billing
+
+
+
+# ----------------------------------------------------------------------------
+# Job checkpoints: a retry runs only what the earlier attempt did not finish
+# ----------------------------------------------------------------------------
+
+
+def _checkpoint_config(tmp_path, **overrides):
+    return ScraperConfig(
+        destination="Σαλαμίνα",
+        scrape_job_id=UUID("00000000-0000-0000-0000-0000000000cc"),
+        output_csv=str(tmp_path / "scrape_job_cc.csv"),
+        deep_crawl_batch_size=2,
+        deep_crawl_workers=1,
+        **overrides,
+    )
+
+
+def test_a_checkpoint_round_trips_and_is_off_for_dry_runs_and_jobless_runs(tmp_path):
+    from scraper.checkpoint import JobCheckpoint
+
+    checkpoint = JobCheckpoint.for_config(_checkpoint_config(tmp_path))
+    checkpoint.save("scout", {"hotels": [{"name": "Ξενοδοχείο"}]})
+
+    assert checkpoint.load("scout") == {"hotels": [{"name": "Ξενοδοχείο"}]}
+    (checkpoint.directory / "broken.json").write_text("{not json", encoding="utf-8")
+    assert checkpoint.load("broken") is None  # unreadable: re-scraped, not fatal
+    checkpoint.clear()
+    assert not checkpoint.directory.exists()
+    assert not JobCheckpoint.for_config(_checkpoint_config(tmp_path, dry_run=True)).enabled
+    assert not JobCheckpoint.for_config(ScraperConfig(output_csv=str(tmp_path / "x.csv"))).enabled
+
+
+def test_a_retried_deep_crawl_runs_only_the_batch_that_failed(monkeypatch, tmp_path):
+    from scraper.checkpoint import JobCheckpoint
+
+    config = _checkpoint_config(tmp_path)
+    checkpoint = JobCheckpoint.for_config(config)
+    hotels = [{"url": f"https://www.booking.com/hotel/gr/h{i}.html"} for i in range(4)]
+    actor_calls: list[list[str]] = []
+    failing = {"https://www.booking.com/hotel/gr/h2.html"}
+
+    def fake_run_actor(client, actor_input, max_retries, retry_delay, label=""):
+        urls = [start["url"] for start in actor_input["startUrls"]]
+        actor_calls.append(urls)
+        if failing & set(urls):
+            raise ActorRunError("batch failed on every retry")
+        return [{"url": url, "name": url} for url in urls]
+
+    monkeypatch.setattr("scraper.deep_crawl._run_actor", fake_run_actor)
+
+    with pytest.raises(ActorRunError):
+        fetch_deep_room_data(object(), hotels, config, checkpoint=checkpoint)
+    assert len(actor_calls) == 2
+
+    failing.clear()
+    actor_calls.clear()
+    items = fetch_deep_room_data(object(), hotels, config, checkpoint=checkpoint)
+
+    # Only the failed batch ran again; the saved one came from the checkpoint.
+    assert actor_calls == [["https://www.booking.com/hotel/gr/h2.html", "https://www.booking.com/hotel/gr/h3.html"]]
+    assert sorted(item["url"] for item in items) == sorted(hotel["url"] for hotel in hotels)
+
+
+def test_a_retried_job_reuses_its_scout_and_clears_the_checkpoint_once_saved(monkeypatch, tmp_path):
+    attempts = {"scout": 0, "deep": 0}
+
+    def fake_fetch_hotel_lists(client, config, engine=None, progress=None, warnings=None):
+        attempts["scout"] += 1
+        warnings.append("nearby_scout_failed:Αμπελάκια")
+        return _hotel_meta()
+
+    def fake_fetch_deep_room_data(client, hotels, config, progress=None, checkpoint=None):
+        attempts["deep"] += 1
+        if attempts["deep"] == 1:
+            raise ActorRunError("one batch failed")
+        return _raw_property()
+
+    monkeypatch.setattr("scraper.cli.build_client", lambda: object())
+    monkeypatch.setattr("scraper.cli.build_engine", lambda: None)
+    monkeypatch.setattr("scraper.cli.fetch_hotel_lists", fake_fetch_hotel_lists)
+    monkeypatch.setattr("scraper.cli.fetch_deep_room_data", fake_fetch_deep_room_data)
+    monkeypatch.setattr("scraper.cli.persist_results", lambda df, config: PersistResult(result_summary={}))
+    output_csv = tmp_path / "scrape_job_cc.csv"
+    argv = [
+        "--destination", "Σαλαμίνα", "--check-in", "2026-11-06", "--check-out", "2026-11-09",
+        "--scrape-job-id", "00000000-0000-0000-0000-0000000000cc", "--output-csv", str(output_csv),
+    ]
+
+    with pytest.raises(SystemExit):
+        main(argv)
+    main(argv)
+
+    assert attempts == {"scout": 1, "deep": 2}  # the retry paid for no second scout
+    assert not (tmp_path / "checkpoint_00000000-0000-0000-0000-0000000000cc").exists()

@@ -392,6 +392,23 @@ def test_purge_deletes_old_csvs_and_keeps_recent_ones(tmp_path):
     assert (tmp_path / "old.log").exists()
 
 
+def test_purge_deletes_checkpoints_a_failed_job_left_behind(tmp_path):
+    import os
+
+    old_checkpoint = tmp_path / "checkpoint_old-job"
+    old_checkpoint.mkdir()
+    (old_checkpoint / "scout.json").write_text("{}")
+    stale_ts = NOW.timestamp() - 45 * 86_400
+    os.utime(old_checkpoint, (stale_ts, stale_ts))
+    (tmp_path / "checkpoint_running-job").mkdir()
+
+    deleted = purge_old_scrape_csvs(tmp_path, older_than_days=30, now=NOW)
+
+    assert deleted == 1
+    assert not old_checkpoint.exists()
+    assert (tmp_path / "checkpoint_running-job").exists()  # a job may still retry
+
+
 def test_purge_disabled_with_zero_retention(tmp_path):
     _write_csv(tmp_path, "ancient.csv", age_days=400, now=NOW)
 
