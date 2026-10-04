@@ -1,6 +1,7 @@
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -26,13 +27,33 @@ class FakeScalarResult:
         return self.value
 
 
+class FakeRowsResult(FakeScalarResult):
+    """RETURNING id, scrape_run_id, property_id of the set-based observation upsert."""
+
+    def __init__(self, params: dict):
+        super().__init__(uuid4())
+        self.rows = [
+            SimpleNamespace(id=uuid4(), scrape_run_id=run_id, property_id=property_id)
+            for run_id, property_id in zip(params["scrape_run_ids"], params["property_ids"])
+        ]
+
+    def __iter__(self):
+        return iter(self.rows)
+
+
+def _fake_result(statement, params, issued_id: UUID) -> FakeScalarResult:
+    if "INSERT INTO roomrate_rate_observations" in str(statement):
+        return FakeRowsResult(params)
+    return FakeScalarResult(issued_id)
+
+
 class FakeConnection:
     def __init__(self):
         self.calls: list[tuple[object, dict]] = []
 
     def execute(self, statement, params):
         self.calls.append((statement, params))
-        return FakeScalarResult(UUID("00000000-0000-0000-0000-000000000999"))
+        return _fake_result(statement, params, UUID("00000000-0000-0000-0000-000000000999"))
 
 
 class FakeTransaction:
@@ -357,7 +378,7 @@ def test_write_normalized_rates_caches_scrape_run_and_bulks_amenities(monkeypatc
 
 
 def test_write_normalized_rates_upserts_each_distinct_property_once(monkeypatch):
-    connection = FakeConnection()
+    connection = IdIssuingConnection()  # distinct property ids, as PostgreSQL returns them
     engine = FakeEngine(connection)
     monkeypatch.setattr("api.repositories.normalized_market_writer.get_engine", lambda *a, **k: engine)
 
@@ -375,12 +396,17 @@ def test_write_normalized_rates_upserts_each_distinct_property_once(monkeypatch)
     write_normalized_rates([hotel_a_double, hotel_a_suite, hotel_b])
 
     executed_sql = [str(statement) for statement, _ in connection.calls]
-    # Two distinct source_property_keys → exactly two property upserts, while
-    # observations/packages/raw events stay per-row (3 each).
+    # Two distinct source_property_keys → exactly two property upserts. The
+    # observations, packages and raw events go out set-based: one statement
+    # each, not one round trip per row (~40 ms each against Neon).
     assert sum("INSERT INTO roomrate_properties " in sql for sql in executed_sql) == 2
-    assert sum("INSERT INTO roomrate_rate_observations" in sql for sql in executed_sql) == 3
-    assert sum("INSERT INTO roomrate_room_packages" in sql for sql in executed_sql) == 3
-    assert sum("INSERT INTO roomrate_raw_ingestion_events" in sql for sql in executed_sql) == 3
+    assert sum("INSERT INTO roomrate_rate_observations" in sql for sql in executed_sql) == 1
+    assert sum("INSERT INTO roomrate_room_packages" in sql for sql in executed_sql) == 1
+    assert sum("INSERT INTO roomrate_raw_ingestion_events" in sql for sql in executed_sql) == 1
+    [observations] = [params for statement, params in connection.calls if "roomrate_rate_observations" in str(statement)]
+    assert len(observations["property_ids"]) == 2  # one observation per hotel
+    [packages] = [params for statement, params in connection.calls if "roomrate_room_packages" in str(statement)]
+    assert packages["source_record_id"] == ["record-1", "record-2", "record-3"]
 
 
 # ----------------------------------------------------------------------------
@@ -403,7 +429,7 @@ class IdIssuingConnection(FakeConnection):
         self.calls.append((statement, params))
         issued = uuid4()
         self.issued_ids.append(issued)
-        return FakeScalarResult(issued)
+        return _fake_result(statement, params, issued)
 
     def params_of(self, table_insert: str) -> list[dict]:
         return [params for statement, params in self.calls if table_insert in str(statement)]
@@ -465,10 +491,10 @@ def test_write_normalized_rates_puts_a_whole_scrape_job_in_one_run(monkeypatch, 
         "faliraki",
     )
     [run_id] = connection.issued_for("INSERT INTO roomrate_scrape_runs")
-    observations = connection.params_of("INSERT INTO roomrate_rate_observations")
-    assert [params["scrape_run_id"] for params in observations] == [run_id, run_id, run_id]
-    raw_events = connection.params_of("INSERT INTO roomrate_raw_ingestion_events")
-    assert {(params["scrape_run_id"], params["source_run_id"]) for params in raw_events} == {(run_id, JOB_RUN_KEY)}
+    [observations] = connection.params_of("INSERT INTO roomrate_rate_observations")
+    assert observations["scrape_run_ids"] == [str(run_id)] * 3
+    [raw_events] = connection.params_of("INSERT INTO roomrate_raw_ingestion_events")
+    assert set(zip(raw_events["scrape_run_ids"], raw_events["source_run_ids"])) == {(str(run_id), JOB_RUN_KEY)}
     # Property identity never changes: one upsert per hotel with its own key.
     properties = connection.params_of("INSERT INTO roomrate_properties ")
     assert [params["source_property_key"] for params in properties] == ["property-1", "property-2", "property-3"]
@@ -520,7 +546,7 @@ def test_write_normalized_rates_without_a_job_keeps_one_run_per_city(monkeypatch
     assert [run["source_run_key"] for run in runs] == [rate.source_run_key for rate in batch]
     assert [run["destination"] for run in runs] == ["Φαληράκι", "Ιξιά", "Κολύμπια"]
     assert all(run["scrape_job_id"] is None for run in runs)
-    observations = connection.params_of("INSERT INTO roomrate_rate_observations")
-    assert [params["scrape_run_id"] for params in observations] == connection.issued_for(
-        "INSERT INTO roomrate_scrape_runs"
-    )
+    [observations] = connection.params_of("INSERT INTO roomrate_rate_observations")
+    assert observations["scrape_run_ids"] == [
+        str(run_id) for run_id in connection.issued_for("INSERT INTO roomrate_scrape_runs")
+    ]

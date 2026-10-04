@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import replace
 from typing import Any
@@ -338,6 +339,211 @@ def insert_raw_event(connection: Any, rate: NormalizedRoomRate, scrape_run_id: u
     )
 
 
+# ---------------------------------------------------------------------------
+# Set-based writes for a whole batch. The row-by-row helpers above made three
+# round trips per package (observation, package, raw event): instant on a
+# local PostgreSQL, ~4 minutes for 2,000 packages against Neon at ~40 ms per
+# round trip. Each helper below is ONE statement over unnest()-ed arrays and
+# keeps the row-by-row semantics: the same LEAST/GREATEST/COALESCE merge for
+# observations, the last row winning for a repeated package, DO NOTHING for a
+# repeated raw payload.
+# ---------------------------------------------------------------------------
+
+
+def _json_or_none(value: Any) -> str | None:
+    # json.dumps, as SQLAlchemy's JSONB bind uses for the row-by-row writes.
+    return None if value is None else json.dumps(value)
+
+
+def upsert_observations_bulk(
+    connection: Any,
+    rows: list[tuple[NormalizedRoomRate, uuid.UUID, uuid.UUID]],
+) -> dict[tuple[str, str], uuid.UUID]:
+    """One observation per (run, property); returns its id keyed by (run id, property id).
+
+    The batch is merged first exactly as successive upserts would merge it:
+    the lowest/highest price, the lowest known rooms_left, the last known
+    review score/count, the first observed_at (never updated on conflict).
+    """
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for rate, scrape_run_id, property_id in rows:
+        key = (str(scrape_run_id), str(property_id))
+        current = merged.get(key)
+        if current is None:
+            merged[key] = {
+                "observed_at": rate.observed_at,
+                "review_score": rate.review_score,
+                "review_count": rate.review_count,
+                "rooms_left": rate.rooms_left,
+                "price_min": rate.price_per_night_eur,
+                "price_max": rate.price_per_night_eur,
+            }
+            continue
+        if rate.review_score is not None:
+            current["review_score"] = rate.review_score
+        if rate.review_count is not None:
+            current["review_count"] = rate.review_count
+        if rate.rooms_left is not None:
+            current["rooms_left"] = (
+                rate.rooms_left if current["rooms_left"] is None else min(current["rooms_left"], rate.rooms_left)
+            )
+        current["price_min"] = min(current["price_min"], rate.price_per_night_eur)
+        current["price_max"] = max(current["price_max"], rate.price_per_night_eur)
+    if not merged:
+        return {}
+    keys = list(merged)
+    result = connection.execute(
+        text(
+            """
+            INSERT INTO roomrate_rate_observations (
+                id, scrape_run_id, property_id, observed_at, review_score, review_count,
+                rooms_left_min, price_min_eur, price_max_eur
+            )
+            SELECT gen_random_uuid(), o.scrape_run_id, o.property_id, o.observed_at, o.review_score,
+                   o.review_count, o.rooms_left, o.price_min, o.price_max
+            FROM unnest(
+                CAST(:scrape_run_ids AS uuid[]),
+                CAST(:property_ids AS uuid[]),
+                CAST(:observed_at AS timestamptz[]),
+                CAST(:review_scores AS numeric[]),
+                CAST(:review_counts AS integer[]),
+                CAST(:rooms_left AS integer[]),
+                CAST(:price_min AS numeric[]),
+                CAST(:price_max AS numeric[])
+            ) AS o(scrape_run_id, property_id, observed_at, review_score, review_count,
+                   rooms_left, price_min, price_max)
+            ON CONFLICT (scrape_run_id, property_id) DO UPDATE SET
+                updated_at = now(),
+                review_score = COALESCE(EXCLUDED.review_score, roomrate_rate_observations.review_score),
+                review_count = COALESCE(EXCLUDED.review_count, roomrate_rate_observations.review_count),
+                rooms_left_min = LEAST(
+                    COALESCE(roomrate_rate_observations.rooms_left_min, EXCLUDED.rooms_left_min),
+                    COALESCE(EXCLUDED.rooms_left_min, roomrate_rate_observations.rooms_left_min)
+                ),
+                price_min_eur = LEAST(roomrate_rate_observations.price_min_eur, EXCLUDED.price_min_eur),
+                price_max_eur = GREATEST(roomrate_rate_observations.price_max_eur, EXCLUDED.price_max_eur)
+            RETURNING id, scrape_run_id, property_id
+            """
+        ),
+        {
+            "scrape_run_ids": [run_id for run_id, _ in keys],
+            "property_ids": [property_id for _, property_id in keys],
+            "observed_at": [merged[key]["observed_at"] for key in keys],
+            "review_scores": [merged[key]["review_score"] for key in keys],
+            "review_counts": [merged[key]["review_count"] for key in keys],
+            "rooms_left": [merged[key]["rooms_left"] for key in keys],
+            "price_min": [merged[key]["price_min"] for key in keys],
+            "price_max": [merged[key]["price_max"] for key in keys],
+        },
+    )
+    return {(str(row.scrape_run_id), str(row.property_id)): row.id for row in result}
+
+
+_PACKAGE_COLUMNS = (
+    "source_record_id", "room_type", "room_type_category", "meals", "free_cancellation",
+    "price_per_night_eur", "price_total_eur", "rooms_left", "package_payload", "room_attributes",
+    "discounted_price_per_night_eur", "discount_pct", "discount_label", "has_genius_discount",
+    "cancellation_type", "payment_label", "rate_block_id",
+)
+_PACKAGE_ARRAY_TYPES = {
+    "source_record_id": "text", "room_type": "text", "room_type_category": "text", "meals": "text",
+    "free_cancellation": "text", "price_per_night_eur": "numeric", "price_total_eur": "numeric",
+    "rooms_left": "integer", "package_payload": "jsonb", "room_attributes": "jsonb",
+    "discounted_price_per_night_eur": "numeric", "discount_pct": "numeric", "discount_label": "text",
+    "has_genius_discount": "boolean", "cancellation_type": "text", "payment_label": "text",
+    "rate_block_id": "text",
+}
+
+
+def upsert_packages_bulk(connection: Any, rows: list[tuple[NormalizedRoomRate, uuid.UUID]]) -> None:
+    """Every package of the batch in one upsert; a repeated package keeps its last row."""
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    for rate, observation_id in rows:
+        latest[(str(observation_id), rate.source_record_id)] = {
+            "source_record_id": rate.source_record_id,
+            "room_type": rate.room_type,
+            "room_type_category": rate.room_type_category,
+            "meals": rate.meals,
+            "free_cancellation": rate.free_cancellation,
+            "price_per_night_eur": rate.price_per_night_eur,
+            "price_total_eur": rate.price_total_eur,
+            "rooms_left": rate.rooms_left,
+            "package_payload": _json_or_none(rate.raw_payload),
+            "room_attributes": _json_or_none(rate.room_attributes),
+            "discounted_price_per_night_eur": rate.discounted_price_per_night_eur,
+            "discount_pct": rate.discount_pct,
+            "discount_label": rate.discount_label,
+            "has_genius_discount": rate.has_genius_discount,
+            "cancellation_type": rate.cancellation_type,
+            "payment_label": rate.payment_label,
+            "rate_block_id": rate.rate_block_id,
+        }
+    if not latest:
+        return
+    keys = list(latest)
+    columns = ", ".join(_PACKAGE_COLUMNS)
+    arrays = ",\n                ".join(
+        f"CAST(:{column} AS {_PACKAGE_ARRAY_TYPES[column]}[])" for column in _PACKAGE_COLUMNS
+    )
+    updates = ",\n                ".join(
+        f"{column} = EXCLUDED.{column}" for column in _PACKAGE_COLUMNS if column != "source_record_id"
+    )
+    params: dict[str, Any] = {
+        "observation_ids": [observation_id for observation_id, _ in keys],
+        **{column: [latest[key][column] for key in keys] for column in _PACKAGE_COLUMNS},
+    }
+    connection.execute(
+        text(
+            f"""
+            INSERT INTO roomrate_room_packages (id, rate_observation_id, {columns})
+            SELECT gen_random_uuid(), p.rate_observation_id, {", ".join(f"p.{c}" for c in _PACKAGE_COLUMNS)}
+            FROM unnest(
+                CAST(:observation_ids AS uuid[]),
+                {arrays}
+            ) AS p(rate_observation_id, {columns})
+            ON CONFLICT (rate_observation_id, source_record_id) DO UPDATE SET
+                updated_at = now(),
+                {updates}
+            """
+        ),
+        params,
+    )
+
+
+def insert_raw_events_bulk(connection: Any, rows: list[tuple[NormalizedRoomRate, uuid.UUID]]) -> None:
+    """Every raw payload of the batch in one insert; a known payload hash is skipped."""
+    if not rows:
+        return
+    connection.execute(
+        text(
+            """
+            INSERT INTO roomrate_raw_ingestion_events (
+                id, scrape_run_id, source, source_run_id, payload_hash, captured_at, payload
+            )
+            SELECT gen_random_uuid(), e.scrape_run_id, e.source, e.source_run_id, e.payload_hash,
+                   e.captured_at, e.payload
+            FROM unnest(
+                CAST(:scrape_run_ids AS uuid[]),
+                CAST(:sources AS text[]),
+                CAST(:source_run_ids AS text[]),
+                CAST(:payload_hashes AS text[]),
+                CAST(:captured_at AS timestamptz[]),
+                CAST(:payloads AS jsonb[])
+            ) AS e(scrape_run_id, source, source_run_id, payload_hash, captured_at, payload)
+            ON CONFLICT (payload_hash) DO NOTHING
+            """
+        ),
+        {
+            "scrape_run_ids": [str(scrape_run_id) for _, scrape_run_id in rows],
+            "sources": [rate.provider for rate, _ in rows],
+            "source_run_ids": [rate.source_run_key for rate, _ in rows],
+            "payload_hashes": [rate.payload_hash for rate, _ in rows],
+            "captured_at": [rate.observed_at for rate, _ in rows],
+            "payloads": [_json_or_none(rate.raw_payload) for rate, _ in rows],
+        },
+    )
+
+
 def job_source_run_key(rate: NormalizedRoomRate, scrape_job_id: uuid.UUID) -> str:
     """Run key for a whole scrape job: the job plus the stay and party it searched.
 
@@ -395,6 +601,7 @@ def write_normalized_rates(
     scrape_run_ids: dict[tuple[str, str], uuid.UUID] = {}
     property_ids: dict[str, uuid.UUID] = {}
     amenities_by_property: dict[uuid.UUID, set[str]] = {}
+    resolved: list[tuple[NormalizedRoomRate, uuid.UUID, uuid.UUID]] = []
     # Writer role: no API statement timeout — bulk scrape writes can be long.
     with get_engine(role="writer").begin() as connection:
         for normalized_rate in rates:
@@ -424,10 +631,19 @@ def write_normalized_rates(
             if rate.source_property_key not in property_ids:
                 property_ids[rate.source_property_key] = upsert_property(connection, rate)
             property_id = property_ids[rate.source_property_key]
-            observation_id = upsert_observation(connection, rate, scrape_run_id, property_id)
-            upsert_package(connection, rate, observation_id)
+            resolved.append((rate, scrape_run_id, property_id))
             if rate.amenities:
                 amenities_by_property.setdefault(property_id, set()).update(rate.amenities)
-            insert_raw_event(connection, rate, scrape_run_id)
+        # One statement each for every observation, package and raw event of
+        # the batch, instead of three round trips per package.
+        observation_ids = upsert_observations_bulk(connection, resolved)
+        upsert_packages_bulk(
+            connection,
+            [
+                (rate, observation_ids[(str(scrape_run_id), str(property_id))])
+                for rate, scrape_run_id, property_id in resolved
+            ],
+        )
+        insert_raw_events_bulk(connection, [(rate, scrape_run_id) for rate, scrape_run_id, _ in resolved])
         upsert_amenities_bulk(connection, amenities_by_property)
     return len(rates)
