@@ -36,7 +36,14 @@ class Settings(BaseSettings):
     )
     database_url: str = Field(default="", alias="DATABASE_URL")
     internal_api_key: str = Field(default=DEV_INTERNAL_API_KEY, alias="INTERNAL_API_KEY")
-    cors_origins: str = Field(default="http://localhost:3000", alias="CORS_ORIGINS")
+    # The Angular dev server (`ng serve`, port 4200) calls the API at
+    # 127.0.0.1:8000 cross-origin. A default of localhost:3000 alone made every
+    # browser call of a .env without CORS_ORIGINS fail as «could not reach
+    # the API». Production sets its own origins (a localhost-only list warns).
+    cors_origins: str = Field(
+        default="http://localhost:4200,http://127.0.0.1:4200,http://localhost:3000",
+        alias="CORS_ORIGINS",
+    )
     # "text" (human-readable, default) or "json" (one JSON object per log
     # line, incl. structured extras + X-Request-ID; for log aggregators).
     log_format: Literal["text", "json"] = Field(default="text", alias="LOG_FORMAT")

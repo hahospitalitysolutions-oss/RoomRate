@@ -96,6 +96,8 @@ pip install -r requirements.txt
 The production database migration layer uses Alembic. If your virtual environment was created before this schema work, run `pip install -r requirements.txt` again so `alembic==1.13.3` is installed.
 
 **Environment variables (copy .env.example -> .env and fill in):**
+
+An existing `.env` gets the settings it lacks with `python scripts/sync_env.py`. Existing lines are kept, values are never printed, and the old file is saved as `.env.bak`. The script then names the required settings that are still empty.
 ```text
 APIFY_TOKEN=             # Apify token used by the scraper package
 DATABASE_URL=            # PostgreSQL connection string
