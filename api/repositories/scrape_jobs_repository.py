@@ -34,7 +34,9 @@ OWNED_ROOM_CANDIDATES_SQL = """
         rp.meals,
         rp.free_cancellation,
         NULLIF(rp.package_payload ->> 'facilities', '') AS facilities,
-        rp.price_per_night_eur
+        -- The EFFECTIVE price (discounted when Booking showed one), the same
+        -- figure the competitors are compared on (EFFECTIVE_PRICE_SQL).
+        COALESCE(rp.discounted_price_per_night_eur, rp.price_per_night_eur) AS price_per_night_eur
     FROM roomrate_scrape_runs sr
     JOIN roomrate_rate_observations ro ON ro.scrape_run_id = sr.id
     JOIN roomrate_properties p ON p.id = ro.property_id
@@ -45,7 +47,7 @@ OWNED_ROOM_CANDIDATES_SQL = """
     JOIN roomrate_room_packages rp ON rp.rate_observation_id = ro.id
     WHERE sr.account_id = :account_id
       AND {run_scope}
-    ORDER BY sr.created_at ASC, rp.price_per_night_eur ASC
+    ORDER BY sr.created_at ASC, COALESCE(rp.discounted_price_per_night_eur, rp.price_per_night_eur) ASC
 """
 # One job's runs (the completion hook) vs the account's whole history (backfill).
 OWNED_ROOM_JOB_RUN_SCOPE = "sr.scrape_job_id = :job_id"
@@ -615,7 +617,8 @@ class ScrapeJobRepository:
                     rp.meals,
                     rp.free_cancellation,
                     NULLIF(rp.package_payload ->> 'facilities', ''),
-                    rp.price_per_night_eur,
+                    -- Effective price, like the competitors' (EFFECTIVE_PRICE_SQL).
+                    COALESCE(rp.discounted_price_per_night_eur, rp.price_per_night_eur),
                     true
                 FROM roomrate_scrape_runs sr
                 JOIN roomrate_rate_observations ro ON ro.scrape_run_id = sr.id
@@ -623,7 +626,8 @@ class ScrapeJobRepository:
                 WHERE sr.account_id = :account_id
                   AND sr.scrape_job_id = :job_id
                   AND rp.room_type_category IS NOT NULL
-                ORDER BY rp.room_type, rp.room_type_category, rp.price_per_night_eur ASC
+                ORDER BY rp.room_type, rp.room_type_category,
+                         COALESCE(rp.discounted_price_per_night_eur, rp.price_per_night_eur) ASC
                 ON CONFLICT (
                     account_id,
                     owned_property_id,
