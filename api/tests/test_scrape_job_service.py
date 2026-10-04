@@ -742,7 +742,7 @@ def test_create_job_rejects_invalid_date_range():
 # ----------------------------------------------------------------------------
 
 
-def test_booking_runner_args_force_live_scout_and_pass_job_limits():
+def test_booking_runner_args_reuse_a_recent_scout_and_pass_job_limits():
     runner = BookingScrapeJobRunner(timeout_seconds=10)
 
     args = runner._build_args(
@@ -756,7 +756,9 @@ def test_booking_runner_args_force_live_scout_and_pass_job_limits():
         )
     )
 
-    assert args[args.index("--scout-cache-hours") + 1] == "0"
+    # The scout cache holds the hotel list, not prices: a manual search reuses
+    # one up to 2 hours old; the prices are always deep-crawled live.
+    assert args[args.index("--scout-cache-hours") + 1] == "2"
     assert args[args.index("--scout-max-items") + 1] == "25"
     assert args[args.index("--deep-crawl-max-items") + 1] == "60"
     assert args[args.index("--required-amenity") + 1] == "wifi"
@@ -765,8 +767,8 @@ def test_booking_runner_args_force_live_scout_and_pass_job_limits():
 
 
 def test_booking_runner_args_reuse_scout_cache_for_scheduled_jobs():
-    # Scheduled jobs may reuse a recent stage-1 scout (12h) to cut Booking
-    # traffic; manual jobs (previous test) must keep forcing a live scout.
+    # Scheduled jobs reuse a stage-1 scout up to 12h old; manual jobs (previous
+    # test) up to 2h.
     runner = BookingScrapeJobRunner(timeout_seconds=10)
 
     # run_job populates the typed command flag from the job's scheduled column.

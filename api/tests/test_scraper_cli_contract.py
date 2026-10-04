@@ -50,7 +50,7 @@ def test_competitor_job_with_nearby_areas_and_radius_parses_into_the_scraper_con
     assert (config.adults, config.children, config.rooms) == (3, 1, 2)
     assert config.room_type_category == "twin"
     assert config.room_name_query == "Δίκλινο Δωμάτιο με Μπαλκόνι"
-    assert config.scout_cache_hours == 0
+    assert config.scout_cache_hours == 2  # manual: a hotel list up to 2 h old, prices always live
 
 
 def test_radius_without_an_origin_sends_no_radius_flags_and_still_parses():

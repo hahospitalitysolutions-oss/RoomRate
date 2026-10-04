@@ -442,7 +442,7 @@ same instant. The cap prevents an old job from remaining deferred indefinitely.
 - New successful jobs store version, `rows_seen`, per-stage `{before, after}` counts and `rows_written`.
 - Deploy with `alembic upgrade head` before starting the updated API/worker code.
 
-Frontend-created jobs intentionally force `--scout-cache-hours 0`. In that mode the scraper neither reads nor writes `scout_cache`. The database still stores completed scrape results for audit/history and API reads, but the map does not use stale stored markers as the source of a new search.
+Frontend-created jobs pass `--scout-cache-hours 2` (scheduled jobs `12`). The scout cache holds only the area's hotel list (names, links, coordinates), never prices: every job deep-crawls live prices, so reusing a list up to 2 hours old for the same stay and party only skips a paid scout run. The database still stores completed scrape results for audit/history and API reads, but the map does not use stale stored markers as the source of a new search.
 
 #### `api/models/market.py`
 **Purpose:** Defines the production normalized PostgreSQL schema with SQLAlchemy models.
