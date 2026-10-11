@@ -43,7 +43,7 @@ from api.services.mcp_http_client import McpError
 logger = logging.getLogger(__name__)
 
 # Bump when parsing changes: observations keep the version they were read with.
-PARSER_VERSION = "fh-2026-10-11.3"
+PARSER_VERSION = "fh-2026-10-12"
 
 MAX_PORT_DISTANCE_KM = 30.0
 NAME_MATCH_SCORE = 85
@@ -63,16 +63,25 @@ RAW_PAYLOAD_MAX_CHARS = 50_000
 MAX_CONSECUTIVE_FAILURES = 5
 # Observations older than this are not a current view of the sailings.
 SIGNAL_MAX_AGE_DAYS = 3
-# Other travel dates of a route needed before "usual" means anything.
-MIN_BASELINE_DATES = 3
 
-HIGH_SOLD_OUT_SHARE_PCT = 40.0
-HIGH_PRICE_VS_USUAL_PCT = 15.0
-HIGH_SAILINGS_VS_USUAL_PCT = 30.0
+# Pickup: the same sailing day of the same route, now against an earlier
+# look at it. The live calendar (2026-10-11) showed that comparing one
+# travel date with others reads the timetable, not demand: every weekday
+# runs other ships, and November runs fewer than October.
+PICKUP_MIN_DAYS = 3
+PICKUP_MAX_DAYS = 21
 # Ferryhopper flags no sold-out sailing; it stops offering a full cabin or
-# fare tier. Fewer offered accommodations per sailing than usual = filling up.
-HIGH_OPTIONS_DROP_PCT = -30.0
-LOW_PRICE_VS_USUAL_PCT = -10.0
+# fare tier. A quarter of the accommodations gone since the earlier look,
+# or the cheapest fare up 15%, is a sailing filling up.
+HIGH_OPTIONS_PICKUP_PCT = -25.0
+HIGH_PRICE_PICKUP_PCT = 15.0
+LOW_PRICE_PICKUP_PCT = -10.0
+# Extra sailings: against the same route on the same weekday (other ships
+# run on other weekdays). An added sailing on a twice-daily route is +50%.
+HIGH_EXTRA_SAILINGS_PCT = 50.0
+MIN_WEEKDAY_SAMPLES = 2
+# For a source that flags sold-out sailings.
+HIGH_SOLD_OUT_SHARE_PCT = 40.0
 
 # Mainland ports ferries leave FROM. A hotel whose nearest port is one of
 # these is on the mainland: ferries there are not demand for it.
@@ -337,49 +346,71 @@ def _route_label(origin: str, destination: str) -> str:
     return f"{origin} → {destination}"
 
 
-def _sailing_change(row: dict[str, Any], usual: dict[str, float | None]) -> float | None:
-    return row["sailings"] / usual["sailings"] - 1 if usual["sailings"] else None
+RouteDay = tuple[Any, date]
 
 
-def _price_change(row: dict[str, Any], usual: dict[str, float | None]) -> float | None:
-    if row["min_price_eur"] is None or not usual["price"]:
+def _latest(rows: Iterable[dict[str, Any]]) -> dict[RouteDay, dict[str, Any]]:
+    """The newest observation of each (route, travel date)."""
+    latest: dict[RouteDay, dict[str, Any]] = {}
+    for row in rows:
+        key = (row["route_id"], row["travel_date"])
+        if key not in latest or row["observed_on"] > latest[key]["observed_on"]:
+            latest[key] = row
+    return latest
+
+
+def _earlier_looks(
+    rows: Iterable[dict[str, Any]], latest: dict[RouteDay, dict[str, Any]]
+) -> dict[RouteDay, dict[str, Any]]:
+    """Per (route, travel date): the oldest look PICKUP_MIN_DAYS..PICKUP_MAX_DAYS before the newest."""
+    earlier: dict[RouteDay, dict[str, Any]] = {}
+    for row in rows:
+        key = (row["route_id"], row["travel_date"])
+        newest = latest.get(key)
+        if newest is None:
+            continue
+        age = (newest["observed_on"] - row["observed_on"]).days
+        if PICKUP_MIN_DAYS <= age <= PICKUP_MAX_DAYS and (
+            key not in earlier or row["observed_on"] < earlier[key]["observed_on"]
+        ):
+            earlier[key] = row
+    return earlier
+
+
+def _change(now: float | None, before: float | None) -> float | None:
+    if now is None or not before:
         return None
-    return row["min_price_eur"] / usual["price"] - 1
+    return now / before - 1
 
 
-def _options_change(row: dict[str, Any], usual: dict[str, float | None]) -> float | None:
-    if row.get("accommodation_options") is None or not row["sailings"] or not usual["options_per_sailing"]:
-        return None
-    return row["accommodation_options"] / (usual["options_per_sailing"] * row["sailings"]) - 1
+def _route_weights(route_ids: Iterable[Any], latest: dict[RouteDay, dict[str, Any]]) -> dict[Any, float]:
+    """What each route usually offers in a day (median accommodations); equal when not all known.
+
+    A Blue Star offering 22 accommodations a sailing outweighs a Symi day
+    boat offering 2, so six day-trip sailings cannot drown the ship that
+    brings the stays.
+    """
+    route_ids = list(dict.fromkeys(route_ids))
+    weights: dict[Any, float] = {}
+    for route_id in route_ids:
+        offered = [
+            row["accommodation_options"]
+            for (route, _), row in latest.items()
+            if route == route_id and row.get("accommodation_options")
+        ]
+        if not offered:
+            return dict.fromkeys(route_ids, 1.0)
+        weights[route_id] = float(statistics.median(offered))
+    return weights
 
 
-def _weighted_change(
-    in_window: Sequence[dict[str, Any]],
-    baselines: dict[Any, dict[str, float | None]],
-    change: Callable[[dict[str, Any], dict[str, float | None]], float | None],
-    most_telling: Callable[[Iterable[float]], float],
-) -> float | None:
-    """Percent change against usual: per route its most telling window day, routes capacity-weighted."""
-    per_route: dict[Any, list[float]] = {}
-    for row in in_window:
-        value = change(row, baselines[row["route_id"]])
-        if value is not None:
-            per_route.setdefault(row["route_id"], []).append(value)
+def _combine(per_route: dict[Any, list[float]], weights: dict[Any, float], pick: Callable[[list[float]], float]) -> float | None:
+    """Percent: per route ``pick`` over its window days, then the routes weighted."""
     if not per_route:
         return None
-    weights = {route_id: _capacity(baselines[route_id]) for route_id in per_route}
-    if any(weight is None for weight in weights.values()):
-        weights = dict.fromkeys(per_route, 1.0)
-    total = sum(weights.values())
-    combined = sum(most_telling(values) * weights[route_id] for route_id, values in per_route.items()) / total
+    total = sum(weights.get(route_id, 1.0) for route_id in per_route)
+    combined = sum(pick(values) * weights.get(route_id, 1.0) for route_id, values in per_route.items()) / total
     return round(100 * combined, 1)
-
-
-def _capacity(usual: dict[str, float | None]) -> float | None:
-    """What a route usually offers in a day: accommodations per sailing × sailings."""
-    if usual["options_per_sailing"] and usual["sailings"]:
-        return usual["options_per_sailing"] * usual["sailings"]
-    return None
 
 
 def build_ferry_demand_signal(
@@ -389,12 +420,24 @@ def build_ferry_demand_signal(
 ) -> FerryDemandSignal:
     """Demand level from the ferries into the destination around ``check_in``.
 
-    ``rows`` are the newest observation per (route, travel date) over the
-    collection horizon (FerryRepository.latest_observations).
+    ``rows`` are every observation of the destination's routes over the
+    pickup look-back (FerryRepository.observation_history). Two readings:
+
+    * pickup: each sailing day against an earlier look at the same one
+      (accommodations gone, cheapest fare up), the route's most telling
+      window day, routes weighted by what they carry;
+    * extra sailings: each window day against the same route on the same
+      weekday, the larger of the two days.
+
+    ``unknown`` until either can be read (the first days of collection).
     """
     window = [check_in - timedelta(days=1), check_in]
-    fresh = [row for row in rows if (today - row["observed_on"]).days <= SIGNAL_MAX_AGE_DAYS]
-    in_window = [row for row in fresh if row["travel_date"] in window]
+    latest = {
+        key: row
+        for key, row in _latest(rows).items()
+        if (today - row["observed_on"]).days <= SIGNAL_MAX_AGE_DAYS
+    }
+    in_window = [row for (_, travel_date), row in latest.items() if travel_date in window]
     if not in_window:
         return FerryDemandSignal(
             level="unknown",
@@ -402,8 +445,7 @@ def build_ferry_demand_signal(
             window=window,
             summary="Δεν υπάρχουν ακόμη πρόσφατα δεδομένα πλοίων για αυτές τις ημερομηνίες.",
         )
-
-    if not any(row["sailings"] for row in fresh):
+    if not any(row["sailings"] for row in latest.values()):
         return FerryDemandSignal(
             level="unknown",
             check_in=check_in,
@@ -411,21 +453,43 @@ def build_ferry_demand_signal(
             summary="Η Ferryhopper δεν δείχνει δρομολόγια προς τον προορισμό.",
         )
 
-    baselines: dict[Any, dict[str, float | None]] = {}
-    for route_id in {row["route_id"] for row in in_window}:
-        others = [row for row in fresh if row["route_id"] == route_id and row["travel_date"] not in window]
-        sailings = [row["sailings"] for row in others]
-        prices = [row["min_price_eur"] for row in others if row["min_price_eur"] is not None]
-        offered = [
-            row["accommodation_options"] / row["sailings"]
-            for row in others
-            if row.get("accommodation_options") is not None and row["sailings"]
+    weights = _route_weights((row["route_id"] for row in in_window), latest)
+
+    earlier = _earlier_looks(rows, latest)
+    option_pickup: dict[Any, list[float]] = {}
+    price_pickup: dict[Any, list[float]] = {}
+    compared_with: list[date] = []
+    for row in in_window:
+        before = earlier.get((row["route_id"], row["travel_date"]))
+        if before is None:
+            continue
+        compared_with.append(before["observed_on"])
+        options = _change(row.get("accommodation_options"), before.get("accommodation_options"))
+        if options is not None:
+            option_pickup.setdefault(row["route_id"], []).append(options)
+        price = _change(row["min_price_eur"], before["min_price_eur"])
+        if price is not None:
+            price_pickup.setdefault(row["route_id"], []).append(price)
+    # The same ship against itself barely moves without demand, so the
+    # route's most telling window day counts: Friday's overnight ship
+    # filling is Saturday's arrivals, whatever Saturday's ship does.
+    options_change = _combine(option_pickup, weights, min)
+    price_change = _combine(price_pickup, weights, max)
+
+    extra: dict[Any, list[float]] = {}
+    for row in in_window:
+        same_weekday = [
+            other["sailings"]
+            for (route_id, travel_date), other in latest.items()
+            if route_id == row["route_id"]
+            and travel_date.weekday() == row["travel_date"].weekday()
+            and travel_date not in window
         ]
-        baselines[route_id] = {
-            "sailings": statistics.median(sailings) if len(sailings) >= MIN_BASELINE_DATES else None,
-            "price": statistics.median(prices) if len(prices) >= MIN_BASELINE_DATES else None,
-            "options_per_sailing": statistics.median(offered) if len(offered) >= MIN_BASELINE_DATES else None,
-        }
+        if len(same_weekday) >= MIN_WEEKDAY_SAMPLES:
+            change = _change(row["sailings"], statistics.median(same_weekday))
+            if change is not None:
+                extra.setdefault(row["route_id"], []).append(change)
+    sailings_change = _combine(extra, weights, max)
 
     sailings = sum(row["sailings"] for row in in_window)
     availability_known = sum(row["availability_known"] for row in in_window)
@@ -433,24 +497,17 @@ def build_ferry_demand_signal(
     sold_out_share = round(100 * sold_out / availability_known, 1) if availability_known else None
     prices = [row["min_price_eur"] for row in in_window if row["min_price_eur"] is not None]
 
-    # Each route against its own usual, at its most telling day of the window
-    # (Friday's overnight ship fills before Saturday's arrivals), then the
-    # routes weighted by what they usually carry: a Blue Star offering 22
-    # accommodations outweighs a Symi day boat offering 2, so six day-trip
-    # sailings cannot drown the ship that brings the stays. Without that
-    # capacity on record every route weighs the same.
-    sailings_vs_usual = _weighted_change(in_window, baselines, _sailing_change, max)
-    price_vs_usual = _weighted_change(in_window, baselines, _price_change, max)
-    options_vs_usual = _weighted_change(in_window, baselines, _options_change, min)
-
-    if (
-        (sold_out_share is not None and sold_out_share >= HIGH_SOLD_OUT_SHARE_PCT)
-        or (price_vs_usual is not None and price_vs_usual >= HIGH_PRICE_VS_USUAL_PCT)
-        or (sailings_vs_usual is not None and sailings_vs_usual >= HIGH_SAILINGS_VS_USUAL_PCT)
-        or (options_vs_usual is not None and options_vs_usual <= HIGH_OPTIONS_DROP_PCT)
+    readings = (options_change, price_change, sailings_change, sold_out_share)
+    if all(reading is None for reading in readings):
+        level = "unknown"
+    elif (
+        (options_change is not None and options_change <= HIGH_OPTIONS_PICKUP_PCT)
+        or (price_change is not None and price_change >= HIGH_PRICE_PICKUP_PCT)
+        or (sailings_change is not None and sailings_change >= HIGH_EXTRA_SAILINGS_PCT)
+        or (sold_out_share is not None and sold_out_share >= HIGH_SOLD_OUT_SHARE_PCT)
     ):
         level = "high"
-    elif not sold_out and price_vs_usual is not None and price_vs_usual <= LOW_PRICE_VS_USUAL_PCT:
+    elif price_change is not None and price_change <= LOW_PRICE_PICKUP_PCT and (options_change or 0) >= 0:
         level = "low"
     else:
         level = "normal"
@@ -461,19 +518,24 @@ def build_ferry_demand_signal(
     if availability_known:
         parts.append(f"{sold_out} χωρίς θέσεις")
     if prices:
-        price_text = f"ελάχιστο εισιτήριο {min(prices):.0f} €"
-        if price_vs_usual is not None:
-            price_text += f" ({price_vs_usual:+.0f}% από το συνηθισμένο)"
-        parts.append(price_text)
-    if sailings_vs_usual is not None and abs(sailings_vs_usual) >= 10:
-        parts.append(f"δρομολόγια {sailings_vs_usual:+.0f}% από το συνηθισμένο")
-    if options_vs_usual is not None and options_vs_usual <= -10:
-        parts.append(f"θέσεις/καμπίνες προς πώληση {options_vs_usual:+.0f}% από το συνηθισμένο")
-    level_text = {"high": "Υψηλή", "normal": "Κανονική", "low": "Χαμηλή"}[level]
-    summary = (
-        f"Πλοία προς {destination} για {window[0]:%d/%m}–{window[1]:%d/%m}: "
-        f"{', '.join(parts)}. Ζήτηση πλοίων: {level_text}."
-    )
+        parts.append(f"φθηνότερο εισιτήριο {min(prices):.0f} €")
+    if sailings_change is not None and sailings_change >= 10:
+        parts.append(f"δρομολόγια {sailings_change:+.0f}% από τη συνηθισμένη ίδια μέρα")
+    since = min(compared_with) if compared_with else None
+    pickup = []
+    if options_change is not None:
+        pickup.append(f"θέσεις προς πώληση {options_change:+.0f}%")
+    if price_change is not None:
+        pickup.append(f"φθηνότερο εισιτήριο {price_change:+.0f}%")
+    if pickup and since is not None:
+        parts.append(f"από τις {since:%d/%m}: {', '.join(pickup)}")
+    summary = f"Πλοία προς {destination} για {window[0]:%d/%m}–{window[1]:%d/%m}: {', '.join(parts)}."
+    if level == "unknown":
+        summary += (
+            f" Η εξέλιξη των κρατήσεων φαίνεται μετά από {PICKUP_MIN_DAYS} μέρες συλλογής."
+        )
+    else:
+        summary += f" Ζήτηση πλοίων: {dict(high='Υψηλή', normal='Κανονική', low='Χαμηλή')[level]}."
     return FerryDemandSignal(
         level=level,
         check_in=check_in,
@@ -483,9 +545,10 @@ def build_ferry_demand_signal(
         sold_out=sold_out,
         sold_out_share_pct=sold_out_share,
         min_price_eur=round(min(prices), 2) if prices else None,
-        price_vs_usual_pct=price_vs_usual,
-        sailings_vs_usual_pct=sailings_vs_usual,
-        options_vs_usual_pct=options_vs_usual,
+        price_change_pct=price_change,
+        options_change_pct=options_change,
+        compared_with=since,
+        sailings_vs_usual_pct=sailings_change,
         routes=routes,
         observed_on=max(row["observed_on"] for row in in_window),
         summary=summary,
@@ -493,15 +556,17 @@ def build_ferry_demand_signal(
 
 
 def daily_levels(rows: Sequence[dict[str, Any]], today: date) -> list[dict[str, Any]]:
-    """Per travel date, every collected route summed, with the level of a check-in that day."""
+    """Per travel date, the newest look at every collected route, with the level of a check-in that day."""
     by_day: dict[date, list[dict[str, Any]]] = {}
-    for row in rows:
-        by_day.setdefault(row["travel_date"], []).append(row)
+    for (_, travel_date), row in _latest(rows).items():
+        if (today - row["observed_on"]).days <= SIGNAL_MAX_AGE_DAYS:
+            by_day.setdefault(travel_date, []).append(row)
     days = []
     for travel_date in sorted(by_day):
         day_rows = by_day[travel_date]
         prices = [row["min_price_eur"] for row in day_rows if row["min_price_eur"] is not None]
         signal = build_ferry_demand_signal(rows, travel_date, today)
+        known_options = [row["accommodation_options"] for row in day_rows if row.get("accommodation_options") is not None]
         days.append(
             {
                 "travel_date": travel_date,
@@ -509,15 +574,23 @@ def daily_levels(rows: Sequence[dict[str, Any]], today: date) -> list[dict[str, 
                 "availability_known": sum(row["availability_known"] for row in day_rows),
                 "sold_out": sum(row["sold_out"] for row in day_rows),
                 "min_price_eur": round(min(prices), 2) if prices else None,
-                "accommodation_options": (
-                    sum(row["accommodation_options"] for row in day_rows)
-                    if all(row.get("accommodation_options") is not None for row in day_rows)
-                    else None
-                ),
+                "accommodation_options": sum(known_options) if known_options else None,
+                "options_change_pct": signal.options_change_pct,
+                "price_change_pct": signal.price_change_pct,
                 "level": signal.level,
             }
         )
     return days
+
+
+def history_window(today: date, check_in: date | None, horizon_days: int) -> dict[str, date]:
+    """The observation_history arguments a signal over the horizon needs."""
+    reach = max(horizon_days, (check_in - today).days if check_in else 0) + 1
+    return {
+        "date_from": today - timedelta(days=1),
+        "date_to": today + timedelta(days=reach),
+        "observed_since": today - timedelta(days=PICKUP_MAX_DAYS + SIGNAL_MAX_AGE_DAYS),
+    }
 
 
 def load_ferry_signal(
@@ -528,13 +601,8 @@ def load_ferry_signal(
     today: date,
     horizon_days: int,
 ) -> FerryDemandSignal | None:
-    """The ferry signal for a check-in; None when the destination has no fresh ferry data."""
-    rows = repository.latest_observations(
-        canonical_destination,
-        date_from=today,
-        date_to=today + timedelta(days=max(horizon_days, (check_in - today).days) + 1),
-        observed_since=today - timedelta(days=SIGNAL_MAX_AGE_DAYS),
-    )
+    """The ferry signal for a check-in; None when the destination has no ferry data."""
+    rows = repository.observation_history(canonical_destination, **history_window(today, check_in, horizon_days))
     if not rows:
         return None
     return build_ferry_demand_signal(rows, check_in, today)

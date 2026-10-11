@@ -234,3 +234,19 @@ def test_an_empty_direct_list_is_no_sailing_even_with_indirect_ones():
     payload = {"foundDirectItinerariesForTrip": [], "foundIndirectItinerariesForTrip": LIVE_SHAPE["foundIndirectItinerariesForTrip"]}
 
     assert parse_trips(payload) == []
+
+
+def test_pet_cabins_and_vehicles_neither_price_nor_count_a_passenger_place():
+    segment = {
+        "departureDateTime": "2026-10-23T17:00:00Z",
+        "accommodations": [
+            {"type": "LOUNGE_DECK", "expectedPrice": {"totalPriceInCents": 4650}},
+            {"type": "PET_CABIN_FULL", "expectedPrice": {"totalPriceInCents": 700}},
+            {"type": "VEHICLE_CAR", "expectedPrice": {"totalPriceInCents": 900}},
+            {"type": "CABIN_FULL", "expectedPrice": {"totalPriceInCents": 9250}},
+        ],
+    }
+
+    (trip,) = parse_trips({"foundDirectItinerariesForTrip": [{"segments": [segment]}]})
+
+    assert (trip.price_eur, trip.accommodation_options) == (46.5, 2)

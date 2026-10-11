@@ -67,7 +67,9 @@ _MAX_COMPETITORS = 15
 # answer read a median-vs-median sample change as a trend.
 # v8: market_context.demand_signals.ferries (sailings into the destination
 # around the arrival) is a secondary signal inside the market band.
-PRICE_RECOMMENDATION_PROMPT_VERSION = "2026-10-11.v8"
+# v9: the ferry level is pickup (the same sailings filling up since an
+# earlier look) and extra sailings, not a comparison across travel dates.
+PRICE_RECOMMENDATION_PROMPT_VERSION = "2026-10-12.v9"
 
 # Greek annotation of the statistical basis (spec 2026-09-29 Β.2): the payload
 # spells out what stats_scope.cancellation_class means so the model reads the
@@ -108,8 +110,9 @@ SYSTEM_PROMPT = (
     # v8: outside demand moves the price inside the band, never out of it.
     "Όταν υπάρχει το market_context.demand_signals.ferries, δείχνει τα πλοία "
     "προς τον προορισμό την παραμονή και την ημέρα της άφιξης: level=high "
-    "σημαίνει γεμάτα ή ακριβότερα πλοία από το συνηθισμένο, level=low "
-    "φθηνότερα. Είναι δευτερεύον σήμα: μπορεί να μετακινήσει την τιμή μέσα στο "
+    "σημαίνει ότι τα ίδια πλοία γεμίζουν ή ακριβαίνουν από μια προηγούμενη "
+    "ματιά (compared_with) ή ότι προστέθηκαν δρομολόγια, level=low ότι "
+    "φθηναίνουν με θέσεις διαθέσιμες. Είναι δευτερεύον σήμα: μπορεί να μετακινήσει την τιμή μέσα στο "
     "εύρος της αγοράς (προς το p75 όταν high, προς το p25 όταν low), ποτέ έξω "
     "από αυτό· όταν το χρησιμοποιείς, ανέφερέ το στα key_factors. "
     "Απάντησε αποκλειστικά στα ελληνικά: γράψε το reasoning και τα key_factors "

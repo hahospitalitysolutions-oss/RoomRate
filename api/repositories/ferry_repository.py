@@ -273,7 +273,7 @@ class FerryRepository:
                 },
             )
 
-    def latest_observations(
+    def observation_history(
         self,
         canonical_destination: str,
         *,
@@ -281,13 +281,16 @@ class FerryRepository:
         date_to: date,
         observed_since: date,
     ) -> list[dict[str, Any]]:
-        """Newest observation per (route, travel date) of the destination's collected routes."""
+        """Every look at the destination's collected routes since ``observed_since``.
+
+        The pickup signal compares each sailing day's newest look with an
+        earlier one; a route-day is a row per collection day.
+        """
         with self._engine().connect() as connection:
             rows = connection.execute(
                 text(
                     """
-                    SELECT DISTINCT ON (o.route_id, o.travel_date)
-                           o.route_id, r.origin_port, r.destination_port, o.travel_date,
+                    SELECT o.route_id, r.origin_port, r.destination_port, o.travel_date,
                            o.observed_on, o.sailings, o.availability_known, o.sold_out,
                            o.min_price_eur::float AS min_price_eur,
                            o.median_price_eur::float AS median_price_eur,
@@ -298,7 +301,7 @@ class FerryRepository:
                       AND r.status IN ('auto', 'confirmed')
                       AND o.travel_date BETWEEN :date_from AND :date_to
                       AND o.observed_on >= :observed_since
-                    ORDER BY o.route_id, o.travel_date, o.observed_on DESC
+                    ORDER BY o.route_id, o.travel_date, o.observed_on
                     """
                 ),
                 {

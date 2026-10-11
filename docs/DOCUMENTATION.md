@@ -862,20 +862,30 @@ account in a destination.
    `python scripts/run_ferry_demand.py [--lookup|--collect] [--refresh]`
    runs them once by hand (it writes to the `.env` database).
 3. **Signal.** For a check-in: the sailings of the day before and the day
-   itself. Each route is compared with its own other observed dates at its
-   most telling window day (Friday's overnight ship fills before Saturday's
-   arrivals), then the routes are weighted by what they usually carry
-   (accommodations per sailing × sailings), so Symi's six day boats cannot
-   drown the Blue Star from Piraeus; without that capacity on record every
-   route weighs the same. A destination where nothing sails is `unknown`.
-   `high` when fares
-   are ≥15% above usual, or the offered accommodations per sailing ≥30% below
-   usual, or sailings ≥30% above usual (or, for a source that flags it, ≥40%
-   of the sailings have no seats); `low` when fares are ≥10% below usual;
-   `unknown` without observations from the last 3 days.
+   itself. The first live calendar (2026-10-11) showed that comparing one
+   travel date with others reads the timetable, not demand (every weekday
+   runs other ships, November fewer than October), so the signal reads:
+   - **pickup**: each sailing day's newest look against an earlier look at
+     the same one, 3 to 21 days older: accommodations still offered (a full
+     cabin or fare tier leaves Ferryhopper's list) and the cheapest
+     passenger fare (pet cabins and vehicles are not counted). Per route
+     its most telling window day (Friday's overnight ship is Saturday's
+     arrivals), routes weighted by what they usually offer, so Symi's day
+     boats cannot drown the Blue Star from Piraeus;
+   - **extra sailings**: each window day against the same route on the same
+     weekday (at least two other such days).
+   `high` when ≥25% of the accommodations are gone, or the cheapest fare is
+   ≥15% up, or sailings ≥50% above the same weekday (or, for a source that
+   flags it, ≥40% of the sailings have no seats); `low` when the cheapest
+   fare is ≥10% down with no accommodations gone; `unknown` until either
+   can be read (the first 3 days of collection) or when nothing sails.
+   Pickup needs a collection every day: with no worker up, run
+   `scripts/run_ferry_demand.py` from a scheduled task (its docstring has
+   the Windows `schtasks` line). `--show` prints the calendar with the
+   pickup columns; `--day YYYY-MM-DD` each stored sailing of a date.
 
 The price-recommendation route attaches the signal to the LLM context
-(`market_context.demand_signals.ferries`, prompt v8: it may move the price
+(`market_context.demand_signals.ferries`, prompt v9: it may move the price
 inside the market band only) and returns it as `demand_signals` for the card.
 The statistical baseline does not use it yet: the thresholds are rules, to be
 calibrated once a season of observations exists.

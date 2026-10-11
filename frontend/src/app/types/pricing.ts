@@ -74,10 +74,12 @@ export type FerryDemandSignal = {
   sold_out: number;
   sold_out_share_pct: number | null;
   min_price_eur: number | null;
-  price_vs_usual_pct: number | null;
+  // Pickup: the same sailings against an earlier look (compared_with).
+  options_change_pct?: number | null;
+  price_change_pct?: number | null;
+  compared_with?: string | null;
+  // Sailings against the same routes on the same weekday.
   sailings_vs_usual_pct: number | null;
-  // Fare tiers and cabins still on sale per sailing against usual.
-  options_vs_usual_pct?: number | null;
   routes: string[];
   observed_on: string | null;
   // One Greek sentence for the owner.

@@ -4,7 +4,7 @@ Destination-level data, reached only through the caller's own owned
 property: an account sees the ferries of its own destinations, nothing else.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,7 +19,7 @@ from api.dependencies import (
 from api.repositories.ferry_repository import FerryRepository
 from api.repositories.onboarding_repository import OnboardingRepository
 from api.schemas.demand import FerryDayOut, FerryDemandResponse, FerryRouteOut
-from api.services.ferry_demand_service import SIGNAL_MAX_AGE_DAYS, daily_levels
+from api.services.ferry_demand_service import daily_levels, history_window
 
 router = APIRouter()
 
@@ -49,11 +49,8 @@ def ferry_demand(
         return FerryDemandResponse(canonical_destination=destination)
 
     today = datetime.now(timezone.utc).date()
-    rows = ferry_repository.latest_observations(
-        destination,
-        date_from=today,
-        date_to=today + timedelta(days=settings.ferry_demand_horizon_days),
-        observed_since=today - timedelta(days=SIGNAL_MAX_AGE_DAYS),
+    rows = ferry_repository.observation_history(
+        destination, **history_window(today, None, settings.ferry_demand_horizon_days)
     )
     return FerryDemandResponse(
         canonical_destination=destination,
@@ -62,6 +59,6 @@ def ferry_demand(
         port_distance_km=profile.get("port_distance_km"),
         resolved_at=profile.get("resolved_at"),
         routes=[FerryRouteOut(**route) for route in profile["routes"]],
-        days=[FerryDayOut(**day) for day in daily_levels(rows, today)],
+        days=[FerryDayOut(**day) for day in daily_levels(rows, today) if day["travel_date"] >= today],
         observed_on=max((row["observed_on"] for row in rows), default=None),
     )

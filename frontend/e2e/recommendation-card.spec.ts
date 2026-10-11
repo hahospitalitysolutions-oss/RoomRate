@@ -225,12 +225,14 @@ test("Ferries: the card shows the ferry demand around the check-in, its level on
         sold_out: 4,
         sold_out_share_pct: 50,
         min_price_eur: 62,
-        price_vs_usual_pct: 18,
+        options_change_pct: -32,
+        price_change_pct: 18,
+        compared_with: "2026-08-15",
         sailings_vs_usual_pct: null,
-        routes: ["Piraeus → Rhodes"],
+        routes: ["PIRAEUS → RODOS"],
         observed_on: "2026-08-20",
         summary:
-          "Πλοία προς Rhodes για 31/08–01/09: 8 δρομολόγια, 4 χωρίς θέσεις, ελάχιστο εισιτήριο 62 € (+18% από το συνηθισμένο). Ζήτηση πλοίων: Υψηλή.",
+          "Πλοία προς RODOS για 31/08–01/09: 8 δρομολόγια, 4 χωρίς θέσεις, φθηνότερο εισιτήριο 62 €, από τις 15/08: θέσεις προς πώληση -32%, φθηνότερο εισιτήριο +18%. Ζήτηση πλοίων: Υψηλή.",
       },
     },
   });

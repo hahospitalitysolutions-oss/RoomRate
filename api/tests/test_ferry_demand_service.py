@@ -180,7 +180,8 @@ def test_large_answers_are_cut_for_storage():
     assert trimmed_payload(None) is None
 
 
-def row(route_id, travel_date, sailings=4, known=0, sold_out=0, price=60.0, observed_on=TODAY, origin="Piraeus"):
+def row(route_id, travel_date, sailings=4, known=0, sold_out=0, price=60.0, observed_on=TODAY, origin="Piraeus",
+        options=None):
     return {
         "route_id": route_id,
         "origin_port": origin,
@@ -192,69 +193,160 @@ def row(route_id, travel_date, sailings=4, known=0, sold_out=0, price=60.0, obse
         "sold_out": sold_out,
         "min_price_eur": price,
         "median_price_eur": price,
+        "accommodation_options": options,
     }
 
 
-CHECK_IN = date(2026, 11, 14)
+CHECK_IN = date(2026, 11, 14)  # a Saturday: the window is Friday 13 and Saturday 14
+FRIDAY = CHECK_IN - timedelta(days=1)
+EARLIER = TODAY - timedelta(days=5)
 
 
-def usual_dates():
-    return [date(2026, 10, 20) + timedelta(days=offset) for offset in range(6)]
+def looked_twice(route_id, travel_date, *, before, now, origin="Piraeus", sailings=2):
+    """Two looks at one sailing day: five days ago and today. ``before``/``now`` are (price, options)."""
+    return [
+        row(route_id, travel_date, sailings=sailings, price=before[0], options=before[1], observed_on=EARLIER, origin=origin),
+        row(route_id, travel_date, sailings=sailings, price=now[0], options=now[1], origin=origin),
+    ]
 
 
-def test_sold_out_sailings_make_demand_high():
-    rows = [row(ROUTE_A, day) for day in usual_dates()]
-    rows += [row(ROUTE_A, CHECK_IN - timedelta(days=1), known=4, sold_out=2), row(ROUTE_A, CHECK_IN, known=4, sold_out=2)]
+def test_a_sailing_losing_accommodations_since_an_earlier_look_is_high():
+    rows = looked_twice(ROUTE_A, FRIDAY, before=(46.5, 44), now=(46.5, 30)) + looked_twice(
+        ROUTE_A, CHECK_IN, before=(46.5, 44), now=(46.5, 32)
+    )
 
     signal = build_ferry_demand_signal(rows, CHECK_IN, TODAY)
 
     assert signal.level == "high"
-    assert signal.window == [date(2026, 11, 13), CHECK_IN]
-    assert (signal.sailings, signal.availability_known, signal.sold_out) == (8, 8, 4)
+    # The fuller of the two window days: -31.8% (the other -27.3%).
+    assert signal.options_change_pct == -31.8
+    assert signal.compared_with == EARLIER
+    assert "από τις 06/10: θέσεις προς πώληση -32%" in signal.summary
+    assert signal.summary.endswith("Ζήτηση πλοίων: Υψηλή.")
+
+
+def test_a_dearer_cheapest_fare_since_an_earlier_look_is_high():
+    """The cheap deck tier sold out: the cheapest fare rises from 46.50 € to 58 €."""
+    rows = looked_twice(ROUTE_A, FRIDAY, before=(46.5, 44), now=(58.0, 42)) + looked_twice(
+        ROUTE_A, CHECK_IN, before=(46.5, 44), now=(58.0, 42)
+    )
+
+    signal = build_ferry_demand_signal(rows, CHECK_IN, TODAY)
+
+    assert signal.price_change_pct == 24.7
+    assert signal.level == "high"
+
+
+def test_cheaper_fares_with_places_left_are_low():
+    rows = looked_twice(ROUTE_A, FRIDAY, before=(60.0, 44), now=(50.0, 44)) + looked_twice(
+        ROUTE_A, CHECK_IN, before=(60.0, 44), now=(50.0, 44)
+    )
+
+    assert build_ferry_demand_signal(rows, CHECK_IN, TODAY).level == "low"
+
+
+def test_a_steady_sailing_is_normal():
+    rows = looked_twice(ROUTE_A, FRIDAY, before=(46.5, 44), now=(46.5, 42)) + looked_twice(
+        ROUTE_A, CHECK_IN, before=(46.5, 44), now=(46.5, 44)
+    )
+
+    signal = build_ferry_demand_signal(rows, CHECK_IN, TODAY)
+
+    assert signal.level == "normal"
+    assert signal.options_change_pct == -4.5
+
+
+def test_looks_too_recent_or_too_old_are_not_compared():
+    for age in (1, 30):
+        rows = [
+            row(ROUTE_A, CHECK_IN, price=46.5, options=44, observed_on=TODAY - timedelta(days=age)),
+            row(ROUTE_A, CHECK_IN, price=70.0, options=10),
+        ]
+        signal = build_ferry_demand_signal(rows, CHECK_IN, TODAY)
+        assert signal.options_change_pct is None and signal.level == "unknown", age
+
+
+def test_the_live_calendar_case_timetable_differences_are_not_demand():
+    """2026-10-11, first collection for Rhodes: 14 sailings at 7 € on Monday, 12 at 9 € on
+    Saturday, 106 places on Wednesday, 51 on Sunday — all one look, every day other
+    ships. It read «ΥΨΗΛΗ» almost every day; nothing here measures demand yet."""
+    days = [TODAY + timedelta(days=offset) for offset in range(1, 8)]
+    rows = [
+        row(ROUTE_A, day, sailings=sailings, price=price, options=options)
+        for day, sailings, price, options in zip(
+            days, (14, 14, 16, 12, 13, 12, 10), (7, 7, 7, 9, 7, 7, 9), (88, 76, 106, 70, 105, 60, 51)
+        )
+    ]
+
+    levels = {build_ferry_demand_signal(rows, day, TODAY).level for day in days}
+
+    assert levels == {"unknown"}
+    assert "μετά από 3 μέρες συλλογής" in build_ferry_demand_signal(rows, days[2], TODAY).summary
+
+
+def test_an_extra_sailing_against_the_same_weekday_is_high():
+    fridays = [FRIDAY - timedelta(days=7 * weeks) for weeks in (1, 2, 3)]
+    saturdays = [CHECK_IN - timedelta(days=7 * weeks) for weeks in (1, 2, 3)]
+    rows = [row(ROUTE_A, day, sailings=2) for day in fridays + saturdays]
+    rows += [row(ROUTE_A, FRIDAY, sailings=3), row(ROUTE_A, CHECK_IN, sailings=2)]
+
+    signal = build_ferry_demand_signal(rows, CHECK_IN, TODAY)
+
+    assert signal.sailings_vs_usual_pct == 50.0
+    assert signal.level == "high"
+    assert "δρομολόγια +50% από τη συνηθισμένη ίδια μέρα" in signal.summary
+
+
+def test_a_quieter_weekday_is_not_compared_with_a_busy_one():
+    """Tuesdays run one ship, Fridays two: a Friday with two is usual, not +100%."""
+    tuesdays = [FRIDAY - timedelta(days=3 + 7 * weeks) for weeks in (0, 1, 2)]
+    fridays = [FRIDAY - timedelta(days=7 * weeks) for weeks in (1, 2)]
+    rows = [row(ROUTE_A, day, sailings=1) for day in tuesdays] + [row(ROUTE_A, day, sailings=2) for day in fridays]
+    rows += [row(ROUTE_A, FRIDAY, sailings=2)]
+
+    signal = build_ferry_demand_signal(rows, CHECK_IN, TODAY)
+
+    assert signal.sailings_vs_usual_pct == 0.0
+    assert signal.level == "normal"
+
+
+def test_routes_weigh_by_what_they_usually_carry():
+    """Friday's Blue Star from Piraeus fills; Symi's day boats do not."""
+    rows = looked_twice(ROUTE_A, FRIDAY, before=(46.5, 44), now=(46.5, 26), origin="PIRAEUS")
+    rows += looked_twice(ROUTE_A, CHECK_IN, before=(46.5, 44), now=(46.5, 44), origin="PIRAEUS")
+    rows += looked_twice(ROUTE_B, FRIDAY, before=(20.0, 12), now=(20.0, 12), origin="SYMI", sailings=6)
+    rows += looked_twice(ROUTE_B, CHECK_IN, before=(20.0, 12), now=(20.0, 12), origin="SYMI", sailings=6)
+
+    signal = build_ferry_demand_signal(rows, CHECK_IN, TODAY)
+
+    # Piraeus: -40.9% on Friday, weight 35 (median of its 26 and 44); Symi 0%, weight 12.
+    assert signal.options_change_pct == -30.5
+    assert signal.level == "high"
+    assert signal.routes == ["PIRAEUS → Rhodes", "SYMI → Rhodes"]
+
+
+def test_a_route_steady_on_both_days_is_not_dragged_down_by_the_other():
+    rows = looked_twice(ROUTE_A, FRIDAY, before=(46.5, 44), now=(46.5, 44), origin="PIRAEUS")
+    rows += looked_twice(ROUTE_A, CHECK_IN, before=(46.5, 44), now=(46.5, 44), origin="PIRAEUS")
+    rows += looked_twice(ROUTE_B, FRIDAY, before=(20.0, 12), now=(20.0, 6), origin="SYMI", sailings=6)
+    rows += looked_twice(ROUTE_B, CHECK_IN, before=(20.0, 12), now=(20.0, 12), origin="SYMI", sailings=6)
+
+    signal = build_ferry_demand_signal(rows, CHECK_IN, TODAY)
+
+    # Symi's day boats half full on Friday: -50% × 9 (median of its 6 and 12) / 53 —
+    # not the island filling up.
+    assert signal.options_change_pct == -8.5
+    assert signal.level == "normal"
+
+
+def test_sold_out_sailings_from_a_source_that_flags_them_are_high():
+    rows = [row(ROUTE_A, FRIDAY, known=4, sold_out=2), row(ROUTE_A, CHECK_IN, known=4, sold_out=2)]
+
+    signal = build_ferry_demand_signal(rows, CHECK_IN, TODAY)
+
     assert signal.sold_out_share_pct == 50.0
-    assert signal.routes == ["Piraeus → Rhodes"]
-    assert "Πλοία προς Rhodes για 13/11–14/11: 8 δρομολόγια, 4 χωρίς θέσεις" in signal.summary
-
-
-def test_a_few_sold_out_sailings_stay_normal():
-    rows = [row(ROUTE_A, day) for day in usual_dates()]
-    rows += [row(ROUTE_A, CHECK_IN - timedelta(days=1), known=4, sold_out=2), row(ROUTE_A, CHECK_IN, known=4, sold_out=1)]
-
-    signal = build_ferry_demand_signal(rows, CHECK_IN, TODAY)
-
-    assert signal.sold_out_share_pct == 37.5
-    assert signal.level == "normal"
-
-
-def test_dearer_fares_than_usual_make_demand_high():
-    rows = [row(ROUTE_A, day, price=60.0) for day in usual_dates()]
-    rows += [row(ROUTE_A, CHECK_IN - timedelta(days=1), price=72.0), row(ROUTE_A, CHECK_IN, price=70.0)]
-
-    signal = build_ferry_demand_signal(rows, CHECK_IN, TODAY)
-
     assert signal.level == "high"
-    # The dearer of the two window days: 72 € against the usual 60 €.
-    assert signal.price_vs_usual_pct == 20.0
-    assert "+20% από το συνηθισμένο" in signal.summary
-
-
-def test_extra_sailings_make_demand_high_and_cheaper_fares_low():
-    usual = [row(ROUTE_A, day, sailings=2) for day in usual_dates()]
-    extra = usual + [row(ROUTE_A, CHECK_IN - timedelta(days=1), sailings=3), row(ROUTE_A, CHECK_IN, sailings=3)]
-    assert build_ferry_demand_signal(extra, CHECK_IN, TODAY).sailings_vs_usual_pct == 50.0
-    assert build_ferry_demand_signal(extra, CHECK_IN, TODAY).level == "high"
-
-    cheap = usual + [row(ROUTE_A, CHECK_IN - timedelta(days=1), sailings=2, price=50.0), row(ROUTE_A, CHECK_IN, sailings=2, price=50.0)]
-    assert build_ferry_demand_signal(cheap, CHECK_IN, TODAY).level == "low"
-
-
-def test_without_a_baseline_the_level_stays_normal():
-    rows = [row(ROUTE_A, CHECK_IN, price=90.0), row(ROUTE_A, date(2026, 10, 20), price=60.0)]
-
-    signal = build_ferry_demand_signal(rows, CHECK_IN, TODAY)
-
-    assert signal.level == "normal"
-    assert signal.price_vs_usual_pct is None and signal.sailings_vs_usual_pct is None
+    assert "8 δρομολόγια, 4 χωρίς θέσεις" in signal.summary
 
 
 def test_stale_or_missing_observations_are_unknown():
@@ -264,14 +356,16 @@ def test_stale_or_missing_observations_are_unknown():
     assert build_ferry_demand_signal([], CHECK_IN, TODAY).level == "unknown"
 
 
-def test_daily_levels_sum_every_route_per_day():
-    rows = [row(ROUTE_A, day) for day in usual_dates()] + [row(ROUTE_B, usual_dates()[0], sailings=1, price=40.0, origin="Kos")]
+def test_daily_levels_sum_the_newest_look_of_every_route():
+    rows = looked_twice(ROUTE_A, CHECK_IN, before=(46.5, 44), now=(58.0, 30))
+    rows += [row(ROUTE_B, CHECK_IN, sailings=1, price=20.0, options=4, origin="SYMI")]
 
-    days = daily_levels(rows, TODAY)
+    (day,) = daily_levels(rows, TODAY)
 
-    assert days[0]["travel_date"] == date(2026, 10, 20)
-    assert (days[0]["sailings"], days[0]["min_price_eur"]) == (5, 40.0)
-    assert len(days) == 6
+    assert (day["travel_date"], day["sailings"], day["min_price_eur"], day["accommodation_options"]) == (
+        CHECK_IN, 3, 20.0, 34
+    )
+    assert day["level"] == "high"
 
 
 class FakeRepository:
@@ -299,7 +393,7 @@ class FakeRepository:
     def upsert_observation(self, **fields):
         self.observations.append(fields)
 
-    def latest_observations(self, canonical_destination, **window):
+    def observation_history(self, canonical_destination, **window):
         self.latest_calls.append((canonical_destination, window))
         return self.rows
 
@@ -405,8 +499,7 @@ def test_failed_route_searches_are_an_error_retried_soon_not_a_month_of_no_ferry
 
 
 def test_a_destination_where_nothing_sails_has_an_unknown_signal():
-    rows = [row(ROUTE_A, day, sailings=0, price=None) for day in usual_dates()]
-    rows += [row(ROUTE_A, CHECK_IN, sailings=0, price=None)]
+    rows = [row(ROUTE_A, CHECK_IN - timedelta(days=offset), sailings=0, price=None) for offset in range(8)]
 
     signal = build_ferry_demand_signal(rows, CHECK_IN, TODAY)
 
@@ -466,17 +559,17 @@ def test_one_failing_route_does_not_stop_the_others():
     assert (report.saved, report.failed, report.aborted) == (3, 3, False)
 
 
-def test_load_signal_reads_the_horizon_and_the_check_in():
+def test_load_signal_reads_three_weeks_of_looks_over_the_horizon():
     repository = FakeRepository(rows=[row(ROUTE_A, CHECK_IN)])
 
     signal = load_ferry_signal(repository, "rodos", CHECK_IN, today=TODAY, horizon_days=60)
 
-    assert signal.level == "normal"
+    assert signal.level == "unknown"  # one look: nothing to compare yet
     _, window = repository.latest_calls[0]
     assert window == {
-        "date_from": TODAY,
+        "date_from": TODAY - timedelta(days=1),
         "date_to": TODAY + timedelta(days=61),
-        "observed_since": TODAY - timedelta(days=3),
+        "observed_since": TODAY - timedelta(days=24),
     }
     assert load_ferry_signal(FakeRepository(), "rodos", CHECK_IN, today=TODAY, horizon_days=60) is None
 
@@ -620,60 +713,3 @@ def test_offered_accommodations_are_summed_only_when_every_sailing_lists_them():
     assert aggregate_trips([trip(options=20), trip()])["accommodation_options"] is None
 
 
-def test_fewer_offered_accommodations_than_usual_make_demand_high():
-    usual = [dict(row(ROUTE_A, day, sailings=2), accommodation_options=44) for day in usual_dates()]
-    filling = usual + [
-        dict(row(ROUTE_A, CHECK_IN - timedelta(days=1), sailings=2), accommodation_options=20),
-        dict(row(ROUTE_A, CHECK_IN, sailings=2), accommodation_options=24),
-    ]
-
-    signal = build_ferry_demand_signal(filling, CHECK_IN, TODAY)
-
-    # The fuller of the two window days: 20 offered against the usual 44.
-    assert signal.options_vs_usual_pct == -54.5
-    assert signal.level == "high"
-    assert "θέσεις/καμπίνες προς πώληση -54% από το συνηθισμένο" in signal.summary
-
-    steady = usual + [
-        dict(row(ROUTE_A, CHECK_IN, sailings=2), accommodation_options=40),
-    ]
-    assert build_ferry_demand_signal(steady, CHECK_IN, TODAY).level == "normal"
-
-
-def test_a_busy_day_trip_route_does_not_drown_the_route_that_brings_stays():
-    """Symi → Rhodes (6 a day, flat) next to Piraeus → Rhodes doubling its 2 sailings."""
-    symi = [dict(row(ROUTE_B, day, sailings=6, origin="SYMI")) for day in usual_dates()]
-    piraeus = [row(ROUTE_A, day, sailings=2, origin="PIRAEUS") for day in usual_dates()]
-    window = [
-        row(ROUTE_B, CHECK_IN - timedelta(days=1), sailings=6, origin="SYMI"),
-        row(ROUTE_B, CHECK_IN, sailings=6, origin="SYMI"),
-        row(ROUTE_A, CHECK_IN - timedelta(days=1), sailings=4, origin="PIRAEUS"),
-        row(ROUTE_A, CHECK_IN, sailings=4, origin="PIRAEUS"),
-    ]
-
-    signal = build_ferry_demand_signal(symi + piraeus + window, CHECK_IN, TODAY)
-
-    # Summed, 20 against 16 would read +25% (normal); per route it is 0% and +100%.
-    assert signal.sailings_vs_usual_pct == 50.0
-    assert signal.level == "high"
-    assert signal.routes == ["PIRAEUS → Rhodes", "SYMI → Rhodes"]
-
-
-def test_routes_weigh_by_what_they_usually_carry():
-    """The live Rhodes case: Friday's Blue Star from Piraeus fills, Symi's day boats do not."""
-    def piraeus(day, price=46.5, options=44):
-        return dict(row(ROUTE_A, day, sailings=2, price=price, origin="PIRAEUS"), accommodation_options=options)
-
-    def symi(day):
-        return dict(row(ROUTE_B, day, sailings=6, price=20.0, origin="SYMI"), accommodation_options=12)
-
-    usual = [piraeus(day) for day in usual_dates()] + [symi(day) for day in usual_dates()]
-    friday = CHECK_IN - timedelta(days=1)
-    window = [piraeus(friday, price=58.0, options=26), piraeus(CHECK_IN), symi(friday), symi(CHECK_IN)]
-
-    signal = build_ferry_demand_signal(usual + window, CHECK_IN, TODAY)
-
-    # Piraeus carries 44 a day against Symi's 12: (+24.7% × 44 + 0 × 12) / 56.
-    assert signal.price_vs_usual_pct == 19.4
-    assert signal.options_vs_usual_pct == -32.1
-    assert signal.level == "high"

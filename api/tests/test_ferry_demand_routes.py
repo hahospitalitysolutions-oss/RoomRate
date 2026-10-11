@@ -126,7 +126,7 @@ def ferry_row(travel_date, *, known=0, sold_out=0, price=60.0):
         "route_id": ROUTE_ID, "origin_port": "Piraeus", "destination_port": "Rhodes",
         "travel_date": travel_date, "observed_on": TODAY, "sailings": 2,
         "availability_known": known, "sold_out": sold_out,
-        "min_price_eur": price, "median_price_eur": price,
+        "min_price_eur": price, "median_price_eur": price, "accommodation_options": None,
     }
 
 
@@ -137,7 +137,7 @@ class FakeFerryRepository:
         self.fail = fail
         self.profile_calls = []
 
-    def latest_observations(self, canonical_destination, *, date_from, date_to, observed_since):
+    def observation_history(self, canonical_destination, *, date_from, date_to, observed_since):
         if self.fail:
             raise RuntimeError("database down")
         return [row for row in self.rows if date_from <= row["travel_date"] <= date_to]

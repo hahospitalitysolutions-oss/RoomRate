@@ -77,6 +77,9 @@ _PRICE_KEYS = (
 _PRICE_CENTS_KEYS = ("totalpriceincents", "pricecents", "priceincents", "amountincents", "cents")
 # Ferryhopper prices each segment per accommodation (deck, seat, cabin…).
 _ACCOMMODATION_KEYS = ("accommodations", "accommodation", "fares", "classes")
+# Not a passenger's place: pet cabins duplicate the cabins for pet owners,
+# vehicles are freight. Neither prices nor counts a passenger's demand.
+_NON_PASSENGER_TYPES = re.compile(r"^(PET|VEHICLE|CAR|MOTO|BIKE|BICYCLE|TRUCK|TRAILER|CAMPER|CARAVAN)", re.IGNORECASE)
 # Ferryhopper answers {"foundDirectItinerariesForTrip": [...], ...}.
 _DIRECT_LIST_HINTS = ("direct", "itinerar")
 _AVAILABLE_KEYS = ("available", "isavailable", "hasavailability", "bookable", "isbookable")
@@ -388,7 +391,7 @@ def _offered(segment: dict[str, Any]) -> int | None:
     for key in _ACCOMMODATION_KEYS:
         options = fields.get(key)
         if isinstance(options, list):
-            return sum(1 for option in options if isinstance(option, dict) and _price(_lowered(option)) is not None)
+            return sum(1 for option in _passenger_options(options) if _price(_lowered(option)) is not None)
     return None
 
 
@@ -401,11 +404,24 @@ def _segment_price(segment: dict[str, Any]) -> float | None:
     for key in _ACCOMMODATION_KEYS:
         options = fields.get(key)
         if isinstance(options, list):
-            prices = [_price(_lowered(option)) for option in options if isinstance(option, dict)]
+            prices = [_price(_lowered(option)) for option in _passenger_options(options)]
             prices = [value for value in prices if value is not None]
             if prices:
                 return min(prices)
     return None
+
+
+def is_passenger_accommodation(kind: Any) -> bool:
+    """False for a pet cabin or a vehicle: not a passenger's place."""
+    return not _NON_PASSENGER_TYPES.match(str(kind or ""))
+
+
+def _passenger_options(options: list[Any]) -> list[dict[str, Any]]:
+    return [
+        option
+        for option in options
+        if isinstance(option, dict) and is_passenger_accommodation(option.get("type"))
+    ]
 
 
 def _departure(fields: dict[str, Any]) -> str | None:
