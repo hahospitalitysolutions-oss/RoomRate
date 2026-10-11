@@ -1590,6 +1590,119 @@ label span,
   text-transform: uppercase;
 }
 
+/* Ferry demand panel: one cell per arrival day, the level as colour AND text. */
+.ferry-demand-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.ferry-port {
+  font-size: 13px;
+}
+
+.ferry-routes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ferry-days {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ferry-day {
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 8px;
+}
+
+.ferry-day-date {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.ferry-day-level {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ferry-day-sailings {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.ferry-day.demand-high,
+.ferry-swatch.demand-high {
+  background: #fef3c7;
+  border-color: #b45309;
+}
+
+.ferry-day.demand-high .ferry-day-level {
+  color: #92400e;
+}
+
+.ferry-day.demand-low,
+.ferry-swatch.demand-low {
+  background: var(--teal-soft);
+  border-color: var(--teal);
+}
+
+.ferry-day.demand-low .ferry-day-level {
+  color: var(--teal);
+}
+
+.ferry-day.demand-unknown {
+  border-style: dashed;
+}
+
+.ferry-day.ferry-day-selected {
+  box-shadow: 0 0 0 2px var(--foreground);
+}
+
+.ferry-swatch {
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  display: inline-block;
+  height: 10px;
+  margin: 0 2px 0 8px;
+  vertical-align: middle;
+  width: 10px;
+}
+
+.ferry-swatch:first-child {
+  margin-left: 0;
+}
+
+.ferry-swatch.demand-normal {
+  background: #f8fafc;
+}
+
+.ferry-legend,
+.ferry-note {
+  font-size: 12px;
+  margin: 0;
+}
+
+@media (max-width: 640px) {
+  .ferry-days {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
 .reasoning-disclosure {
   display: grid;
   gap: 8px;

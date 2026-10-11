@@ -884,6 +884,13 @@ account in a destination.
    the Windows `schtasks` line). `--show` prints the calendar with the
    pickup columns; `--day YYYY-MM-DD` each stored sailing of a date.
 
+On `/pricing` the «Ζήτηση πλοίων» panel (frontend
+`pages/pricing/ferry-demand-panel.component.ts`, reading
+`GET /api/v1/demand/ferries`) shows the tracked routes and one cell per
+arrival day for three weeks, coloured by level, with the form's check-in
+outlined; before the first lookup, for a mainland destination and in the
+first days of collection it says which of these it is.
+
 The price-recommendation route attaches the signal to the LLM context
 (`market_context.demand_signals.ferries`, prompt v9: it may move the price
 inside the market band only) and returns it as `demand_signals` for the card.

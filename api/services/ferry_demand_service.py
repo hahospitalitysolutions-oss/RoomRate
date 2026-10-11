@@ -514,11 +514,11 @@ def build_ferry_demand_signal(
 
     routes = sorted({_route_label(row["origin_port"], row["destination_port"]) for row in in_window})
     destination = in_window[0]["destination_port"]
+    # No absolute fare here: the cheapest is usually a day boat (Symi, 20 €)
+    # while the change below is mostly the ship from Piraeus.
     parts = [f"{sailings} δρομολόγια"]
     if availability_known:
         parts.append(f"{sold_out} χωρίς θέσεις")
-    if prices:
-        parts.append(f"φθηνότερο εισιτήριο {min(prices):.0f} €")
     if sailings_change is not None and sailings_change >= 10:
         parts.append(f"δρομολόγια {sailings_change:+.0f}% από τη συνηθισμένη ίδια μέρα")
     since = min(compared_with) if compared_with else None
@@ -526,7 +526,7 @@ def build_ferry_demand_signal(
     if options_change is not None:
         pickup.append(f"θέσεις προς πώληση {options_change:+.0f}%")
     if price_change is not None:
-        pickup.append(f"φθηνότερο εισιτήριο {price_change:+.0f}%")
+        pickup.append(f"τιμές εισιτηρίων {price_change:+.0f}%")
     if pickup and since is not None:
         parts.append(f"από τις {since:%d/%m}: {', '.join(pickup)}")
     summary = f"Πλοία προς {destination} για {window[0]:%d/%m}–{window[1]:%d/%m}: {', '.join(parts)}."
