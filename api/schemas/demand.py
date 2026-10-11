@@ -57,6 +57,8 @@ class FerryDayOut(BaseModel):
     availability_known: int
     sold_out: int
     min_price_eur: float | None = None
+    # Priced accommodations the day's sailings still offer; None if not every route listed them.
+    accommodation_options: int | None = None
     level: DemandLevel
 
 

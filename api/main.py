@@ -20,6 +20,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
+# httpx logs every request at INFO (the ferry collection alone makes ~200).
+logging.getLogger("httpx").setLevel(logging.WARNING)
 # LOG_FORMAT=json swaps the root formatter for one-JSON-object-per-line
 # output (stdlib only); the request-id filter enriches records in both modes.
 _request_id_filter = RequestIdFilter()

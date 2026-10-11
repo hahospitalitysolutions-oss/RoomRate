@@ -166,13 +166,14 @@ def run_profile(args) -> int:
             if not connections:
                 continue
             print("  Κατάταξη γραμμών (μία αναζήτηση ανά σύνδεση, ~1 δευτερόλεπτο η καθεμία)...")
-            routes, found = FerryDemandService._rank_routes(client, match.port.name, connections, today)
+            routes = FerryDemandService._rank_routes(client, match.port.name, connections, today)
             for origin, destination, sailings in routes:
-                print(f"  {origin} → {destination}: {sailings if sailings is not None else '?'} δρομολόγια την Παρασκευή-δείγμα")
-            if found:
+                print(f"  {origin} → {destination}: {sailings} δρομολόγια την Παρασκευή-δείγμα")
+            if routes:
                 print("\nΑυτές θα αποθηκευτούν ως γραμμές του προορισμού.")
                 return 0
             print("  Κανένα δρομολόγιο την Παρασκευή-δείγμα: δοκιμάζεται το επόμενο λιμάνι.")
+        print("\nΧωρίς πλοία: η Ferryhopper δεν δείχνει δρομολόγια προς τον προορισμό.")
         return 0
     except McpError as exc:
         print(f"Σφάλμα: {exc}")

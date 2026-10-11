@@ -33,6 +33,7 @@ from typing import Any, Protocol
 
 from rapidfuzz import fuzz
 
+from api.repositories.ferry_repository import PROFILE_REFRESH_DAYS
 from api.schemas.demand import FerryDemandSignal
 from api.services.ferryhopper_client import FerryPort, FerryTrip
 from api.services.greek_islands import island_at
@@ -336,6 +337,51 @@ def _route_label(origin: str, destination: str) -> str:
     return f"{origin} → {destination}"
 
 
+def _sailing_change(row: dict[str, Any], usual: dict[str, float | None]) -> float | None:
+    return row["sailings"] / usual["sailings"] - 1 if usual["sailings"] else None
+
+
+def _price_change(row: dict[str, Any], usual: dict[str, float | None]) -> float | None:
+    if row["min_price_eur"] is None or not usual["price"]:
+        return None
+    return row["min_price_eur"] / usual["price"] - 1
+
+
+def _options_change(row: dict[str, Any], usual: dict[str, float | None]) -> float | None:
+    if row.get("accommodation_options") is None or not row["sailings"] or not usual["options_per_sailing"]:
+        return None
+    return row["accommodation_options"] / (usual["options_per_sailing"] * row["sailings"]) - 1
+
+
+def _weighted_change(
+    in_window: Sequence[dict[str, Any]],
+    baselines: dict[Any, dict[str, float | None]],
+    change: Callable[[dict[str, Any], dict[str, float | None]], float | None],
+    most_telling: Callable[[Iterable[float]], float],
+) -> float | None:
+    """Percent change against usual: per route its most telling window day, routes capacity-weighted."""
+    per_route: dict[Any, list[float]] = {}
+    for row in in_window:
+        value = change(row, baselines[row["route_id"]])
+        if value is not None:
+            per_route.setdefault(row["route_id"], []).append(value)
+    if not per_route:
+        return None
+    weights = {route_id: _capacity(baselines[route_id]) for route_id in per_route}
+    if any(weight is None for weight in weights.values()):
+        weights = dict.fromkeys(per_route, 1.0)
+    total = sum(weights.values())
+    combined = sum(most_telling(values) * weights[route_id] for route_id, values in per_route.items()) / total
+    return round(100 * combined, 1)
+
+
+def _capacity(usual: dict[str, float | None]) -> float | None:
+    """What a route usually offers in a day: accommodations per sailing × sailings."""
+    if usual["options_per_sailing"] and usual["sailings"]:
+        return usual["options_per_sailing"] * usual["sailings"]
+    return None
+
+
 def build_ferry_demand_signal(
     rows: Sequence[dict[str, Any]],
     check_in: date,
@@ -355,6 +401,14 @@ def build_ferry_demand_signal(
             check_in=check_in,
             window=window,
             summary="Δεν υπάρχουν ακόμη πρόσφατα δεδομένα πλοίων για αυτές τις ημερομηνίες.",
+        )
+
+    if not any(row["sailings"] for row in fresh):
+        return FerryDemandSignal(
+            level="unknown",
+            check_in=check_in,
+            window=window,
+            summary="Η Ferryhopper δεν δείχνει δρομολόγια προς τον προορισμό.",
         )
 
     baselines: dict[Any, dict[str, float | None]] = {}
@@ -379,35 +433,15 @@ def build_ferry_demand_signal(
     sold_out_share = round(100 * sold_out / availability_known, 1) if availability_known else None
     prices = [row["min_price_eur"] for row in in_window if row["min_price_eur"] is not None]
 
-    # Every comparison is per route against its own usual, then the median:
-    # a busy day-trip route (Symi → Rhodes, 6 a day) would otherwise outweigh
-    # the route that brings the stays (Piraeus → Rhodes, 2 a day).
-    sailing_changes = [
-        row["sailings"] / baselines[row["route_id"]]["sailings"] - 1
-        for row in in_window
-        if baselines[row["route_id"]]["sailings"]
-    ]
-    sailings_vs_usual = round(100 * statistics.median(sailing_changes), 1) if sailing_changes else None
-    price_changes = [
-        row["min_price_eur"] / baselines[row["route_id"]]["price"] - 1
-        for row in in_window
-        if row["min_price_eur"] is not None and baselines[row["route_id"]]["price"]
-    ]
-    price_vs_usual = round(100 * statistics.median(price_changes), 1) if price_changes else None
-
-    # Accommodations still offered against what the same sailings usually offer.
-    offered_rows = [
-        row
-        for row in in_window
-        if row.get("accommodation_options") is not None
-        and row["sailings"]
-        and baselines[row["route_id"]]["options_per_sailing"]
-    ]
-    option_changes = [
-        row["accommodation_options"] / (baselines[row["route_id"]]["options_per_sailing"] * row["sailings"]) - 1
-        for row in offered_rows
-    ]
-    options_vs_usual = round(100 * statistics.median(option_changes), 1) if option_changes else None
+    # Each route against its own usual, at its most telling day of the window
+    # (Friday's overnight ship fills before Saturday's arrivals), then the
+    # routes weighted by what they usually carry: a Blue Star offering 22
+    # accommodations outweighs a Symi day boat offering 2, so six day-trip
+    # sailings cannot drown the ship that brings the stays. Without that
+    # capacity on record every route weighs the same.
+    sailings_vs_usual = _weighted_change(in_window, baselines, _sailing_change, max)
+    price_vs_usual = _weighted_change(in_window, baselines, _price_change, max)
+    options_vs_usual = _weighted_change(in_window, baselines, _options_change, min)
 
     if (
         (sold_out_share is not None and sold_out_share >= HIGH_SOLD_OUT_SHARE_PCT)
@@ -475,6 +509,11 @@ def daily_levels(rows: Sequence[dict[str, Any]], today: date) -> list[dict[str, 
                 "availability_known": sum(row["availability_known"] for row in day_rows),
                 "sold_out": sum(row["sold_out"] for row in day_rows),
                 "min_price_eur": round(min(prices), 2) if prices else None,
+                "accommodation_options": (
+                    sum(row["accommodation_options"] for row in day_rows)
+                    if all(row.get("accommodation_options") is not None for row in day_rows)
+                    else None
+                ),
                 "level": signal.level,
             }
         )
@@ -552,7 +591,7 @@ class FerryDemandService:
             self.repository.save_profile(key, status="no_ferry", detail=reason)
             logger.info("Ferry profile %s: no island port (%s)", key, reason)
             return
-        fallback: tuple[PortMatch, list[tuple[str, str, int | None]]] | None = None
+        checked: list[str] = []
         for match in candidates:
             island = match.port.name
             # A group of ports would count the same sailings twice next to
@@ -562,16 +601,20 @@ class FerryDemandService:
             ]
             if not connections:
                 continue
-            routes, sailing_found = self._rank_routes(client, island, connections, today)
-            if sailing_found:
+            routes = self._rank_routes(client, island, connections, today)
+            if routes:
                 self._save_ferry_profile(key, match, routes)
                 return
-            fallback = fallback or (match, routes)
-        if fallback is not None:
-            # Off season nothing may sail on the sample date: keep the routes unranked.
-            self._save_ferry_profile(key, *fallback)
-            return
+            checked.append(island)
+        # No route with a sailing on the sample date: Ferryhopper does not sell
+        # this crossing (Salamina's Perama–Paloukia shuttle), or it is out of
+        # season. Nothing to read now; the monthly refresh looks again.
         first = candidates[0]
+        detail = (
+            f"Η Ferryhopper δεν δείχνει δρομολόγια προς {', '.join(checked)}· νέος έλεγχος σε {PROFILE_REFRESH_DAYS} μέρες."
+            if checked
+            else "Το λιμάνι δεν έχει απευθείας γραμμές."
+        )
         self.repository.save_profile(
             key,
             status="no_ferry",
@@ -579,7 +622,7 @@ class FerryDemandService:
             island_port_code=first.port.code,
             port_distance_km=first.distance_km,
             matched_by=first.matched_by,
-            detail="Το λιμάνι δεν έχει απευθείας γραμμές.",
+            detail=detail,
         )
 
     def _save_ferry_profile(
@@ -599,35 +642,33 @@ class FerryDemandService:
     @staticmethod
     def _rank_routes(
         client: FerryClient, island: str, connections: list[str], today: date
-    ) -> tuple[list[tuple[str, str, int | None]], bool]:
+    ) -> list[tuple[str, str, int | None]]:
         """The inbound routes with the most sailings on a sample Friday, gateways first.
 
-        Returns the routes and whether any route had a sailing; without one
-        (off season, or the island port not searchable) the gateways are
-        kept unranked.
+        Empty when nothing sails into the port that day. Raises McpError when
+        no route has a sailing and some searches failed: the answer is not
+        known, so the lookup is retried soon rather than closed for a month.
         """
         sample = today + timedelta(days=7)
         sample += timedelta(days=(4 - sample.weekday()) % 7)
         candidates = sorted(dict.fromkeys(connections), key=lambda name: (not is_mainland_gateway(name), name))
         ranked: list[tuple[bool, int, str]] = []
-        unranked: list[str] = []
+        failures = 0
+        last_error: McpError | None = None
         for origin in candidates[:MAX_RANKING_CALLS]:
             try:
                 sailings = aggregate_trips(client.trips(origin, island, sample))["sailings"]
             except McpError as exc:
                 logger.info("Ferry route ranking %s → %s failed: %s", origin, island, exc)
-                unranked.append(origin)
+                failures += 1
+                last_error = exc
                 continue
             if sailings > 0:
                 ranked.append((is_mainland_gateway(origin), sailings, origin))
+        if not ranked and failures:
+            raise McpError(f"{failures} of the route searches into {island} failed: {last_error}")
         ranked.sort(key=lambda item: (not item[0], -item[1], item[2]))
-        routes: list[tuple[str, str, int | None]] = [
-            (origin, island, sailings) for _, sailings, origin in ranked[:MAX_ROUTES_PER_DESTINATION]
-        ]
-        if routes:
-            return routes, True
-        fallback = [name for name in candidates if is_mainland_gateway(name)] or unranked or candidates
-        return [(origin, island, None) for origin in fallback[:MAX_ROUTES_PER_DESTINATION]], False
+        return [(origin, island, sailings) for _, sailings, origin in ranked[:MAX_ROUTES_PER_DESTINATION]]
 
     def collect(self, today: date) -> CollectionReport:
         """Read the next days' sailings of every collected route, within the call budget."""

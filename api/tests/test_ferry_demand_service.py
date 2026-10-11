@@ -233,8 +233,9 @@ def test_dearer_fares_than_usual_make_demand_high():
     signal = build_ferry_demand_signal(rows, CHECK_IN, TODAY)
 
     assert signal.level == "high"
-    assert signal.price_vs_usual_pct == 18.3
-    assert "+18% από το συνηθισμένο" in signal.summary
+    # The dearer of the two window days: 72 € against the usual 60 €.
+    assert signal.price_vs_usual_pct == 20.0
+    assert "+20% από το συνηθισμένο" in signal.summary
 
 
 def test_extra_sailings_make_demand_high_and_cheaper_fares_low():
@@ -379,13 +380,38 @@ def test_a_failed_lookup_is_stored_as_error_for_a_retry():
     assert repository.profiles == [("rodos", {"status": "error", "detail": "HTTP 403"})]
 
 
-def test_off_season_ranking_keeps_the_gateways_unranked():
+def test_no_sailing_into_the_port_means_no_ferry_until_the_monthly_refresh():
+    """Salamina: Ferryhopper lists MEGARA, PERAMA → FANEROMENI, SALAMINA but sells no sailing."""
     repository = FakeRepository(destinations=[{"canonical_destination": "rodos", "city": "Ρόδος", "latitude": 36.44, "longitude": 28.22}])
     client = FakeClient(connections={"Rhodes": ["Kos", "Piraeus"]}, sailings={"Kos": 0, "Piraeus": 0})
 
     service(repository, client).resolve_profiles(TODAY)
 
-    assert repository.profiles[0][1]["routes"] == [("Piraeus", "Rhodes", None)]
+    fields = repository.profiles[0][1]
+    assert fields["status"] == "no_ferry"
+    assert "routes" not in fields
+    assert "δεν δείχνει δρομολόγια προς Rhodes" in fields["detail"] and "30 μέρες" in fields["detail"]
+
+
+def test_failed_route_searches_are_an_error_retried_soon_not_a_month_of_no_ferry():
+    repository = FakeRepository(destinations=[{"canonical_destination": "rodos", "city": "Ρόδος", "latitude": 36.44, "longitude": 28.22}])
+    client = FakeClient(connections={"Rhodes": ["Kos", "Piraeus"]}, sailings={"Kos": 0}, fail={"Piraeus"})
+
+    service(repository, client).resolve_profiles(TODAY)
+
+    destination, fields = repository.profiles[0]
+    assert fields["status"] == "error"
+    assert "route searches into Rhodes failed" in fields["detail"]
+
+
+def test_a_destination_where_nothing_sails_has_an_unknown_signal():
+    rows = [row(ROUTE_A, day, sailings=0, price=None) for day in usual_dates()]
+    rows += [row(ROUTE_A, CHECK_IN, sailings=0, price=None)]
+
+    signal = build_ferry_demand_signal(rows, CHECK_IN, TODAY)
+
+    assert signal.level == "unknown"
+    assert "δεν δείχνει δρομολόγια" in signal.summary
 
 
 def test_no_lookup_and_no_session_when_nothing_is_missing():
@@ -603,9 +629,10 @@ def test_fewer_offered_accommodations_than_usual_make_demand_high():
 
     signal = build_ferry_demand_signal(filling, CHECK_IN, TODAY)
 
-    assert signal.options_vs_usual_pct == -50.0
+    # The fuller of the two window days: 20 offered against the usual 44.
+    assert signal.options_vs_usual_pct == -54.5
     assert signal.level == "high"
-    assert "θέσεις/καμπίνες προς πώληση -50% από το συνηθισμένο" in signal.summary
+    assert "θέσεις/καμπίνες προς πώληση -54% από το συνηθισμένο" in signal.summary
 
     steady = usual + [
         dict(row(ROUTE_A, CHECK_IN, sailings=2), accommodation_options=40),
@@ -630,3 +657,23 @@ def test_a_busy_day_trip_route_does_not_drown_the_route_that_brings_stays():
     assert signal.sailings_vs_usual_pct == 50.0
     assert signal.level == "high"
     assert signal.routes == ["PIRAEUS → Rhodes", "SYMI → Rhodes"]
+
+
+def test_routes_weigh_by_what_they_usually_carry():
+    """The live Rhodes case: Friday's Blue Star from Piraeus fills, Symi's day boats do not."""
+    def piraeus(day, price=46.5, options=44):
+        return dict(row(ROUTE_A, day, sailings=2, price=price, origin="PIRAEUS"), accommodation_options=options)
+
+    def symi(day):
+        return dict(row(ROUTE_B, day, sailings=6, price=20.0, origin="SYMI"), accommodation_options=12)
+
+    usual = [piraeus(day) for day in usual_dates()] + [symi(day) for day in usual_dates()]
+    friday = CHECK_IN - timedelta(days=1)
+    window = [piraeus(friday, price=58.0, options=26), piraeus(CHECK_IN), symi(friday), symi(CHECK_IN)]
+
+    signal = build_ferry_demand_signal(usual + window, CHECK_IN, TODAY)
+
+    # Piraeus carries 44 a day against Symi's 12: (+24.7% × 44 + 0 × 12) / 56.
+    assert signal.price_vs_usual_pct == 19.4
+    assert signal.options_vs_usual_pct == -32.1
+    assert signal.level == "high"

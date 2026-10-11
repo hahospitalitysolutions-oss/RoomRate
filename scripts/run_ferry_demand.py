@@ -8,6 +8,7 @@ at that hour, run this from the project folder:
     python scripts/run_ferry_demand.py --lookup     # port lookup only
     python scripts/run_ferry_demand.py --collect    # collection only
     python scripts/run_ferry_demand.py --lookup --refresh   # redo every lookup
+    python scripts/run_ferry_demand.py --show       # the demand calendar, no calls
 
 Uses DATABASE_URL and the FERRY_* settings from .env and WRITES to that
 database. A collection makes up to FERRY_DEMAND_MAX_CALLS_PER_RUN calls,
@@ -19,7 +20,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -30,7 +31,12 @@ from sqlalchemy import text  # noqa: E402
 
 from api.config import settings  # noqa: E402
 from api.db import get_engine  # noqa: E402
+from api.repositories.ferry_repository import FerryRepository  # noqa: E402
 from api.scheduler import run_ferry_demand_collection, run_ferry_profile_resolution  # noqa: E402
+from api.services.ferry_demand_service import SIGNAL_MAX_AGE_DAYS, daily_levels  # noqa: E402
+
+WEEKDAYS = ("Δευ", "Τρί", "Τετ", "Πέμ", "Παρ", "Σάβ", "Κυρ")
+LEVELS = {"high": "ΥΨΗΛΗ", "normal": "κανονική", "low": "χαμηλή", "unknown": "—"}
 
 
 def main() -> int:
@@ -38,8 +44,14 @@ def main() -> int:
     parser.add_argument("--lookup", action="store_true", help="port lookup only")
     parser.add_argument("--collect", action="store_true", help="collection only")
     parser.add_argument("--refresh", action="store_true", help="redo the lookup of every destination")
+    parser.add_argument("--show", action="store_true", help="print the demand calendar, no calls")
+    parser.add_argument("--days", type=int, default=21, help="days ahead --show prints")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    if args.show:
+        show_calendar(args.days)
+        return 0
 
     if not settings.ferry_demand_enabled:
         print("FERRY_DEMAND_ENABLED=false στο .env: δεν τρέχει τίποτα.")
@@ -73,6 +85,41 @@ def main() -> int:
         saved = run_ferry_demand_collection(today=today)
         print(f"Αποθηκεύτηκαν {saved} παρατηρήσεις (γραμμή × ημερομηνία ταξιδιού).")
     return 0
+
+
+def show_calendar(days: int) -> None:
+    """Per ferry destination: arrival day, sailings into it, cheapest fare, the day's level."""
+    today = datetime.now(timezone.utc).date()
+    repository = FerryRepository()
+    with get_engine(role="api").connect() as connection:
+        destinations = connection.execute(
+            text(
+                "SELECT canonical_destination, island_port FROM roomrate_ferry_destination_profiles "
+                "WHERE status IN ('ferry', 'error') ORDER BY canonical_destination"
+            )
+        ).mappings().all()
+    if not destinations:
+        print("Κανένας προορισμός με πλοία ακόμη: τρέξε πρώτα χωρίς --show.")
+    for destination in destinations:
+        rows = repository.latest_observations(
+            destination["canonical_destination"],
+            date_from=today,
+            date_to=today + timedelta(days=settings.ferry_demand_horizon_days),
+            observed_since=today - timedelta(days=SIGNAL_MAX_AGE_DAYS),
+        )
+        print(f"\n== {destination['canonical_destination']} · λιμάνι {destination['island_port']} ==")
+        if not rows:
+            print("  Δεν υπάρχουν πρόσφατες παρατηρήσεις: τρέξε τη συλλογή.")
+            continue
+        print("  Άφιξη       Δρομολόγια  Φθηνότερο  Θέσεις προς πώληση  Ζήτηση (παραμονή + ημέρα άφιξης)")
+        for day in daily_levels(rows, today)[:days]:
+            price = f"{day['min_price_eur']:.0f} €" if day["min_price_eur"] is not None else "—"
+            options = day.get("accommodation_options")
+            print(
+                f"  {WEEKDAYS[day['travel_date'].weekday()]} {day['travel_date']:%d/%m}   "
+                f"{day['sailings']:>6}      {price:>7}    {options if options is not None else '—':>8}            "
+                f"{LEVELS[day['level']]}"
+            )
 
 
 def print_profiles() -> None:

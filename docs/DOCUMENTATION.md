@@ -842,9 +842,12 @@ account in a destination.
    routes into the port, port groups excluded (ATHENS (ALL PORTS) would count
    Piraeus twice), are ranked by sailings on a sample Friday (up to 60
    searches, once a month); up to 4 are kept, mainland gateways first. If
-   the first port has no route with a sailing, the next candidate is tried.
-   A failed lookup is `error` and retried after 6 hours; a destination that
-   had routes keeps collecting on them.
+   the first port has no route with a sailing, the next candidate is tried;
+   if none has, the destination is `no_ferry` until the monthly refresh
+   (Ferryhopper does not sell Salamina's Perama–Paloukia shuttle; a seasonal
+   island opens again in season). A lookup whose searches failed is `error`
+   and retried after 6 hours; a destination that had routes keeps collecting
+   on them. `scripts/run_ferry_demand.py --show` prints the demand calendar.
 2. **Collection** (`ferry_demand_collection`, daily 05:10 UTC). Every day for
    `FERRY_DEMAND_DAILY_DAYS`, then Fridays and Saturdays up to
    `FERRY_DEMAND_HORIZON_DAYS`, plus the arrival and its eve of every enabled
@@ -859,9 +862,13 @@ account in a destination.
    `python scripts/run_ferry_demand.py [--lookup|--collect] [--refresh]`
    runs them once by hand (it writes to the `.env` database).
 3. **Signal.** For a check-in: the sailings of the day before and the day
-   itself, each route against its own other observed dates, then the median
-   over routes (a busy day-trip route such as Symi → Rhodes must not drown
-   Piraeus → Rhodes). `high` when fares
+   itself. Each route is compared with its own other observed dates at its
+   most telling window day (Friday's overnight ship fills before Saturday's
+   arrivals), then the routes are weighted by what they usually carry
+   (accommodations per sailing × sailings), so Symi's six day boats cannot
+   drown the Blue Star from Piraeus; without that capacity on record every
+   route weighs the same. A destination where nothing sails is `unknown`.
+   `high` when fares
    are ≥15% above usual, or the offered accommodations per sailing ≥30% below
    usual, or sailings ≥30% above usual (or, for a source that flags it, ≥40%
    of the sailings have no seats); `low` when fares are ≥10% below usual;
