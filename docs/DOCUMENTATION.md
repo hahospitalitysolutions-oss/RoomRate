@@ -855,9 +855,13 @@ account in a destination.
    accommodations the sailings still offer (`accommodation_options`,
    migration 20261011_0032). Ferryhopper flags no sold-out sailing: a full
    cabin or fare tier leaves the list, and the cheapest fare rises. Five
-   failures in a row stop the run.
+   failures in a row stop the run. Both jobs run only while a worker is up;
+   `python scripts/run_ferry_demand.py [--lookup|--collect] [--refresh]`
+   runs them once by hand (it writes to the `.env` database).
 3. **Signal.** For a check-in: the sailings of the day before and the day
-   itself, against the same routes' other observed dates. `high` when fares
+   itself, each route against its own other observed dates, then the median
+   over routes (a busy day-trip route such as Symi → Rhodes must not drown
+   Piraeus → Rhodes). `high` when fares
    are ≥15% above usual, or the offered accommodations per sailing ≥30% below
    usual, or sailings ≥30% above usual (or, for a source that flags it, ≥40%
    of the sailings have no seats); `low` when fares are ≥10% below usual;

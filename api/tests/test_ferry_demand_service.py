@@ -611,3 +611,22 @@ def test_fewer_offered_accommodations_than_usual_make_demand_high():
         dict(row(ROUTE_A, CHECK_IN, sailings=2), accommodation_options=40),
     ]
     assert build_ferry_demand_signal(steady, CHECK_IN, TODAY).level == "normal"
+
+
+def test_a_busy_day_trip_route_does_not_drown_the_route_that_brings_stays():
+    """Symi → Rhodes (6 a day, flat) next to Piraeus → Rhodes doubling its 2 sailings."""
+    symi = [dict(row(ROUTE_B, day, sailings=6, origin="SYMI")) for day in usual_dates()]
+    piraeus = [row(ROUTE_A, day, sailings=2, origin="PIRAEUS") for day in usual_dates()]
+    window = [
+        row(ROUTE_B, CHECK_IN - timedelta(days=1), sailings=6, origin="SYMI"),
+        row(ROUTE_B, CHECK_IN, sailings=6, origin="SYMI"),
+        row(ROUTE_A, CHECK_IN - timedelta(days=1), sailings=4, origin="PIRAEUS"),
+        row(ROUTE_A, CHECK_IN, sailings=4, origin="PIRAEUS"),
+    ]
+
+    signal = build_ferry_demand_signal(symi + piraeus + window, CHECK_IN, TODAY)
+
+    # Summed, 20 against 16 would read +25% (normal); per route it is 0% and +100%.
+    assert signal.sailings_vs_usual_pct == 50.0
+    assert signal.level == "high"
+    assert signal.routes == ["PIRAEUS → Rhodes", "SYMI → Rhodes"]

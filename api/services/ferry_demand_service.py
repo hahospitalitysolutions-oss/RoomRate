@@ -379,10 +379,15 @@ def build_ferry_demand_signal(
     sold_out_share = round(100 * sold_out / availability_known, 1) if availability_known else None
     prices = [row["min_price_eur"] for row in in_window if row["min_price_eur"] is not None]
 
-    usual_sailings = [baselines[row["route_id"]]["sailings"] for row in in_window]
-    sailings_vs_usual = None
-    if usual_sailings and all(value is not None for value in usual_sailings) and sum(usual_sailings) > 0:
-        sailings_vs_usual = round(100 * (sailings / sum(usual_sailings) - 1), 1)
+    # Every comparison is per route against its own usual, then the median:
+    # a busy day-trip route (Symi → Rhodes, 6 a day) would otherwise outweigh
+    # the route that brings the stays (Piraeus → Rhodes, 2 a day).
+    sailing_changes = [
+        row["sailings"] / baselines[row["route_id"]]["sailings"] - 1
+        for row in in_window
+        if baselines[row["route_id"]]["sailings"]
+    ]
+    sailings_vs_usual = round(100 * statistics.median(sailing_changes), 1) if sailing_changes else None
     price_changes = [
         row["min_price_eur"] / baselines[row["route_id"]]["price"] - 1
         for row in in_window
@@ -398,13 +403,11 @@ def build_ferry_demand_signal(
         and row["sailings"]
         and baselines[row["route_id"]]["options_per_sailing"]
     ]
-    options_vs_usual = None
-    if offered_rows:
-        offered_now = sum(row["accommodation_options"] for row in offered_rows)
-        offered_usually = sum(
-            baselines[row["route_id"]]["options_per_sailing"] * row["sailings"] for row in offered_rows
-        )
-        options_vs_usual = round(100 * (offered_now / offered_usually - 1), 1)
+    option_changes = [
+        row["accommodation_options"] / (baselines[row["route_id"]]["options_per_sailing"] * row["sailings"]) - 1
+        for row in offered_rows
+    ]
+    options_vs_usual = round(100 * statistics.median(option_changes), 1) if option_changes else None
 
     if (
         (sold_out_share is not None and sold_out_share >= HIGH_SOLD_OUT_SHARE_PCT)
