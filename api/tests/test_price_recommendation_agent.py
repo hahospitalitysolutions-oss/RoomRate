@@ -641,9 +641,9 @@ def test_llm_system_prompt_demands_greek_answers():
     agent.recommend(_stats(), ADVISOR_CONTEXT)
 
     assert "Απάντησε αποκλειστικά στα ελληνικά" in fake_client.messages.parse_kwargs["system"]
-    # A changed prompt is a new prompt version in the audit trail; v7 = the
-    # same-store trends, so a cached v6 (median-vs-median trend) answer cannot serve.
-    assert PRICE_RECOMMENDATION_PROMPT_VERSION == "2026-09-30.v7"
+    # A changed prompt is a new prompt version in the audit trail; v8 = the
+    # ferry demand signal, so a cached v7 answer (priced without it) cannot serve.
+    assert PRICE_RECOMMENDATION_PROMPT_VERSION == "2026-10-11.v8"
 
 
 def test_llm_system_prompt_weighs_same_cancellation_class_prices():
@@ -1030,3 +1030,33 @@ def test_the_sdk_client_waits_long_enough_for_a_thinking_answer(monkeypatch):
 
     assert Settings.model_fields["anthropic_timeout_seconds"].default == 75.0
     assert captured == {"api_key": "test-key", "timeout": 75.0, "max_retries": 1}
+
+
+def test_llm_payload_forwards_the_demand_signals_and_the_prompt_bounds_them():
+    """v8: the ferry signal reaches the model, which may move the price only inside the band."""
+    fake_client = _FakeClient(result=_FakeParseResult(None, stop_reason="refusal"))
+    agent = PriceRecommendationAgent(
+        api_key="sk-test", model="claude-opus-5-5", client_factory=lambda: fake_client
+    )
+    ferries = {"level": "high", "summary": "Πλοία προς Rhodes για 14/11–15/11: 4 δρομολόγια."}
+    context = {**ADVISOR_CONTEXT, "demand_signals": {"ferries": ferries}}
+
+    agent.recommend(_stats(), context)
+
+    payload = json.loads(fake_client.messages.parse_kwargs["messages"][0]["content"])
+    assert payload["market_context"]["demand_signals"] == {"ferries": ferries}
+    system = fake_client.messages.parse_kwargs["system"]
+    assert "market_context.demand_signals.ferries" in system
+    assert "ποτέ έξω" in system
+
+
+def test_llm_payload_demand_signals_null_without_a_signal():
+    fake_client = _FakeClient(result=_FakeParseResult(None, stop_reason="refusal"))
+    agent = PriceRecommendationAgent(
+        api_key="sk-test", model="claude-opus-5-5", client_factory=lambda: fake_client
+    )
+
+    agent.recommend(_stats(), ADVISOR_CONTEXT)
+
+    payload = json.loads(fake_client.messages.parse_kwargs["messages"][0]["content"])
+    assert payload["market_context"]["demand_signals"] is None

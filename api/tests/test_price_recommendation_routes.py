@@ -46,6 +46,12 @@ def _rate_limit_disabled(monkeypatch):
     monkeypatch.setattr(settings, "rate_limit_per_minute", 0)
 
 
+@pytest.fixture(autouse=True)
+def _ferry_demand_off(monkeypatch):
+    """No ferry signal here: test_ferry_demand_routes.py covers it with its own fakes."""
+    monkeypatch.setattr(settings, "ferry_demand_enabled", False)
+
+
 class FakeOnboardingRepository:
     def __init__(self, owned_property=None, selected_room_type=None):
         self._owned_property = owned_property
@@ -968,6 +974,7 @@ def test_latest_run_is_resolved_before_the_cache_lookup():
 
 RESPONSE_KEYS = {
     "statistics",
+    "demand_signals",
     "recommendation",
     "recommendation_available",
     "audit_id",

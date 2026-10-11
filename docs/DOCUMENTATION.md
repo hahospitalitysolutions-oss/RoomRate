@@ -821,6 +821,53 @@ recommended = min(max(recommendation.recommended_price_eur, lower_bound), upper_
 `low <= recommended <= high`. Αν δεν υπάρχει θετική τιμή αναφοράς, η
 προϋπάρχουσα market-band επικύρωση παραμένει το ενεργό guardrail.
 
+#### `api/services/ferry_demand_service.py` (ferry demand)
+**Purpose:** The first outside demand signal for the price advisor: ferry
+sailings INTO island destinations, read from Ferryhopper's public MCP server
+(`FERRYHOPPER_MCP_URL`, no key). Destination-level data, shared by every
+account in a destination.
+
+1. **Port lookup** (worker job `ferry_profile_resolution`, hourly, acts only
+   when a destination has no lookup yet or it is 30 days old). From the
+   owners' coordinates: the nearest port within 30 km, preferring one whose
+   name matches the place (Greek names are transliterated, with exonyms such
+   as Ρόδος → Rhodes). A destination whose port is a mainland gateway
+   (Piraeus, Rafina, …) is `no_ferry`. The direct routes into the island
+   port are ranked by sailings on a sample Friday; up to 4 are kept,
+   mainland gateways first. A failed lookup is `error` and retried after
+   6 hours; a destination that had routes keeps collecting on them.
+2. **Collection** (`ferry_demand_collection`, daily 05:10 UTC). Every day for
+   `FERRY_DEMAND_DAILY_DAYS`, then Fridays and Saturdays up to
+   `FERRY_DEMAND_HORIZON_DAYS`, plus the arrival and its eve of every enabled
+   schedule, within `FERRY_DEMAND_MAX_CALLS_PER_RUN` calls,
+   `FERRY_DEMAND_CALL_INTERVAL_SECONDS` apart. Per route and travel date one
+   row in `roomrate_ferry_observations`: sailings, sailings with/without
+   seats, min/median fare. Five failures in a row stop the run.
+3. **Signal.** For a check-in: the sailings of the day before and the day
+   itself, against the same routes' other observed dates. `high` when ≥40% of
+   the sailings with known availability have no seats, or fares are ≥15%
+   above usual, or sailings ≥30% above usual; `low` when nothing is sold out
+   and fares are ≥10% below usual; `unknown` without observations from the
+   last 3 days.
+
+The price-recommendation route attaches the signal to the LLM context
+(`market_context.demand_signals.ferries`, prompt v8: it may move the price
+inside the market band only) and returns it as `demand_signals` for the card.
+The statistical baseline does not use it yet: the thresholds are rules, to be
+calibrated once a season of observations exists.
+
+`api/services/ferryhopper_client.py` discovers the server's tools at runtime
+(names have changed before), maps arguments onto each tool's `inputSchema`
+and reads answers tolerantly; a figure the answer does not carry stays null.
+The answer shapes are not a published contract: run
+`python scripts/probe_ferryhopper.py` on a machine with internet access and
+check `tmp/ferryhopper_probe.json` against the parser. Ferryhopper's MCP
+server is made for AI assistants; systematic use needs their permission.
+
+`scripts/probe_aerodatabox.py` checks, with a RapidAPI key, how far ahead
+AeroDataBox returns scheduled arrivals and whether a plan's quota covers
+flight demand. Flights are not collected yet.
+
 #### `api/repositories/price_recommendation_audit_repository.py`
 **Purpose:** Stores immutable recommendation request/response evidence,
 latency, source, model version and prompt version; also implements the UTC
@@ -1514,6 +1561,28 @@ and the caller still receives its recommendation (without an `audit_id`).
 429 Daily account recommendation quota reached
 503 Recommendation audit could not be persisted
 ```
+
+#### GET /api/v1/demand/ferries
+**Purpose:** The ferry routes and the next days' sailings of the destination
+of one of the caller's owned properties (404 for any other).
+
+**Query:** `owned_property_id` (UUID).
+
+**Response (200):**
+```json
+{
+  "canonical_destination": "rodos",
+  "status": "ferry",
+  "island_port": "Rhodes",
+  "port_distance_km": 2.1,
+  "resolved_at": "2026-10-11T05:10:00Z",
+  "routes": [{"id": "…", "origin_port": "Piraeus", "destination_port": "Rhodes", "status": "auto", "sample_sailings": 1}],
+  "days": [{"travel_date": "2026-11-13", "sailings": 4, "availability_known": 4, "sold_out": 2, "min_price_eur": 62.0, "level": "high"}],
+  "observed_on": "2026-10-11"
+}
+```
+`status` is null before the first port lookup (within the hour after a
+property is claimed); `days` is empty before the first daily collection.
 
 #### POST /api/v1/scrape-jobs/
 **Purpose:** Durably queue a Booking.com market scrape for the current account. The production Python worker starts it.

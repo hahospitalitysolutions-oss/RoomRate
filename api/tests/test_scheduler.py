@@ -3,10 +3,16 @@ from uuid import UUID
 
 import pytest
 
+from api.config import settings
 from api.scheduler import (
+    FERRY_COLLECTION_LOCK_KEY,
+    FERRY_OBSERVATION_RETENTION_DAYS,
+    FERRY_PROFILE_LOCK_KEY,
     SCHEDULER_TICK_LOCK_KEY,
     SchedulerStatus,
     purge_old_scrape_csvs,
+    run_ferry_demand_collection,
+    run_ferry_profile_resolution,
     run_queued_job_executor,
     run_schedule_tick,
     run_price_recommendation_audit_cleanup,
@@ -535,3 +541,110 @@ def test_raw_ingestion_cleanup_is_disabled_by_zero_retention_and_never_raises():
             raise RuntimeError("database unavailable")
 
     assert run_raw_ingestion_cleanup(engine=BrokenEngine(), retention_days=30) == 0
+
+
+# ----------------------------------------------------------------------------
+# Ferry demand jobs
+# ----------------------------------------------------------------------------
+
+
+class FakeFerryRepository:
+    def __init__(self):
+        self.prune_calls = []
+
+    def prune(self, **kwargs):
+        self.prune_calls.append(kwargs)
+        return (0, 0)
+
+
+class FakeFerryService:
+    def __init__(self, resolved=0, report=None, error=None):
+        self.repository = FakeFerryRepository()
+        self.resolved = resolved
+        self.report = report
+        self.error = error
+        self.calls = []
+
+    def resolve_profiles(self, today):
+        self.calls.append(("resolve", today))
+        if self.error:
+            raise self.error
+        return self.resolved
+
+    def collect(self, today):
+        self.calls.append(("collect", today))
+        if self.error:
+            raise self.error
+        return self.report
+
+
+def _report(saved=3):
+    from api.services.ferry_demand_service import CollectionReport
+
+    return CollectionReport(routes=1, calls=saved, saved=saved)
+
+
+def test_ferry_jobs_are_registered_on_the_worker_scheduler():
+    from api.scheduler import create_scheduler
+
+    scheduler = create_scheduler()
+
+    assert scheduler.get_job("ferry_profile_resolution") is not None
+    assert scheduler.get_job("ferry_demand_collection") is not None
+
+
+def test_ferry_profile_lookup_runs_under_its_own_lock(monkeypatch):
+    monkeypatch.setattr(settings, "ferry_demand_enabled", True)
+    connection = FakeLockConnection()
+    service = FakeFerryService(resolved=2)
+
+    assert run_ferry_profile_resolution(service, engine=FakeEngine(connection), today=NOW.date()) == 2
+
+    assert service.calls == [("resolve", NOW.date())]
+    assert connection.calls[0][1] == {"key": FERRY_PROFILE_LOCK_KEY}
+    assert "pg_advisory_unlock" in connection.calls[-1][0]
+    assert connection.closed
+
+
+def test_ferry_collection_saves_then_prunes(monkeypatch):
+    monkeypatch.setattr(settings, "ferry_demand_enabled", True)
+    monkeypatch.setattr(settings, "ferry_raw_payload_retention_days", 7)
+    connection = FakeLockConnection()
+    service = FakeFerryService(report=_report(saved=5))
+
+    assert run_ferry_demand_collection(service, engine=FakeEngine(connection), today=NOW.date()) == 5
+
+    assert connection.calls[0][1] == {"key": FERRY_COLLECTION_LOCK_KEY}
+    assert service.repository.prune_calls == [
+        {"raw_payload_days": 7, "observation_days": FERRY_OBSERVATION_RETENTION_DAYS}
+    ]
+
+
+def test_ferry_jobs_skip_when_another_process_holds_the_lock(monkeypatch):
+    monkeypatch.setattr(settings, "ferry_demand_enabled", True)
+    service = FakeFerryService(report=_report())
+
+    assert run_ferry_demand_collection(service, engine=FakeEngine(FakeLockConnection(lock_acquired=False))) == 0
+    assert run_ferry_profile_resolution(service, engine=FakeEngine(FakeLockConnection(lock_acquired=False))) == 0
+
+    assert service.calls == []
+    assert service.repository.prune_calls == []
+
+
+def test_ferry_jobs_never_raise_and_release_the_lock(monkeypatch):
+    monkeypatch.setattr(settings, "ferry_demand_enabled", True)
+    connection = FakeLockConnection()
+
+    assert run_ferry_demand_collection(FakeFerryService(error=RuntimeError("boom")), engine=FakeEngine(connection)) == 0
+
+    assert "pg_advisory_unlock" in connection.calls[-1][0]
+    assert connection.closed
+
+
+def test_ferry_jobs_do_nothing_when_switched_off(monkeypatch):
+    monkeypatch.setattr(settings, "ferry_demand_enabled", False)
+    service = FakeFerryService(resolved=1, report=_report())
+
+    assert run_ferry_profile_resolution(service, engine=FakeEngine(FakeLockConnection())) == 0
+    assert run_ferry_demand_collection(service, engine=FakeEngine(FakeLockConnection())) == 0
+    assert service.calls == []

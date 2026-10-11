@@ -65,7 +65,9 @@ _MAX_COMPETITORS = 15
 # v7: trend_7d_pct / trend_30d_pct are same-store (hotels priced in both
 # compared runs, runs of the same basis and price definition only); a v6
 # answer read a median-vs-median sample change as a trend.
-PRICE_RECOMMENDATION_PROMPT_VERSION = "2026-09-30.v7"
+# v8: market_context.demand_signals.ferries (sailings into the destination
+# around the arrival) is a secondary signal inside the market band.
+PRICE_RECOMMENDATION_PROMPT_VERSION = "2026-10-11.v8"
 
 # Greek annotation of the statistical basis (spec 2026-09-29 Β.2): the payload
 # spells out what stats_scope.cancellation_class means so the model reads the
@@ -103,6 +105,13 @@ SYSTEM_PROMPT = (
     "competitors_in_basis, ποτέ το πλήθος της λίστας ή των tracked. Όσοι "
     "έχουν tracked=true είναι οι ανταγωνιστές που παρακολουθεί ο ιδιοκτήτης "
     "και μπορείς να τους σχολιάσεις ξεχωριστά. "
+    # v8: outside demand moves the price inside the band, never out of it.
+    "Όταν υπάρχει το market_context.demand_signals.ferries, δείχνει τα πλοία "
+    "προς τον προορισμό την παραμονή και την ημέρα της άφιξης: level=high "
+    "σημαίνει γεμάτα ή ακριβότερα πλοία από το συνηθισμένο, level=low "
+    "φθηνότερα. Είναι δευτερεύον σήμα: μπορεί να μετακινήσει την τιμή μέσα στο "
+    "εύρος της αγοράς (προς το p75 όταν high, προς το p25 όταν low), ποτέ έξω "
+    "από αυτό· όταν το χρησιμοποιείς, ανέφερέ το στα key_factors. "
     "Απάντησε αποκλειστικά στα ελληνικά: γράψε το reasoning και τα key_factors "
     "στα ελληνικά, με ποσά σε ευρώ (π.χ. «120 €»)."
 )
@@ -283,6 +292,7 @@ class PriceRecommendationAgent:
                 len(basis), len(trimmed_competitors), tracked_in_basis
             ),
             "competitors": trimmed_competitors,
+            "demand_signals": context.get("demand_signals"),
         }
 
     @staticmethod

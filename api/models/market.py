@@ -982,3 +982,118 @@ class RoomRatePriceRecommendationAudit(Base):
         nullable=False,
         server_default=func.now(),
     )
+
+
+class RoomRateFerryDestinationProfile(TimestampMixin, Base):
+    """Which ferry port serves a destination (migration 20261011_0031).
+
+    One row per canonical destination, shared by every account there: the
+    port is found once from the owners' coordinates, not per client.
+    ``status``: "ferry" (island port found, inbound routes in
+    roomrate_ferry_routes), "no_ferry" (mainland or no port near) or "error"
+    (the lookup failed and is retried).
+    """
+
+    __tablename__ = "roomrate_ferry_destination_profiles"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('ferry', 'no_ferry', 'error')",
+            name="ck_roomrate_ferry_destination_profiles_status",
+        ),
+    )
+
+    canonical_destination: Mapped[str] = mapped_column(String(255), primary_key=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    island_port: Mapped[str | None] = mapped_column(String(255))
+    island_port_code: Mapped[str | None] = mapped_column(String(100))
+    port_distance_km: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
+    # "name" (the port's name matches the destination) or "distance".
+    matched_by: Mapped[str | None] = mapped_column(String(20))
+    detail: Mapped[str | None] = mapped_column(Text)
+    resolved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    routes: Mapped[list[RoomRateFerryRoute]] = relationship(back_populates="profile")
+
+
+class RoomRateFerryRoute(TimestampMixin, Base):
+    """A direct ferry route INTO a destination's island port.
+
+    ``auto`` routes are replaced on each profile refresh; ``confirmed`` and
+    ``disabled`` ones are the owner's word and are kept.
+    """
+
+    __tablename__ = "roomrate_ferry_routes"
+    __table_args__ = (
+        UniqueConstraint(
+            "canonical_destination",
+            "origin_port",
+            "destination_port",
+            name="uq_roomrate_ferry_routes_destination_ports",
+        ),
+        CheckConstraint(
+            "status IN ('auto', 'confirmed', 'disabled')",
+            name="ck_roomrate_ferry_routes_status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    canonical_destination: Mapped[str] = mapped_column(
+        String(255),
+        ForeignKey("roomrate_ferry_destination_profiles.canonical_destination", ondelete="CASCADE"),
+        nullable=False,
+    )
+    origin_port: Mapped[str] = mapped_column(String(255), nullable=False)
+    destination_port: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="auto")
+    # Sailings on the sample date the route was ranked by; NULL when unknown.
+    sample_sailings: Mapped[int | None] = mapped_column()
+
+    profile: Mapped[RoomRateFerryDestinationProfile] = relationship(back_populates="routes")
+
+
+class RoomRateFerryObservation(Base):
+    """One day's look at one route's sailings for one travel date.
+
+    Upserted per ``(route_id, travel_date, observed_on)``: a second
+    collection the same day replaces the first. ``raw_payload`` is the
+    trimmed tool answer, cleared after FERRY_RAW_PAYLOAD_RETENTION_DAYS; the
+    counts stay as the history a demand model trains on.
+    """
+
+    __tablename__ = "roomrate_ferry_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "route_id",
+            "travel_date",
+            "observed_on",
+            name="uq_roomrate_ferry_observations_route_day",
+        ),
+        Index("ix_roomrate_ferry_observations_observed_on", "observed_on"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=False), primary_key=True)
+    route_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("roomrate_ferry_routes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    travel_date: Mapped[date] = mapped_column(Date, nullable=False)
+    observed_on: Mapped[date] = mapped_column(Date, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    sailings: Mapped[int] = mapped_column(nullable=False)
+    # Sailings whose answer said whether seats are left, and how many had none.
+    availability_known: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    sold_out: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    min_price_eur: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    median_price_eur: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    operators: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    raw_payload: Mapped[dict | None] = mapped_column(JSONB)
+    parser_version: Mapped[str] = mapped_column(String(20), nullable=False)

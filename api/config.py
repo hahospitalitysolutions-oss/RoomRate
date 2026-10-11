@@ -172,6 +172,28 @@ class Settings(BaseSettings):
         le=100,
         alias="PRICE_RECOMMENDATION_MAX_CHANGE_PCT",
     )
+    # Ferry demand (api/services/ferry_demand_service.py): sailings into island
+    # destinations, read from Ferryhopper's public MCP server by the worker.
+    # Off = no lookups, no collection; the advisor then has no ferry signal.
+    ferry_demand_enabled: bool = Field(default=True, alias="FERRY_DEMAND_ENABLED")
+    ferryhopper_mcp_url: str = Field(
+        default="https://mcp.ferryhopper.com/mcp", alias="FERRYHOPPER_MCP_URL"
+    )
+    # Every day this far ahead, then Fridays and Saturdays up to the horizon.
+    ferry_demand_daily_days: int = Field(default=14, ge=0, le=60, alias="FERRY_DEMAND_DAILY_DAYS")
+    ferry_demand_horizon_days: int = Field(default=60, ge=1, le=180, alias="FERRY_DEMAND_HORIZON_DAYS")
+    # Tool calls per daily collection, shared by all destinations; the server
+    # is free and made for assistants, so it is used politely.
+    ferry_demand_max_calls_per_run: int = Field(
+        default=200, ge=1, le=2000, alias="FERRY_DEMAND_MAX_CALLS_PER_RUN"
+    )
+    ferry_demand_call_interval_seconds: float = Field(
+        default=1.0, ge=0.0, le=30.0, alias="FERRY_DEMAND_CALL_INTERVAL_SECONDS"
+    )
+    # The stored tool answers are for re-parsing only; the counts stay.
+    ferry_raw_payload_retention_days: int = Field(
+        default=7, ge=0, alias="FERRY_RAW_PAYLOAD_RETENTION_DAYS"
+    )
     # Optional error-monitoring integration (Sentry, see api.main.init_sentry).
     # A blank DSN keeps it off entirely and sentry_sdk is never imported.
     # Performance tracing defaults to 0 (errors only); raise deliberately

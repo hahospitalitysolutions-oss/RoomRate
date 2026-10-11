@@ -62,6 +62,30 @@ export type PriceRecommendation = {
   source: "agent" | "statistical";
 };
 
+export type DemandLevel = "high" | "normal" | "low" | "unknown";
+
+/** Ferries into the destination the day before and on the check-in day. */
+export type FerryDemandSignal = {
+  level: DemandLevel;
+  check_in: string;
+  window: string[];
+  sailings: number;
+  availability_known: number;
+  sold_out: number;
+  sold_out_share_pct: number | null;
+  min_price_eur: number | null;
+  price_vs_usual_pct: number | null;
+  sailings_vs_usual_pct: number | null;
+  routes: string[];
+  observed_on: string | null;
+  // One Greek sentence for the owner.
+  summary: string;
+};
+
+export type DemandSignals = {
+  ferries: FerryDemandSignal | null;
+};
+
 export type PriceRecommendationResponse = {
   statistics: PriceStatistics;
   // null (with recommendation_available=false) when the market history and
@@ -77,6 +101,9 @@ export type PriceRecommendationResponse = {
   // Always sent; null when the property has neither a live Booking row nor a
   // sample price.
   own_price_source: OwnPriceSource | null;
+  // Outside demand the advisor saw; null when the destination has none
+  // (mainland, or no ferry data yet). Older cached answers omit it.
+  demand_signals?: DemandSignals | null;
 };
 
 export type PriceHistoryPoint = {

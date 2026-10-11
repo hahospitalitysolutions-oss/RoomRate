@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+from datetime import date, datetime, timezone
 from time import perf_counter
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,6 +10,7 @@ from api.config import settings
 from api.dependencies import (
     AccountContext,
     get_account_context,
+    get_ferry_repository,
     get_market_service,
     get_onboarding_repository,
     get_price_history_repository,
@@ -17,6 +19,7 @@ from api.dependencies import (
     get_room_matching_service,
     get_scrape_job_service,
 )
+from api.repositories.ferry_repository import FerryRepository
 from api.repositories.onboarding_repository import OnboardingRepository
 from api.repositories.price_history_repository import PriceHistoryRepository
 from api.repositories.price_recommendation_audit_repository import (
@@ -29,6 +32,8 @@ from api.schemas.agents import (
     RoomMatchRunRequest,
     RoomMatchRunResponse,
 )
+from api.schemas.demand import DemandSignals, FerryDemandSignal
+from api.services.ferry_demand_service import load_ferry_signal
 from api.services.market_helpers import as_optional_float
 from api.services.market_service import MarketService, RoomRateFilters, build_agent_match_lookup
 from api.services.own_reference_price import resolve_own_reference_price
@@ -114,6 +119,33 @@ def run_room_matching(
     )
 
 
+def _ferry_signal(
+    repository: FerryRepository, canonical_destination: str, check_in: date
+) -> FerryDemandSignal | None:
+    """The ferry demand around this check-in; None when off, absent or unreadable.
+
+    An outside signal is never a reason to fail a recommendation: a read
+    error is logged and the advisor prices without it.
+    """
+    if not settings.ferry_demand_enabled:
+        return None
+    try:
+        return load_ferry_signal(
+            repository,
+            canonical_destination,
+            check_in,
+            today=datetime.now(timezone.utc).date(),
+            horizon_days=settings.ferry_demand_horizon_days,
+        )
+    except Exception:
+        logger.warning(
+            "Ferry demand signal unavailable; pricing without it: destination=%s",
+            canonical_destination,
+            exc_info=True,
+        )
+        return None
+
+
 @router.post("/price-recommendation", response_model=PriceRecommendationResponse)
 def price_recommendation(
     request: PriceRecommendationRequest,
@@ -125,6 +157,7 @@ def price_recommendation(
     audit_repository: PriceRecommendationAuditRepository = Depends(
         get_price_recommendation_audit_repository
     ),
+    ferry_repository: FerryRepository = Depends(get_ferry_repository),
 ) -> PriceRecommendationResponse:
     """Hybrid (statistical + LLM) nightly-price recommendation for an owned room.
 
@@ -212,6 +245,9 @@ def price_recommendation(
         (str(row["created_at"]) for row in latest_agent_matches if row.get("created_at")),
         default=None,
     )
+    # The day's ferry observations are part of the request identity: a new
+    # collection must not be answered from a recommendation made without it.
+    ferry_signal = _ferry_signal(ferry_repository, canonical_destination, request.check_in)
     audit_request_payload = {
         **request.model_dump(mode="json"),
         "room_type_category": room_type_category,
@@ -220,6 +256,11 @@ def price_recommendation(
         "owned_room_type_id": str(owned_room_type_id) if owned_room_type_id else None,
         "agent_matches": len(latest_agent_matches),
         "agent_matches_written_at": agent_matches_written_at,
+        "ferry_signal": (
+            {"level": ferry_signal.level, "observed_on": str(ferry_signal.observed_on)}
+            if ferry_signal is not None
+            else None
+        ),
     }
     request_hash = build_recommendation_request_hash(
         str(account.account_id), audit_request_payload
@@ -354,6 +395,11 @@ def price_recommendation(
         agent_matches=agent_matches,
     )
 
+    if ferry_signal is not None and ferry_signal.level != "unknown":
+        advisor_context = advisor_context.model_copy(
+            update={"demand_signals": {"ferries": ferry_signal.model_dump(mode="json")}}
+        )
+
     recommendation = apply_business_guardrails(
         agent.recommend(
             statistics, advisor_context, own_cancellation_type=own_cancellation_type
@@ -368,6 +414,7 @@ def price_recommendation(
         recommendation=recommendation,
         recommendation_available=recommendation is not None,
         own_price_source=own_price_source,
+        demand_signals=DemandSignals(ferries=ferry_signal) if ferry_signal is not None else None,
     )
     source = recommendation.source if recommendation is not None else None
     model_version = (

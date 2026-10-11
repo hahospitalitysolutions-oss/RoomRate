@@ -10,6 +10,7 @@ from api.config import settings
 from api.db import db_connection
 from api.repositories.accounts_repository import AccountsRepository
 from api.repositories.alerts_repository import AlertsRepository
+from api.repositories.ferry_repository import FerryRepository
 from api.repositories.price_history_repository import PriceHistoryRepository
 from api.repositories.price_recommendation_audit_repository import (
     PriceRecommendationAuditRepository,
@@ -20,6 +21,8 @@ from api.repositories.onboarding_repository import OnboardingRepository
 from api.repositories.schedule_repository import ScheduleRepository
 from api.repositories.scrape_jobs_repository import ScrapeJobRepository
 from api.repositories.tracking_repository import TrackingRepository
+from api.services.ferry_demand_service import FerryDemandService
+from api.services.ferryhopper_client import FerryhopperClient
 from api.services.market_service import MarketService
 from api.services.price_recommendation_agent import PriceRecommendationAgent
 from api.services.room_matching_agent import RoomMatchingAgentService
@@ -183,6 +186,28 @@ def get_price_history_repository() -> PriceHistoryRepository:
 def get_price_recommendation_audit_repository() -> PriceRecommendationAuditRepository:
     """Build the durable audit/quota/cache repository for pricing decisions."""
     return PriceRecommendationAuditRepository()
+
+
+def get_ferry_repository() -> FerryRepository:
+    """Build FerryRepository for the destination-level ferry demand data."""
+    return FerryRepository()
+
+
+def get_ferry_demand_service() -> FerryDemandService:
+    """Build the ferry demand service; each run opens its own Ferryhopper session."""
+    from api.services.schedule_service import tracked_check_in
+
+    return FerryDemandService(
+        repository=get_ferry_repository(),
+        client_factory=lambda: FerryhopperClient(
+            url=settings.ferryhopper_mcp_url,
+            min_interval_seconds=settings.ferry_demand_call_interval_seconds,
+        ),
+        daily_days=settings.ferry_demand_daily_days,
+        horizon_days=settings.ferry_demand_horizon_days,
+        max_calls_per_run=settings.ferry_demand_max_calls_per_run,
+        tracked_check_in=tracked_check_in,
+    )
 
 
 def get_alerts_repository() -> AlertsRepository:

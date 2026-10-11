@@ -12,6 +12,9 @@ from alembic.script import ScriptDirectory
 
 from api.models.market import (
     RoomRateAgentLease,
+    RoomRateFerryDestinationProfile,
+    RoomRateFerryObservation,
+    RoomRateFerryRoute,
     RoomRateAgentRun,
     RoomRateRateLimitHit,
     RoomRateScheduleConfig,
@@ -29,6 +32,7 @@ COMPARABLE_REVISION = "20260930_0027"
 AGENT_LEASE_REVISION = "20260930_0028"
 RATE_LIMIT_REVISION = "20260930_0029"
 SCHEDULE_LOCAL_HOUR_REVISION = "20260930_0030"
+FERRY_DEMAND_REVISION = "20261011_0031"
 
 
 def _script_directory() -> ScriptDirectory:
@@ -37,8 +41,32 @@ def _script_directory() -> ScriptDirectory:
     return ScriptDirectory.from_config(config)
 
 
-def test_schedule_local_hour_migration_is_the_single_alembic_head():
-    assert _script_directory().get_heads() == [SCHEDULE_LOCAL_HOUR_REVISION]
+def test_ferry_demand_migration_is_the_single_alembic_head():
+    assert _script_directory().get_heads() == [FERRY_DEMAND_REVISION]
+
+
+def test_ferry_demand_migration_revises_the_schedule_local_hour_migration():
+    revision = _script_directory().get_revision(FERRY_DEMAND_REVISION)
+
+    assert revision.down_revision == SCHEDULE_LOCAL_HOUR_REVISION
+
+
+def test_orm_declares_the_ferry_demand_tables():
+    """Destination-level profile, its inbound routes, one observation per route-day."""
+    profile = RoomRateFerryDestinationProfile.__table__
+    route = RoomRateFerryRoute.__table__
+    observation = RoomRateFerryObservation.__table__
+
+    assert [column.name for column in profile.primary_key] == ["canonical_destination"]
+    assert {constraint.name for constraint in route.constraints} >= {
+        "uq_roomrate_ferry_routes_destination_ports",
+        "ck_roomrate_ferry_routes_status",
+    }
+    assert route.columns["status"].server_default.arg == "auto"
+    foreign = {fk.target_fullname: fk.ondelete for fk in observation.foreign_keys}
+    assert foreign == {"roomrate_ferry_routes.id": "CASCADE"}
+    assert "uq_roomrate_ferry_observations_route_day" in {c.name for c in observation.constraints}
+    assert {index.name for index in observation.indexes} == {"ix_roomrate_ferry_observations_observed_on"}
 
 
 def test_schedule_local_hour_migration_revises_the_rate_limit_migration():

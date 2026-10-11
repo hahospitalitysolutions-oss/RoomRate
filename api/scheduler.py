@@ -43,6 +43,13 @@ logger = logging.getLogger(__name__)
 # every API process must use the same constant so only one enqueues per cycle.
 SCHEDULER_TICK_LOCK_KEY = 815_372_001
 
+# Ferry demand jobs: one process looks up ports / collects sailings at a time.
+FERRY_PROFILE_LOCK_KEY = 815_372_002
+FERRY_COLLECTION_LOCK_KEY = 815_372_003
+
+# Observations of travel dates further back than this are dropped.
+FERRY_OBSERVATION_RETENTION_DAYS = 400
+
 # scout_cache rows older than this are useless (stage-1 reuse window is 12h).
 SCOUT_CACHE_RETENTION_DAYS = 7
 
@@ -298,6 +305,99 @@ def run_raw_ingestion_cleanup(engine: Any = None, retention_days: int | None = N
     return deleted
 
 
+def _run_with_advisory_lock(key: int, job: Any, engine: Any, name: str) -> Any:
+    """Run ``job()`` only if this process takes the session advisory lock ``key``.
+
+    Returns None when another process holds it. Released (or the connection
+    invalidated, which releases it) even when the job raises.
+    """
+    connection = engine.connect()
+    try:
+        if not connection.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": key}).scalar():
+            logger.info("%s skipped: another process holds its lock", name)
+            return None
+        try:
+            return job()
+        finally:
+            try:
+                connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+            except Exception:
+                connection.invalidate()
+                raise
+    finally:
+        connection.close()
+
+
+def run_ferry_profile_resolution(service: Any = None, engine: Any = None, today: Any = None) -> int:
+    """Find the island port of destinations that have none yet. Never raises.
+
+    Hourly and cheap when nothing is missing (one query): a newly claimed
+    property gets its ferry routes within the hour.
+    """
+    if not settings.ferry_demand_enabled:
+        return 0
+    try:
+        if service is None:
+            from api.dependencies import get_ferry_demand_service
+
+            service = get_ferry_demand_service()
+        lookup_day = today if today is not None else datetime.now(timezone.utc).date()
+        resolved = _run_with_advisory_lock(
+            FERRY_PROFILE_LOCK_KEY,
+            lambda: service.resolve_profiles(lookup_day),
+            engine if engine is not None else get_engine(role="api"),
+            "Ferry profile lookup",
+        )
+    except Exception:
+        logger.exception("Ferry profile lookup crashed")
+        return 0
+    if resolved:
+        logger.info("Ferry profile lookup resolved %s destination(s)", resolved)
+    return resolved or 0
+
+
+def run_ferry_demand_collection(service: Any = None, engine: Any = None, today: Any = None) -> int:
+    """Read the next days' sailings of every ferry route; prune old answers. Never raises.
+
+    Returns the observations saved.
+    """
+    if not settings.ferry_demand_enabled:
+        return 0
+    try:
+        if service is None:
+            from api.dependencies import get_ferry_demand_service
+
+            service = get_ferry_demand_service()
+        collection_day = today if today is not None else datetime.now(timezone.utc).date()
+        report = _run_with_advisory_lock(
+            FERRY_COLLECTION_LOCK_KEY,
+            lambda: service.collect(collection_day),
+            engine if engine is not None else get_engine(role="api"),
+            "Ferry demand collection",
+        )
+    except Exception:
+        logger.exception("Ferry demand collection crashed")
+        return 0
+    if report is None:
+        return 0
+    logger.info(
+        "Ferry demand collection: %s route(s), %s call(s), %s saved, %s failed%s",
+        report.routes,
+        report.calls,
+        report.saved,
+        report.failed,
+        " (stopped early)" if report.aborted else "",
+    )
+    try:
+        service.repository.prune(
+            raw_payload_days=settings.ferry_raw_payload_retention_days,
+            observation_days=FERRY_OBSERVATION_RETENTION_DAYS,
+        )
+    except Exception:
+        logger.exception("Ferry observation pruning crashed")
+    return report.saved
+
+
 def purge_old_scrape_csvs(directory: Path, older_than_days: int, now: datetime | None = None) -> int:
     """Delete ``*.csv`` files and leftover job checkpoints older than ``older_than_days``.
 
@@ -448,6 +548,21 @@ def create_scheduler(
         minute=55,
         id="raw_ingestion_cleanup",
         name="Delete raw ingestion events past retention",
+    )
+    scheduler.add_job(
+        run_ferry_profile_resolution,
+        trigger="interval",
+        minutes=60,
+        id="ferry_profile_resolution",
+        name="Find the island port of new destinations",
+    )
+    scheduler.add_job(
+        run_ferry_demand_collection,
+        trigger="cron",
+        hour=5,
+        minute=10,
+        id="ferry_demand_collection",
+        name="Read the next days' ferry sailings into island destinations",
     )
     scheduler.add_job(
         run_price_recommendation_audit_cleanup,
