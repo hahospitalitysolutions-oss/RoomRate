@@ -50,9 +50,20 @@ _DEPARTURE_KEYS = (
 )
 # A list of days each holding "trips" is not a trip: only segment lists count.
 _SEGMENT_KEYS = ("segments", "legs")
-_OPERATOR_KEYS = ("company", "operator", "carrier", "companyname", "operatorname", "vesselcompany")
+# Ferryhopper (probe 2026-10-11): segments carry ownerCompany / marketingCompany.
+_OPERATOR_KEYS = (
+    "ownercompany",
+    "marketingcompany",
+    "company",
+    "operator",
+    "carrier",
+    "companyname",
+    "operatorname",
+    "vesselcompany",
+)
 _PRICE_KEYS = (
     "price",
+    "expectedprice",
     "lowestprice",
     "minprice",
     "fromprice",
@@ -63,7 +74,11 @@ _PRICE_KEYS = (
     "fare",
     "totalprice",
 )
-_PRICE_CENTS_KEYS = ("pricecents", "priceincents", "amountincents", "cents")
+_PRICE_CENTS_KEYS = ("totalpriceincents", "pricecents", "priceincents", "amountincents", "cents")
+# Ferryhopper prices each segment per accommodation (deck, seat, cabin…).
+_ACCOMMODATION_KEYS = ("accommodations", "accommodation", "fares", "classes")
+# Ferryhopper answers {"foundDirectItinerariesForTrip": [...], ...}.
+_DIRECT_LIST_HINTS = ("direct", "itinerar")
 _AVAILABLE_KEYS = ("available", "isavailable", "hasavailability", "bookable", "isbookable")
 _SOLD_OUT_KEYS = ("soldout", "issoldout")
 _NAME_KEYS = ("name", "portname", "title", "label", "displayname", "locationname")
@@ -300,7 +315,18 @@ def _coordinates(fields: dict[str, Any]) -> tuple[float | None, float | None]:
 
 
 def parse_trips(payload: Any) -> list[FerryTrip]:
-    """Trips in a tool answer: the shallowest list whose objects look like trips."""
+    """Trips in a tool answer.
+
+    A list named for direct itineraries (Ferryhopper's
+    ``foundDirectItinerariesForTrip``) is read as is, even empty: an
+    indirect list next to it is not a sailing into the port. Otherwise the
+    shallowest list whose objects look like trips.
+    """
+    if isinstance(payload, dict):
+        for name, value in payload.items():
+            key = _key(str(name))
+            if isinstance(value, list) and all(hint in key for hint in _DIRECT_LIST_HINTS) and "indirect" not in key:
+                return [_trip(item) for item in value if isinstance(item, dict)]
     for items in _lists(payload):
         dicts = [item for item in items if isinstance(item, dict)]
         if dicts and sum(1 for item in dicts if _looks_like_trip(item)) * 2 >= len(dicts):
@@ -333,13 +359,35 @@ def _trip(item: dict[str, Any]) -> FerryTrip:
         if direct is None and isinstance(fields.get("direct"), bool):
             direct = fields["direct"]
 
+    price = _price(fields)
+    if price is None and segments:
+        segment_prices = [_segment_price(segment) for segment in segments if isinstance(segment, dict)]
+        if segment_prices and all(value is not None for value in segment_prices):
+            price = round(sum(segment_prices), 2)
+
     return FerryTrip(
         departure=_departure(fields) or _departure(first_segment),
         operator=_operator(fields) or _operator(first_segment),
-        price_eur=_price(fields),
+        price_eur=price,
         available=_availability(fields),
         direct=direct,
     )
+
+
+def _segment_price(segment: dict[str, Any]) -> float | None:
+    """A segment's own price, else its cheapest accommodation (the deck fare)."""
+    fields = _lowered(segment)
+    price = _price(fields)
+    if price is not None:
+        return price
+    for key in _ACCOMMODATION_KEYS:
+        options = fields.get(key)
+        if isinstance(options, list):
+            prices = [_price(_lowered(option)) for option in options if isinstance(option, dict)]
+            prices = [value for value in prices if value is not None]
+            if prices:
+                return min(prices)
+    return None
 
 
 def _departure(fields: dict[str, Any]) -> str | None:

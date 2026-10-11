@@ -41,7 +41,7 @@ from api.services.mcp_http_client import McpError
 logger = logging.getLogger(__name__)
 
 # Bump when parsing changes: observations keep the version they were read with.
-PARSER_VERSION = "fh-2026-10-11"
+PARSER_VERSION = "fh-2026-10-11.2"
 
 MAX_PORT_DISTANCE_KM = 30.0
 NAME_MATCH_SCORE = 85
@@ -76,7 +76,9 @@ MAINLAND_GATEWAYS = frozenset(
     }
 )
 
-# Latin names in Greek transliteration → the English names port lists use.
+# Greek transliteration ↔ English names. Ferryhopper lists ports in Greek
+# transliteration (RODOS, PIRAEUS; probe 2026-10-11) while a Booking city can
+# be either; the lookup goes both ways (_EXONYM_LOOKUP below).
 EXONYMS: dict[str, tuple[str, ...]] = {
     "rodos": ("rhodes",),
     "kerkyra": ("corfu",),
@@ -96,6 +98,17 @@ EXONYMS: dict[str, tuple[str, ...]] = {
     "megisti": ("kastellorizo",),
     "kastellorizo": ("megisti",),
 }
+
+def _exonym_lookup() -> dict[str, tuple[str, ...]]:
+    lookup: dict[str, dict[str, None]] = {}
+    for name, others in EXONYMS.items():
+        for other in others:
+            lookup.setdefault(name, {})[other] = None
+            lookup.setdefault(other, {})[name] = None
+    return {name: tuple(others) for name, others in lookup.items()}
+
+
+_EXONYM_LOOKUP = _exonym_lookup()
 
 _GREEK_DIGRAPHS = (("ου", "ou"), ("αυ", "av"), ("ευ", "ev"), ("γγ", "ng"), ("μπ", "mp"))
 _GREEK_LETTERS = str.maketrans(
@@ -158,7 +171,7 @@ def place_keys(names: Iterable[str | None]) -> list[str]:
         if not key:
             continue
         keys.setdefault(key, None)
-        for exonym in EXONYMS.get(key.replace(" ", ""), ()):
+        for exonym in _EXONYM_LOOKUP.get(key.replace(" ", ""), ()):
             keys.setdefault(exonym, None)
     return list(keys)
 

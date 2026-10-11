@@ -4,6 +4,7 @@ Run from the project folder on a machine with internet access (no key needed):
 
     python scripts/probe_ferryhopper.py
     python scripts/probe_ferryhopper.py --island Rhodes --from Piraeus --date 2026-11-13
+    python scripts/probe_ferryhopper.py --show     (prints samples of the saved answers)
 
 It lists the server's tools and calls three of them (ports, direct connections
 of --island, trips --from → --island on --date). Every raw answer is saved to
@@ -50,7 +51,10 @@ def main() -> int:
     parser.add_argument("--island", default="Rhodes", help="island port for connections and trips")
     parser.add_argument("--from", dest="origin", default="Piraeus", help="departure port for the trip search")
     parser.add_argument("--date", type=date.fromisoformat, default=next_friday(), help="travel date YYYY-MM-DD")
+    parser.add_argument("--show", action="store_true", help="print samples of the saved answers, no calls")
     args = parser.parse_args()
+    if args.show:
+        return show_saved()
 
     record: dict = {"url": args.url, "arguments": {"island": args.island, "from": args.origin, "date": str(args.date)}}
     mcp = McpHttpClient(args.url, client_name="roomrate-probe")
@@ -126,6 +130,46 @@ def summarize_trips(payload) -> None:
     if isinstance(payload, (dict, list)):
         text = json.dumps(payload, ensure_ascii=False)[:600]
         print(f"  αρχή της απάντησης: {text}")
+
+
+def show_saved() -> int:
+    """Raw samples of every saved answer, short enough to paste in a chat."""
+    if not OUTPUT.exists():
+        print(f"Δεν υπάρχει {OUTPUT.relative_to(PROJECT_ROOT)}: τρέξε πρώτα το probe χωρίς --show.")
+        return 1
+    record = json.loads(OUTPUT.read_text(encoding="utf-8"))
+    for name, answer in (record.get("answers") or {}).items():
+        print(f"\n== {name} ==")
+        if isinstance(answer, dict):
+            print(f"  κλειδιά: {list(answer)}")
+        items = first_list_of_dicts(answer)
+        if items:
+            keys: dict[str, None] = {}
+            for item in items:
+                keys.update(dict.fromkeys(item))
+            print(f"  {len(items)} αντικείμενα, πεδία: {list(keys)}")
+        if name == "ports" and items:
+            greek = [item for item in items if "gree" in json.dumps(item).lower()][:4]
+            for item in greek or items[:4]:
+                print(f"  {json.dumps(item, ensure_ascii=False)[:400]}")
+        elif name == "trips" and items:
+            print(json.dumps(items[0], ensure_ascii=False, indent=1)[:5000])
+            for item in items[1:]:
+                print(f"  επόμενο: {json.dumps(item, ensure_ascii=False)[:300]}")
+        else:
+            print(f"  {json.dumps(answer, ensure_ascii=False)[:1200]}")
+    return 0
+
+
+def first_list_of_dicts(node, depth: int = 0) -> list[dict]:
+    if isinstance(node, list) and node and all(isinstance(item, dict) for item in node):
+        return node
+    if depth < 4 and isinstance(node, dict):
+        for value in node.values():
+            found = first_list_of_dicts(value, depth + 1)
+            if found:
+                return found
+    return []
 
 
 if __name__ == "__main__":

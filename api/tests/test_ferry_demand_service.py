@@ -48,6 +48,22 @@ def test_greek_place_names_become_latin_keys_with_exonyms():
     assert place_keys(["Κέρκυρα"]) == ["kerkyra", "corfu"]
 
 
+def test_english_names_reach_the_transliterated_port_names_and_back():
+    """Ferryhopper lists RODOS and PIRAEUS (probe 2026-10-11); a Booking city may say Rhodes."""
+    assert "rodos" in place_keys(["Rhodes"])
+    assert "corfu" in place_keys(["Kerkyra"]) and "kerkyra" in place_keys(["Corfu"])
+
+
+LIVE_PORTS = [FerryPort("PIRAEUS", "PIR", country="Greece"), FerryPort("RODOS", "RHO", country="Greece"),
+              FerryPort("AG.MARINA (LEROS)", "AGM", country="Greece")]
+
+
+def test_without_port_coordinates_the_island_is_found_by_name():
+    for city in ("Rhodes", "Ρόδος", "Rodos"):
+        match, reason = resolve_island_port(LIVE_PORTS, [city], 36.44, 28.22)
+        assert (match.port.name, match.matched_by, reason) == ("RODOS", "name", "")
+
+
 def test_mainland_gateways_are_recognised_by_name_token():
     assert is_mainland_gateway("Piraeus (Athens)")
     assert is_mainland_gateway("Agios Konstantinos")

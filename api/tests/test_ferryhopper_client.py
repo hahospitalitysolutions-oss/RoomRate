@@ -175,3 +175,59 @@ def test_a_missing_tool_names_what_the_server_has():
 
     with pytest.raises(McpError, match="trip_details"):
         client.ports()
+
+
+# The structure of a live search_trips answer (probe 2026-10-11, Piraeus →
+# Rhodes): direct itineraries of one segment each, priced per accommodation in
+# cents, the operator as ownerCompany/marketingCompany.
+LIVE_SHAPE = {
+    "foundDirectItinerariesForTrip": [
+        {
+            "segments": [
+                {
+                    "vehicleIsMandatory": False,
+                    "departurePort": {"name": "PIRAEUS"},
+                    "arrivalPort": {"name": "RODOS"},
+                    "departureDateTime": "2026-10-23T17:00:00Z",
+                    "arrivalDateTime": "2026-10-24T17:00:00Z",
+                    "ownerCompany": {"name": "BLUE STAR FERRIES"},
+                    "marketingCompany": {"name": "BLUE STAR FERRIES", "iconURL": "https://example.test/x.png"},
+                    "vessel": {"name": "BLUE STAR CHIOS"},
+                    "accommodations": [
+                        {"type": "LOUNGE_DECK", "expectedPrice": {"totalPriceInCents": 6400}},
+                        {"type": "LOUNGE_DECK", "expectedPrice": {"totalPriceInCents": 5900}},
+                        {"type": "CABIN", "expectedPrice": {"totalPriceInCents": 14800}},
+                    ],
+                }
+            ]
+        },
+        {
+            "segments": [
+                {
+                    "departureDateTime": "2026-10-23T18:00:00Z",
+                    "marketingCompany": {"name": "SEAJETS"},
+                    "accommodations": [{"type": "SEAT"}],
+                }
+            ]
+        },
+    ],
+    "foundIndirectItinerariesForTrip": [
+        {"segments": [{"departureDateTime": "2026-10-23T07:00:00Z"}, {"departureDateTime": "2026-10-23T15:00:00Z"}]}
+    ],
+}
+
+
+def test_live_ferryhopper_shape_reads_the_deck_fare_and_the_operator():
+    trips = parse_trips(LIVE_SHAPE)
+
+    assert [(trip.departure, trip.operator, trip.price_eur, trip.direct) for trip in trips] == [
+        ("2026-10-23T17:00:00Z", "BLUE STAR FERRIES", 59.0, True),
+        # No price on any accommodation: unknown, not zero.
+        ("2026-10-23T18:00:00Z", "SEAJETS", None, True),
+    ]
+
+
+def test_an_empty_direct_list_is_no_sailing_even_with_indirect_ones():
+    payload = {"foundDirectItinerariesForTrip": [], "foundIndirectItinerariesForTrip": LIVE_SHAPE["foundIndirectItinerariesForTrip"]}
+
+    assert parse_trips(payload) == []
