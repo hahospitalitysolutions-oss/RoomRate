@@ -225,6 +225,9 @@ def test_live_ferryhopper_shape_reads_the_deck_fare_and_the_operator():
         # No price on any accommodation: unknown, not zero.
         ("2026-10-23T18:00:00Z", "SEAJETS", None, True),
     ]
+    # Priced accommodations still offered: a full cabin drops out of the list.
+    assert [trip.accommodation_options for trip in trips] == [3, 0]
+    assert parse_trips({"foundDirectItinerariesForTrip": [{"segments": [{"departureDateTime": "x"}]}]})[0].accommodation_options is None
 
 
 def test_an_empty_direct_list_is_no_sailing_even_with_indirect_ones():

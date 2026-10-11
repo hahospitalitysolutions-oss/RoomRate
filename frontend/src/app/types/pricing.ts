@@ -76,6 +76,8 @@ export type FerryDemandSignal = {
   min_price_eur: number | null;
   price_vs_usual_pct: number | null;
   sailings_vs_usual_pct: number | null;
+  // Fare tiers and cabins still on sale per sailing against usual.
+  options_vs_usual_pct?: number | null;
   routes: string[];
   observed_on: string | null;
   // One Greek sentence for the owner.

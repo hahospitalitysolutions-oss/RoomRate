@@ -228,6 +228,7 @@ class FerryRepository:
         operators: int,
         raw_payload: Any,
         parser_version: str,
+        accommodation_options: int | None = None,
     ) -> None:
         with self._engine("writer").begin() as connection:
             connection.execute(
@@ -236,12 +237,12 @@ class FerryRepository:
                     INSERT INTO roomrate_ferry_observations (
                         route_id, travel_date, observed_on, sailings, availability_known,
                         sold_out, min_price_eur, median_price_eur, operators, raw_payload,
-                        parser_version
+                        parser_version, accommodation_options
                     )
                     VALUES (
                         :route_id, :travel_date, :observed_on, :sailings, :availability_known,
                         :sold_out, :min_price_eur, :median_price_eur, :operators,
-                        CAST(:raw_payload AS jsonb), :parser_version
+                        CAST(:raw_payload AS jsonb), :parser_version, :accommodation_options
                     )
                     ON CONFLICT (route_id, travel_date, observed_on) DO UPDATE SET
                         observed_at = now(),
@@ -252,7 +253,8 @@ class FerryRepository:
                         median_price_eur = EXCLUDED.median_price_eur,
                         operators = EXCLUDED.operators,
                         raw_payload = EXCLUDED.raw_payload,
-                        parser_version = EXCLUDED.parser_version
+                        parser_version = EXCLUDED.parser_version,
+                        accommodation_options = EXCLUDED.accommodation_options
                     """
                 ),
                 {
@@ -267,6 +269,7 @@ class FerryRepository:
                     "operators": operators,
                     "raw_payload": None if raw_payload is None else json.dumps(raw_payload, default=str),
                     "parser_version": parser_version,
+                    "accommodation_options": accommodation_options,
                 },
             )
 
@@ -287,7 +290,8 @@ class FerryRepository:
                            o.route_id, r.origin_port, r.destination_port, o.travel_date,
                            o.observed_on, o.sailings, o.availability_known, o.sold_out,
                            o.min_price_eur::float AS min_price_eur,
-                           o.median_price_eur::float AS median_price_eur
+                           o.median_price_eur::float AS median_price_eur,
+                           o.accommodation_options
                     FROM roomrate_ferry_observations o
                     JOIN roomrate_ferry_routes r ON r.id = o.route_id
                     WHERE r.canonical_destination = :canonical_destination

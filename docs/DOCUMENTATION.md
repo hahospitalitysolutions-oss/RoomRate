@@ -828,27 +828,40 @@ sailings INTO island destinations, read from Ferryhopper's public MCP server
 account in a destination.
 
 1. **Port lookup** (worker job `ferry_profile_resolution`, hourly, acts only
-   when a destination has no lookup yet or it is 30 days old). From the
-   owners' coordinates: the nearest port within 30 km, preferring one whose
-   name matches the place (Greek names are transliterated, with exonyms such
-   as Ρόδος → Rhodes). A destination whose port is a mainland gateway
-   (Piraeus, Rafina, …) is `no_ferry`. The direct routes into the island
-   port are ranked by sailings on a sample Friday; up to 4 are kept,
-   mainland gateways first. A failed lookup is `error` and retried after
-   6 hours; a destination that had routes keeps collecting on them.
+   when a destination has no lookup yet or it is 30 days old). Ferryhopper's
+   ports carry a name, a country and a code, no coordinates, and are named
+   in Greek transliteration (RODOS, PIRAEUS). So the island comes from the
+   owners' own coordinates (`api/services/greek_islands.py`: a box per
+   inhabited island with ferries, Crete split by prefecture; the smaller box
+   wins where two overlap), and the island's names find its port: the port
+   named exactly after it, then its "X (ALL PORTS)" group, then ports that
+   mention it ("SAMI (KEFALONIA)"). A hotel in Faliraki or Oia gets RODOS or
+   the Santorini port; a property outside every box (mainland, or an island
+   reached by road such as Evia and Lefkada) is `no_ferry`. Without the
+   property's coordinates only a near-certain name match counts. The direct
+   routes into the port, port groups excluded (ATHENS (ALL PORTS) would count
+   Piraeus twice), are ranked by sailings on a sample Friday (up to 60
+   searches, once a month); up to 4 are kept, mainland gateways first. If
+   the first port has no route with a sailing, the next candidate is tried.
+   A failed lookup is `error` and retried after 6 hours; a destination that
+   had routes keeps collecting on them.
 2. **Collection** (`ferry_demand_collection`, daily 05:10 UTC). Every day for
    `FERRY_DEMAND_DAILY_DAYS`, then Fridays and Saturdays up to
    `FERRY_DEMAND_HORIZON_DAYS`, plus the arrival and its eve of every enabled
    schedule, within `FERRY_DEMAND_MAX_CALLS_PER_RUN` calls,
    `FERRY_DEMAND_CALL_INTERVAL_SECONDS` apart. Per route and travel date one
-   row in `roomrate_ferry_observations`: sailings, sailings with/without
-   seats, min/median fare. Five failures in a row stop the run.
+   row in `roomrate_ferry_observations`: sailings, the cheapest
+   accommodation's fare (min/median over the sailings), and the priced
+   accommodations the sailings still offer (`accommodation_options`,
+   migration 20261011_0032). Ferryhopper flags no sold-out sailing: a full
+   cabin or fare tier leaves the list, and the cheapest fare rises. Five
+   failures in a row stop the run.
 3. **Signal.** For a check-in: the sailings of the day before and the day
-   itself, against the same routes' other observed dates. `high` when ≥40% of
-   the sailings with known availability have no seats, or fares are ≥15%
-   above usual, or sailings ≥30% above usual; `low` when nothing is sold out
-   and fares are ≥10% below usual; `unknown` without observations from the
-   last 3 days.
+   itself, against the same routes' other observed dates. `high` when fares
+   are ≥15% above usual, or the offered accommodations per sailing ≥30% below
+   usual, or sailings ≥30% above usual (or, for a source that flags it, ≥40%
+   of the sailings have no seats); `low` when fares are ≥10% below usual;
+   `unknown` without observations from the last 3 days.
 
 The price-recommendation route attaches the signal to the LLM context
 (`market_context.demand_signals.ferries`, prompt v8: it may move the price
@@ -861,7 +874,9 @@ calibrated once a season of observations exists.
 and reads answers tolerantly; a figure the answer does not carry stays null.
 The answer shapes are not a published contract: run
 `python scripts/probe_ferryhopper.py` on a machine with internet access and
-check `tmp/ferryhopper_probe.json` against the parser. Ferryhopper's MCP
+check `tmp/ferryhopper_probe.json` against the parser (`--show` prints
+samples of it; `--profile --city … --lat … --lon …` runs the port lookup a
+hotel there would get, on live data, without writing). Ferryhopper's MCP
 server is made for AI assistants; systematic use needs their permission.
 
 `scripts/probe_aerodatabox.py` checks, with a RapidAPI key, how far ahead

@@ -107,6 +107,9 @@ class FerryTrip:
     price_eur: float | None
     available: bool | None
     direct: bool | None
+    # Priced accommodations still offered (deck tiers, seats, cabins); a full
+    # cabin or fare tier drops out of the list. None when the answer lists none.
+    accommodation_options: int | None = None
 
 
 class FerryhopperClient:
@@ -365,13 +368,28 @@ def _trip(item: dict[str, Any]) -> FerryTrip:
         if segment_prices and all(value is not None for value in segment_prices):
             price = round(sum(segment_prices), 2)
 
+    options = [_offered(segment) for segment in segments or [] if isinstance(segment, dict)]
+    known_options = [count for count in options if count is not None]
+
     return FerryTrip(
         departure=_departure(fields) or _departure(first_segment),
         operator=_operator(fields) or _operator(first_segment),
         price_eur=price,
         available=_availability(fields),
         direct=direct,
+        # A connection is as open as its fullest leg.
+        accommodation_options=min(known_options) if known_options else None,
     )
+
+
+def _offered(segment: dict[str, Any]) -> int | None:
+    """How many priced accommodations a segment still offers; None without a list."""
+    fields = _lowered(segment)
+    for key in _ACCOMMODATION_KEYS:
+        options = fields.get(key)
+        if isinstance(options, list):
+            return sum(1 for option in options if isinstance(option, dict) and _price(_lowered(option)) is not None)
+    return None
 
 
 def _segment_price(segment: dict[str, Any]) -> float | None:

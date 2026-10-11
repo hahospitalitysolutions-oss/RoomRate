@@ -1097,3 +1097,6 @@ class RoomRateFerryObservation(Base):
     operators: Mapped[int] = mapped_column(nullable=False, server_default="0")
     raw_payload: Mapped[dict | None] = mapped_column(JSONB)
     parser_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Priced accommodations the sailings still offer (migration 20261011_0032):
+    # Ferryhopper drops a full cabin or fare tier instead of flagging it.
+    accommodation_options: Mapped[int | None] = mapped_column()

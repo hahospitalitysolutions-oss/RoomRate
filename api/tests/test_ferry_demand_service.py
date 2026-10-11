@@ -1,5 +1,6 @@
 """Ferry demand: port lookup, route ranking, collection budget and the signal rules."""
 
+import pytest
 from datetime import date, timedelta
 from uuid import UUID
 
@@ -20,7 +21,9 @@ from api.services.ferry_demand_service import (
     resolve_island_port,
     trimmed_payload,
 )
+from api.services.ferry_demand_service import is_port_group, port_candidates
 from api.services.ferryhopper_client import FerryPort, FerryTrip
+from api.services.greek_islands import ISLANDS, island_at
 from api.services.mcp_http_client import McpError
 
 TODAY = date(2026, 10, 11)  # a Sunday
@@ -36,8 +39,11 @@ PORTS = [
 ]
 
 
-def trip(price=50.0, available=None, direct=None, operator="Blue Star"):
-    return FerryTrip(departure="17:30", operator=operator, price_eur=price, available=available, direct=direct)
+def trip(price=50.0, available=None, direct=None, operator="Blue Star", options=None):
+    return FerryTrip(
+        departure="17:30", operator=operator, price_eur=price, available=available, direct=direct,
+        accommodation_options=options,
+    )
 
 
 def test_greek_place_names_become_latin_keys_with_exonyms():
@@ -61,7 +67,7 @@ LIVE_PORTS = [FerryPort("PIRAEUS", "PIR", country="Greece"), FerryPort("RODOS", 
 def test_without_port_coordinates_the_island_is_found_by_name():
     for city in ("Rhodes", "Ρόδος", "Rodos"):
         match, reason = resolve_island_port(LIVE_PORTS, [city], 36.44, 28.22)
-        assert (match.port.name, match.matched_by, reason) == ("RODOS", "name", "")
+        assert (match.port.name, match.matched_by, reason) == ("RODOS", "island", "")
 
 
 def test_mainland_gateways_are_recognised_by_name_token():
@@ -126,6 +132,7 @@ def test_aggregate_counts_direct_sailings_seats_and_open_fares():
         "min_price_eur": 60.0,  # the sold-out 45 € seat cannot be bought
         "median_price_eur": 70.0,
         "operators": 2,
+        "accommodation_options": None,
     }
 
 
@@ -137,6 +144,7 @@ def test_aggregate_of_nothing_is_zero_with_unknown_fares():
         "min_price_eur": None,
         "median_price_eur": None,
         "operators": 0,
+        "accommodation_options": None,
     }
 
 
@@ -445,3 +453,161 @@ def test_load_signal_reads_the_horizon_and_the_check_in():
         "observed_since": TODAY - timedelta(days=3),
     }
     assert load_ferry_signal(FakeRepository(), "rodos", CHECK_IN, today=TODAY, horizon_days=60) is None
+
+
+
+# --- Islands from the property's coordinates (Ferryhopper ports have none) ---
+
+
+@pytest.mark.parametrize(
+    ("place", "latitude", "longitude", "island"),
+    [
+        ("Faliraki", 36.340, 28.202, "Ρόδος"),
+        ("Lindos", 36.092, 28.087, "Ρόδος"),
+        ("Oia", 36.462, 25.376, "Σαντορίνη"),
+        ("Kardamena", 36.785, 27.140, "Κως"),
+        ("Platis Gialos", 37.413, 25.347, "Μύκονος"),
+        ("Paloukia", 37.958, 23.505, "Σαλαμίνα"),
+        ("Vathy, Ithaca (inside Kefalonia's box too)", 38.365, 20.718, "Ιθάκη"),
+        ("Argostoli", 38.176, 20.489, "Κεφαλονιά"),
+        ("Chania", 35.514, 24.018, "Χανιά"),
+        ("Hersonissos", 35.316, 25.390, "Ηράκλειο"),
+        ("Kassiopi, Corfu", 39.788, 19.920, "Κέρκυρα"),
+    ],
+)
+def test_island_from_coordinates(place, latitude, longitude, island):
+    assert island_at(latitude, longitude).label == island, place
+
+
+@pytest.mark.parametrize(
+    ("place", "latitude", "longitude"),
+    [
+        ("Athens", 37.984, 23.728),
+        ("Perama, across the strait from Salamina", 37.965, 23.575),
+        ("Nafplio", 37.567, 22.806),
+        ("Lefkada town (bridged)", 38.830, 20.705),
+        ("Chalkida, Evia (bridged)", 38.463, 23.595),
+    ],
+)
+def test_mainland_and_bridged_places_are_on_no_island(place, latitude, longitude):
+    assert island_at(latitude, longitude) is None, place
+
+
+def test_island_boxes_are_well_formed():
+    for island in ISLANDS:
+        assert island.lat_min < island.lat_max and island.lon_min < island.lon_max, island.label
+        assert 34.5 < island.lat_min and island.lat_max < 41.0, island.label
+        assert 19.0 < island.lon_min and island.lon_max < 30.0, island.label
+        assert island.names and all(name == latin(name) for name in island.names), island.label
+
+
+FERRYHOPPER_PORTS = [
+    FerryPort("PIRAEUS", "PIR", country="Greece"),
+    FerryPort("ATHENS (ALL PORTS)", "ATH", country="Greece"),
+    FerryPort("RODOS", "RHO", country="Greece"),
+    FerryPort("RODOS (ALL PORTS)", "RHO00", country="Greece"),
+    FerryPort("KEFALONIA (ALL PORTS)", "KEF00", country="Greece"),
+    FerryPort("SAMI (KEFALONIA)", "SAM", country="Greece"),
+    FerryPort("NAFPLIO", "NAF", country="Greece"),
+]
+
+
+def test_a_village_hotel_finds_its_island_port():
+    candidates, reason = port_candidates(FERRYHOPPER_PORTS, ["Φαληράκι", "Faliraki", "faliraki"], 36.340, 28.202)
+
+    assert reason == ""
+    # The port named exactly after the island before its "ALL PORTS" group.
+    assert [match.port.name for match in candidates] == ["RODOS", "RODOS (ALL PORTS)"]
+    assert candidates[0].matched_by == "island"
+
+
+def test_a_multi_port_island_prefers_its_port_group():
+    candidates, _ = port_candidates(FERRYHOPPER_PORTS, ["Αργοστόλι"], 38.176, 20.489)
+
+    assert [match.port.name for match in candidates] == ["KEFALONIA (ALL PORTS)", "SAMI (KEFALONIA)"]
+
+
+def test_a_mainland_port_town_is_not_an_island():
+    candidates, reason = port_candidates(FERRYHOPPER_PORTS, ["Ναύπλιο", "Nafplio"], 37.567, 22.806)
+
+    assert candidates == []
+    assert "δεν είναι σε νησί" in reason
+
+
+def test_an_island_missing_from_the_port_list_says_so():
+    candidates, reason = port_candidates(FERRYHOPPER_PORTS, ["Σαλαμίνα"], 37.958, 23.505)
+
+    assert candidates == []
+    assert "Σαλαμίνα" in reason
+
+
+def test_port_groups_are_recognised():
+    assert is_port_group("ATHENS (ALL PORTS)")
+    assert not is_port_group("PIRAEUS")
+
+
+def test_profile_skips_port_groups_as_origins_and_ranks_past_the_alphabet():
+    """Rhodes has ~50 connections: Kos and Symi must be ranked, ATHENS (ALL PORTS) never counted."""
+    alphabet = [f"A{index:02d}" for index in range(30)]
+    repository = FakeRepository(destinations=[{"canonical_destination": "faliraki", "city": "Φαληράκι",
+                                               "latitude": 36.340, "longitude": 28.202}])
+    client = FakeClient(
+        ports=FERRYHOPPER_PORTS,
+        connections={"RODOS": ["ATHENS (ALL PORTS)", "PIRAEUS", *alphabet, "KOS", "SYMI"]},
+        sailings={"PIRAEUS": 2, "KOS": 5, "SYMI": 4, **{name: 0 for name in alphabet}},
+    )
+
+    service(repository, client).resolve_profiles(TODAY)
+
+    fields = repository.profiles[0][1]
+    assert (fields["status"], fields["island_port"], fields["matched_by"]) == ("ferry", "RODOS", "island")
+    assert fields["routes"] == [("PIRAEUS", "RODOS", 2), ("KOS", "RODOS", 5), ("SYMI", "RODOS", 4)]
+    assert "ATHENS (ALL PORTS)" not in {origin for origin, _, _ in client.trip_calls}
+
+
+def test_a_port_group_the_search_does_not_take_falls_back_to_a_real_port():
+    repository = FakeRepository(destinations=[{"canonical_destination": "argostoli", "city": "Αργοστόλι",
+                                               "latitude": 38.176, "longitude": 20.489}])
+
+    class GroupBlind(FakeClient):
+        def trips(self, departure_port, arrival_port, travel_date):
+            if "ALL PORTS" in arrival_port:
+                return []
+            self.trip_calls.append((departure_port, arrival_port, travel_date))
+            return [trip(40.0)]
+
+    client = GroupBlind(ports=FERRYHOPPER_PORTS,
+                        connections={"KEFALONIA (ALL PORTS)": ["PATRA"], "SAMI (KEFALONIA)": ["PATRA"]})
+
+    service(repository, client).resolve_profiles(TODAY)
+
+    fields = repository.profiles[0][1]
+    assert fields["island_port"] == "SAMI (KEFALONIA)"
+    assert fields["routes"] == [("PATRA", "SAMI (KEFALONIA)", 1)]
+
+
+# --- Offered accommodations: Ferryhopper's filling-up signal ---
+
+
+def test_offered_accommodations_are_summed_only_when_every_sailing_lists_them():
+    assert aggregate_trips([trip(options=20), trip(options=6)])["accommodation_options"] == 26
+    assert aggregate_trips([trip(options=20), trip()])["accommodation_options"] is None
+
+
+def test_fewer_offered_accommodations_than_usual_make_demand_high():
+    usual = [dict(row(ROUTE_A, day, sailings=2), accommodation_options=44) for day in usual_dates()]
+    filling = usual + [
+        dict(row(ROUTE_A, CHECK_IN - timedelta(days=1), sailings=2), accommodation_options=20),
+        dict(row(ROUTE_A, CHECK_IN, sailings=2), accommodation_options=24),
+    ]
+
+    signal = build_ferry_demand_signal(filling, CHECK_IN, TODAY)
+
+    assert signal.options_vs_usual_pct == -50.0
+    assert signal.level == "high"
+    assert "θέσεις/καμπίνες προς πώληση -50% από το συνηθισμένο" in signal.summary
+
+    steady = usual + [
+        dict(row(ROUTE_A, CHECK_IN, sailings=2), accommodation_options=40),
+    ]
+    assert build_ferry_demand_signal(steady, CHECK_IN, TODAY).level == "normal"

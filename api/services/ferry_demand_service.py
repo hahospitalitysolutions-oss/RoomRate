@@ -35,20 +35,26 @@ from rapidfuzz import fuzz
 
 from api.schemas.demand import FerryDemandSignal
 from api.services.ferryhopper_client import FerryPort, FerryTrip
+from api.services.greek_islands import island_at
 from api.services.market_helpers import haversine_km
 from api.services.mcp_http_client import McpError
 
 logger = logging.getLogger(__name__)
 
 # Bump when parsing changes: observations keep the version they were read with.
-PARSER_VERSION = "fh-2026-10-11.2"
+PARSER_VERSION = "fh-2026-10-11.3"
 
 MAX_PORT_DISTANCE_KM = 30.0
 NAME_MATCH_SCORE = 85
 # Without coordinates only a near-certain name match is trusted.
 NAME_ONLY_MATCH_SCORE = 92
 MAX_ROUTES_PER_DESTINATION = 4
-MAX_RANKING_CALLS = 12
+# Ranking is once per destination a month; Rhodes alone has ~50 connections,
+# and an alphabetical cut would skip Kos and Symi.
+MAX_RANKING_CALLS = 60
+# Island ports tried in turn when the first has no route with a sailing
+# (e.g. an "ALL PORTS" group the trip search does not take).
+MAX_PORT_CANDIDATES = 2
 # The tool answer kept for re-parsing; larger answers are cut.
 RAW_PAYLOAD_MAX_CHARS = 50_000
 # Consecutive failed calls after which a collection run stops (server down,
@@ -62,6 +68,9 @@ MIN_BASELINE_DATES = 3
 HIGH_SOLD_OUT_SHARE_PCT = 40.0
 HIGH_PRICE_VS_USUAL_PCT = 15.0
 HIGH_SAILINGS_VS_USUAL_PCT = 30.0
+# Ferryhopper flags no sold-out sailing; it stops offering a full cabin or
+# fare tier. Fewer offered accommodations per sailing than usual = filling up.
+HIGH_OPTIONS_DROP_PCT = -30.0
 LOW_PRICE_VS_USUAL_PCT = -10.0
 
 # Mainland ports ferries leave FROM. A hotel whose nearest port is one of
@@ -187,44 +196,87 @@ def _name_score(port: FerryPort, keys: Sequence[str]) -> float:
     return max((fuzz.token_set_ratio(name, key) for key in keys), default=0.0)
 
 
+def is_port_group(port_name: str) -> bool:
+    """Ferryhopper's "X (ALL PORTS)" groups several real ports."""
+    return "all ports" in latin(port_name)
+
+
+def _named_ports(ports: Sequence[FerryPort], keys: Sequence[str], threshold: float) -> list[FerryPort]:
+    """Ports whose name matches a key, best first.
+
+    A port named exactly after the place comes first, then an "ALL PORTS"
+    group of it (several ports of one island), then ports merely mentioning
+    it ("SAMI (KEFALONIA)").
+    """
+    compact_keys = {key.replace(" ", "") for key in keys}
+    ranked = []
+    for port in ports:
+        score = _name_score(port, keys)
+        if score < threshold:
+            continue
+        base = latin(re.sub(r"\(\s*all ports\s*\)", "", port.name, flags=re.IGNORECASE)).replace(" ", "")
+        group = is_port_group(port.name)
+        tier = 2 if base in compact_keys and not group else 1 if group and base in compact_keys else 0
+        ranked.append((tier, score, -len(port.name), port))
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    return [port for *_, port in ranked]
+
+
+def port_candidates(
+    ports: Sequence[FerryPort],
+    place_names: Iterable[str | None],
+    latitude: float | None,
+    longitude: float | None,
+) -> tuple[list[PortMatch], str]:
+    """The island ports that may serve a place, best first; empty with the reason in Greek.
+
+    Ports with coordinates: the nearest within MAX_PORT_DISTANCE_KM,
+    preferring one named after the place. Ports without (Ferryhopper): the
+    island the property's own coordinates fall on, then its ports by name. A
+    property off every island is mainland. Without the property's
+    coordinates only a near-certain name match counts.
+    """
+    keys = place_keys(place_names)
+    has_coordinates = latitude is not None and longitude is not None
+    located = [port for port in ports if port.latitude is not None and port.longitude is not None]
+    if has_coordinates and located:
+        near = sorted(
+            ((haversine_km(latitude, longitude, port.latitude, port.longitude), port) for port in located),
+            key=lambda pair: pair[0],
+        )
+        near = [(distance, port) for distance, port in near if distance <= MAX_PORT_DISTANCE_KM]
+        named = [(distance, port) for distance, port in near if _name_score(port, keys) >= NAME_MATCH_SCORE]
+        if named or near:
+            distance, port = (named or near)[0]
+            if is_mainland_gateway(port.name):
+                return [], (
+                    f"Το κοντινότερο λιμάνι ({port.name}) είναι στη στεριά: "
+                    "τα πλοία από εκεί δεν δείχνουν ζήτηση για τον προορισμό."
+                )
+            return [PortMatch(port, round(distance, 2), "name" if named else "distance")], ""
+    island = island_at(latitude, longitude) if has_coordinates else None
+    if island is not None:
+        found = _named_ports(ports, place_keys(island.names), NAME_MATCH_SCORE)
+        if not found:
+            return [], f"Δεν υπάρχει λιμάνι για {island.label} στα δρομολόγια της Ferryhopper."
+        return [PortMatch(port, None, "island") for port in found[:MAX_PORT_CANDIDATES]], ""
+    if has_coordinates:
+        return [], "Το κατάλυμα δεν είναι σε νησί με ακτοπλοϊκή σύνδεση: τα πλοία δεν δείχνουν ζήτηση εκεί."
+    found = [port for port in _named_ports(ports, keys, NAME_ONLY_MATCH_SCORE) if not is_mainland_gateway(port.name)]
+    if not found:
+        return [], "Δεν βρέθηκε λιμάνι για τον προορισμό."
+    return [PortMatch(port, None, "name") for port in found[:MAX_PORT_CANDIDATES]], ""
+
+
 def resolve_island_port(
     ports: Sequence[FerryPort],
     place_names: Iterable[str | None],
     latitude: float | None,
     longitude: float | None,
 ) -> tuple[PortMatch | None, str]:
-    """The island port serving a place, or None with the reason in Greek."""
-    keys = place_keys(place_names)
-    match: PortMatch | None = None
-    if latitude is not None and longitude is not None:
-        near = sorted(
-            (
-                (haversine_km(latitude, longitude, port.latitude, port.longitude), port)
-                for port in ports
-                if port.latitude is not None and port.longitude is not None
-            ),
-            key=lambda pair: pair[0],
-        )
-        near = [(distance, port) for distance, port in near if distance <= MAX_PORT_DISTANCE_KM]
-        named = [(distance, port) for distance, port in near if _name_score(port, keys) >= NAME_MATCH_SCORE]
-        if named:
-            distance, port = named[0]
-            match = PortMatch(port, round(distance, 2), "name")
-        elif near:
-            distance, port = near[0]
-            match = PortMatch(port, round(distance, 2), "distance")
-    if match is None and keys:
-        scored = sorted(((_name_score(port, keys), port) for port in ports), key=lambda pair: -pair[0])
-        if scored and scored[0][0] >= NAME_ONLY_MATCH_SCORE:
-            match = PortMatch(scored[0][1], None, "name")
-    if match is None:
-        return None, "Δεν βρέθηκε λιμάνι κοντά στον προορισμό."
-    if is_mainland_gateway(match.port.name):
-        return None, (
-            f"Το κοντινότερο λιμάνι ({match.port.name}) είναι στη στεριά: "
-            "τα πλοία από εκεί δεν δείχνουν ζήτηση για τον προορισμό."
-        )
-    return match, ""
+    """The best island port serving a place, or None with the reason in Greek."""
+    candidates, reason = port_candidates(ports, place_names, latitude, longitude)
+    return (candidates[0], "") if candidates else (None, reason)
 
 
 def aggregate_trips(trips: Sequence[FerryTrip]) -> dict[str, Any]:
@@ -234,6 +286,7 @@ def aggregate_trips(trips: Sequence[FerryTrip]) -> dict[str, Any]:
     sold_out = sum(1 for trip in known if trip.available is False)
     open_prices = [trip.price_eur for trip in direct if trip.price_eur is not None and trip.available is not False]
     prices = open_prices or [trip.price_eur for trip in direct if trip.price_eur is not None]
+    options = [trip.accommodation_options for trip in direct if trip.accommodation_options is not None]
     return {
         "sailings": len(direct),
         "availability_known": len(known),
@@ -241,6 +294,9 @@ def aggregate_trips(trips: Sequence[FerryTrip]) -> dict[str, Any]:
         "min_price_eur": round(min(prices), 2) if prices else None,
         "median_price_eur": round(statistics.median(prices), 2) if prices else None,
         "operators": len({trip.operator for trip in direct if trip.operator}),
+        # Only when every sailing listed its accommodations: a partial sum
+        # would read as a drop.
+        "accommodation_options": sum(options) if direct and len(options) == len(direct) else None,
     }
 
 
@@ -306,9 +362,15 @@ def build_ferry_demand_signal(
         others = [row for row in fresh if row["route_id"] == route_id and row["travel_date"] not in window]
         sailings = [row["sailings"] for row in others]
         prices = [row["min_price_eur"] for row in others if row["min_price_eur"] is not None]
+        offered = [
+            row["accommodation_options"] / row["sailings"]
+            for row in others
+            if row.get("accommodation_options") is not None and row["sailings"]
+        ]
         baselines[route_id] = {
             "sailings": statistics.median(sailings) if len(sailings) >= MIN_BASELINE_DATES else None,
             "price": statistics.median(prices) if len(prices) >= MIN_BASELINE_DATES else None,
+            "options_per_sailing": statistics.median(offered) if len(offered) >= MIN_BASELINE_DATES else None,
         }
 
     sailings = sum(row["sailings"] for row in in_window)
@@ -328,10 +390,27 @@ def build_ferry_demand_signal(
     ]
     price_vs_usual = round(100 * statistics.median(price_changes), 1) if price_changes else None
 
+    # Accommodations still offered against what the same sailings usually offer.
+    offered_rows = [
+        row
+        for row in in_window
+        if row.get("accommodation_options") is not None
+        and row["sailings"]
+        and baselines[row["route_id"]]["options_per_sailing"]
+    ]
+    options_vs_usual = None
+    if offered_rows:
+        offered_now = sum(row["accommodation_options"] for row in offered_rows)
+        offered_usually = sum(
+            baselines[row["route_id"]]["options_per_sailing"] * row["sailings"] for row in offered_rows
+        )
+        options_vs_usual = round(100 * (offered_now / offered_usually - 1), 1)
+
     if (
         (sold_out_share is not None and sold_out_share >= HIGH_SOLD_OUT_SHARE_PCT)
         or (price_vs_usual is not None and price_vs_usual >= HIGH_PRICE_VS_USUAL_PCT)
         or (sailings_vs_usual is not None and sailings_vs_usual >= HIGH_SAILINGS_VS_USUAL_PCT)
+        or (options_vs_usual is not None and options_vs_usual <= HIGH_OPTIONS_DROP_PCT)
     ):
         level = "high"
     elif not sold_out and price_vs_usual is not None and price_vs_usual <= LOW_PRICE_VS_USUAL_PCT:
@@ -351,6 +430,8 @@ def build_ferry_demand_signal(
         parts.append(price_text)
     if sailings_vs_usual is not None and abs(sailings_vs_usual) >= 10:
         parts.append(f"δρομολόγια {sailings_vs_usual:+.0f}% από το συνηθισμένο")
+    if options_vs_usual is not None and options_vs_usual <= -10:
+        parts.append(f"θέσεις/καμπίνες προς πώληση {options_vs_usual:+.0f}% από το συνηθισμένο")
     level_text = {"high": "Υψηλή", "normal": "Κανονική", "low": "Χαμηλή"}[level]
     summary = (
         f"Πλοία προς {destination} για {window[0]:%d/%m}–{window[1]:%d/%m}: "
@@ -367,6 +448,7 @@ def build_ferry_demand_signal(
         min_price_eur=round(min(prices), 2) if prices else None,
         price_vs_usual_pct=price_vs_usual,
         sailings_vs_usual_pct=sailings_vs_usual,
+        options_vs_usual_pct=options_vs_usual,
         routes=routes,
         observed_on=max(row["observed_on"] for row in in_window),
         summary=summary,
@@ -457,46 +539,70 @@ class FerryDemandService:
 
     def _resolve_one(self, client: FerryClient, ports: list[FerryPort], destination: dict[str, Any], today: date) -> None:
         key = destination["canonical_destination"]
-        match, reason = resolve_island_port(
+        candidates, reason = port_candidates(
             ports,
             (destination.get("city"), destination.get("raw_destination"), key),
             destination.get("latitude"),
             destination.get("longitude"),
         )
-        if match is None:
+        if not candidates:
             self.repository.save_profile(key, status="no_ferry", detail=reason)
             logger.info("Ferry profile %s: no island port (%s)", key, reason)
             return
-        island = match.port.name
-        connections = [port.name for port in client.direct_connections(island)]
-        if not connections:
-            self.repository.save_profile(
-                key,
-                status="no_ferry",
-                island_port=island,
-                island_port_code=match.port.code,
-                port_distance_km=match.distance_km,
-                matched_by=match.matched_by,
-                detail="Το λιμάνι δεν έχει απευθείας γραμμές.",
-            )
+        fallback: tuple[PortMatch, list[tuple[str, str, int | None]]] | None = None
+        for match in candidates:
+            island = match.port.name
+            # A group of ports would count the same sailings twice next to
+            # its members (ATHENS (ALL PORTS) and PIRAEUS).
+            connections = [
+                port.name for port in client.direct_connections(island) if not is_port_group(port.name)
+            ]
+            if not connections:
+                continue
+            routes, sailing_found = self._rank_routes(client, island, connections, today)
+            if sailing_found:
+                self._save_ferry_profile(key, match, routes)
+                return
+            fallback = fallback or (match, routes)
+        if fallback is not None:
+            # Off season nothing may sail on the sample date: keep the routes unranked.
+            self._save_ferry_profile(key, *fallback)
             return
-        routes = self._rank_routes(client, island, connections, today)
+        first = candidates[0]
+        self.repository.save_profile(
+            key,
+            status="no_ferry",
+            island_port=first.port.name,
+            island_port_code=first.port.code,
+            port_distance_km=first.distance_km,
+            matched_by=first.matched_by,
+            detail="Το λιμάνι δεν έχει απευθείας γραμμές.",
+        )
+
+    def _save_ferry_profile(
+        self, key: str, match: PortMatch, routes: list[tuple[str, str, int | None]]
+    ) -> None:
         self.repository.save_profile(
             key,
             status="ferry",
-            island_port=island,
+            island_port=match.port.name,
             island_port_code=match.port.code,
             port_distance_km=match.distance_km,
             matched_by=match.matched_by,
             routes=routes,
         )
-        logger.info("Ferry profile %s: port %s, %s route(s)", key, island, len(routes))
+        logger.info("Ferry profile %s: port %s, %s route(s)", key, match.port.name, len(routes))
 
     @staticmethod
     def _rank_routes(
         client: FerryClient, island: str, connections: list[str], today: date
-    ) -> list[tuple[str, str, int | None]]:
-        """Keep the inbound routes with the most sailings on a sample Friday; gateways first."""
+    ) -> tuple[list[tuple[str, str, int | None]], bool]:
+        """The inbound routes with the most sailings on a sample Friday, gateways first.
+
+        Returns the routes and whether any route had a sailing; without one
+        (off season, or the island port not searchable) the gateways are
+        kept unranked.
+        """
         sample = today + timedelta(days=7)
         sample += timedelta(days=(4 - sample.weekday()) % 7)
         candidates = sorted(dict.fromkeys(connections), key=lambda name: (not is_mainland_gateway(name), name))
@@ -515,12 +621,10 @@ class FerryDemandService:
         routes: list[tuple[str, str, int | None]] = [
             (origin, island, sailings) for _, sailings, origin in ranked[:MAX_ROUTES_PER_DESTINATION]
         ]
-        if not routes:
-            # Nothing sails on the sample date (off season) or ranking failed:
-            # keep the gateways unranked rather than no route at all.
-            fallback = [name for name in candidates if is_mainland_gateway(name)] or unranked or candidates
-            routes = [(origin, island, None) for origin in fallback[:MAX_ROUTES_PER_DESTINATION]]
-        return routes
+        if routes:
+            return routes, True
+        fallback = [name for name in candidates if is_mainland_gateway(name)] or unranked or candidates
+        return [(origin, island, None) for origin in fallback[:MAX_ROUTES_PER_DESTINATION]], False
 
     def collect(self, today: date) -> CollectionReport:
         """Read the next days' sailings of every collected route, within the call budget."""

@@ -16,7 +16,7 @@ class FerryDemandSignal(BaseModel):
 
     ``*_vs_usual_pct`` compare with the same routes' other observed travel
     dates; None when there are too few of them. ``sold_out`` counts only
-    sailings whose answer said whether seats are left.
+    sailings whose answer said whether seats are left (Ferryhopper's do not).
     """
 
     level: DemandLevel
@@ -29,6 +29,9 @@ class FerryDemandSignal(BaseModel):
     min_price_eur: float | None = None
     price_vs_usual_pct: float | None = None
     sailings_vs_usual_pct: float | None = None
+    # Accommodations (fare tiers, cabins) still offered per sailing against
+    # usual: Ferryhopper drops what is full, so a fall means filling up.
+    options_vs_usual_pct: float | None = None
     routes: list[str] = Field(default_factory=list)
     observed_on: date | None = None
     summary: str

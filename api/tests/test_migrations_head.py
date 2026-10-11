@@ -33,6 +33,7 @@ AGENT_LEASE_REVISION = "20260930_0028"
 RATE_LIMIT_REVISION = "20260930_0029"
 SCHEDULE_LOCAL_HOUR_REVISION = "20260930_0030"
 FERRY_DEMAND_REVISION = "20261011_0031"
+FERRY_OPTIONS_REVISION = "20261011_0032"
 
 
 def _script_directory() -> ScriptDirectory:
@@ -41,8 +42,15 @@ def _script_directory() -> ScriptDirectory:
     return ScriptDirectory.from_config(config)
 
 
-def test_ferry_demand_migration_is_the_single_alembic_head():
-    assert _script_directory().get_heads() == [FERRY_DEMAND_REVISION]
+def test_ferry_options_migration_is_the_single_alembic_head():
+    assert _script_directory().get_heads() == [FERRY_OPTIONS_REVISION]
+
+
+def test_ferry_options_migration_revises_the_ferry_demand_migration():
+    revision = _script_directory().get_revision(FERRY_OPTIONS_REVISION)
+
+    assert revision.down_revision == FERRY_DEMAND_REVISION
+    assert RoomRateFerryObservation.__table__.columns["accommodation_options"].nullable is True
 
 
 def test_ferry_demand_migration_revises_the_schedule_local_hour_migration():
