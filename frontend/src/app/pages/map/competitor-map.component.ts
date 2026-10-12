@@ -188,6 +188,8 @@ export class CompetitorMapComponent implements AfterViewInit, OnDestroy {
   readonly showLegend = input(false);
   /** A competitor marker was clicked (beside Mapbox opening its popup): its hotelKey. */
   readonly markerClick = output<string>();
+  /** A competitor's popup closed (its hotelKey), so the list can drop that card's highlight. */
+  readonly popupClose = output<string>();
 
   // A map that cannot draw is a map failure, never a results one (setMapError).
   // Written from Mapbox callbacks, so a signal.
@@ -227,6 +229,7 @@ export class CompetitorMapComponent implements AfterViewInit, OnDestroy {
   private styleReady = false;
   private resizeObserver: ResizeObserver | null = null;
   private didFitMarkers = false;
+  private destroyed = false;
 
   async ngAfterViewInit(): Promise<void> {
     this.clearMarkers();
@@ -234,6 +237,8 @@ export class CompetitorMapComponent implements AfterViewInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    // Teardown closes the open popup too: no popupClose from a destroyed map.
+    this.destroyed = true;
     this.resizeObserver?.disconnect();
     this.clearMarkers();
     this.removeOwnMarker();
@@ -281,6 +286,22 @@ export class CompetitorMapComponent implements AfterViewInit, OnDestroy {
       return;
     }
     this.map.easeTo({ center: [entry.lng, entry.lat], zoom: this.map.getZoom(), duration: 600 });
+  }
+
+  /**
+   * A marker click: ease the hotel to the middle of the map, lowered by half
+   * the open popup's height, so marker and popup together are centred and
+   * nothing of the popup is cut off by the map's edges. The zoom stays.
+   */
+  private centreOnPopup(key: string): void {
+    const entry = this.markerEntries.get(key);
+    if (!this.map || !entry) {
+      return;
+    }
+    const mapHeight = this.map.getContainer().clientHeight;
+    const popupHeight = entry.popup.isOpen() ? entry.popup.getElement()?.offsetHeight ?? 0 : 0;
+    const lift = Math.max(0, Math.min((popupHeight + 18) / 2, mapHeight / 2 - 24));
+    this.map.easeTo({ center: [entry.lng, entry.lat], zoom: this.map.getZoom(), offset: [0, lift], duration: 500 });
   }
 
   /** The markers are imperative: the highlighted one is written onto them here and after every repaint. */
@@ -437,7 +458,17 @@ export class CompetitorMapComponent implements AfterViewInit, OnDestroy {
     // Beside Mapbox's own click (which opens the popup): point the list at the
     // hotel. The key is fixed for the entry's life, the map key it lives under.
     const key = hotelKey(competitor);
-    element.addEventListener("click", () => this.markerClick.emit(key));
+    element.addEventListener("click", () => {
+      this.markerClick.emit(key);
+      // Mapbox opens the popup on this same click; once it is laid out,
+      // centre the hotel so the popup sits whole and upright inside the map.
+      window.requestAnimationFrame(() => this.centreOnPopup(key));
+    });
+    popup.on("close", () => {
+      if (!this.destroyed) {
+        this.popupClose.emit(key);
+      }
+    });
     return { marker, element, pricePill, popup, popupHtml: "", lng: competitor.longitude, lat: competitor.latitude };
   }
 
@@ -639,13 +670,13 @@ export class CompetitorMapComponent implements AfterViewInit, OnDestroy {
         id: RADIUS_FILL_LAYER_ID,
         type: "fill",
         source: RADIUS_SOURCE_ID,
-        paint: { "fill-color": "#0f172a", "fill-opacity": 0.05 },
+        paint: { "fill-color": "#0b5d7a", "fill-opacity": 0.05 },
       });
       map.addLayer({
         id: RADIUS_LINE_LAYER_ID,
         type: "line",
         source: RADIUS_SOURCE_ID,
-        paint: { "line-color": "#0f172a", "line-opacity": 0.55, "line-width": 1.5, "line-dasharray": [2, 2] },
+        paint: { "line-color": "#0b5d7a", "line-opacity": 0.55, "line-width": 1.5, "line-dasharray": [2, 2] },
       });
     }
     this.radiusCircleKm.set(radiusKm);

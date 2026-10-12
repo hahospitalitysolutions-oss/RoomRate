@@ -9,7 +9,6 @@ const runtimeConfig = window.__ROOMRATE_CONFIG__ ?? {};
 
 export const environment = {
   apiBaseUrl: runtimeConfig.apiBaseUrl?.replace(/\/+$/, "") ?? "",
-  supabaseUrl: runtimeConfig.supabaseUrl?.replace(/\/+$/, "") ?? "",
-  supabaseAnonKey: runtimeConfig.supabaseAnonKey ?? "",
+  neonAuthUrl: runtimeConfig.neonAuthUrl?.replace(/\/+$/, "") ?? "",
   mapboxToken: runtimeConfig.mapboxToken ?? "",
 };

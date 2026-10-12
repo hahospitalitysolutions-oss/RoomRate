@@ -18,7 +18,7 @@ endpoint reports ``recommendation_available=false`` instead of a made-up €0.
 
 Anthropic SDK call shape (authoritative — keep it minimal):
     client.messages.parse(
-        model=..., max_tokens=2048, system=SYSTEM_PROMPT,
+        model=..., max_tokens=_MAX_OUTPUT_TOKENS, system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": <json str>}],
         output_format=PriceRecommendation,
         output_config={"effort": "medium"},
@@ -47,6 +47,12 @@ from api.schemas.agents import PriceRecommendation, PriceStatistics
 
 logger = logging.getLogger(__name__)
 
+# max_tokens caps thinking AND the answer together, and thinking is always on
+# for claude-opus-5-5. At 2048 a medium-effort reasoning pass could use up the
+# budget before the JSON was complete: the answer truncated (stop_reason
+# max_tokens) and the endpoint quietly served the statistical fallback.
+# Only the tokens actually generated are billed.
+_MAX_OUTPUT_TOKENS = 16_000
 # Max competitors forwarded to the model. Bounds the token budget for what is a
 # synchronous endpoint; the statistical signals already summarize the full set.
 _MAX_COMPETITORS = 15
@@ -59,7 +65,13 @@ _MAX_COMPETITORS = 15
 # v7: trend_7d_pct / trend_30d_pct are same-store (hotels priced in both
 # compared runs, runs of the same basis and price definition only); a v6
 # answer read a median-vs-median sample change as a trend.
-PRICE_RECOMMENDATION_PROMPT_VERSION = "2026-09-30.v7"
+# v8: market_context.demand_signals.ferries (sailings into the destination
+# around the arrival) is a secondary signal inside the market band.
+# v9: the ferry level is pickup (the same sailings filling up since an
+# earlier look) and extra sailings, not a comparison across travel dates.
+# v10: market_context.demand_signals.flights (scheduled arrivals at the
+# island's airport, added or dropped since an earlier look), same rule.
+PRICE_RECOMMENDATION_PROMPT_VERSION = "2026-10-12.v10"
 
 # Greek annotation of the statistical basis (spec 2026-09-29 Β.2): the payload
 # spells out what stats_scope.cancellation_class means so the model reads the
@@ -97,6 +109,22 @@ SYSTEM_PROMPT = (
     "competitors_in_basis, ποτέ το πλήθος της λίστας ή των tracked. Όσοι "
     "έχουν tracked=true είναι οι ανταγωνιστές που παρακολουθεί ο ιδιοκτήτης "
     "και μπορείς να τους σχολιάσεις ξεχωριστά. "
+    # v8: outside demand moves the price inside the band, never out of it.
+    "Όταν υπάρχει το market_context.demand_signals.ferries, δείχνει τα πλοία "
+    "προς τον προορισμό την παραμονή και την ημέρα της άφιξης: level=high "
+    "σημαίνει ότι τα ίδια πλοία γεμίζουν ή ακριβαίνουν από μια προηγούμενη "
+    "ματιά (compared_with) ή ότι προστέθηκαν δρομολόγια, level=low ότι "
+    "φθηναίνουν με θέσεις διαθέσιμες. Είναι δευτερεύον σήμα: μπορεί να μετακινήσει την τιμή μέσα στο "
+    "εύρος της αγοράς (προς το p75 όταν high, προς το p25 όταν low), ποτέ έξω "
+    "από αυτό· όταν το χρησιμοποιείς, ανέφερέ το στα key_factors. "
+    # v10: flights follow the same rule; two signals agreeing weigh more.
+    "Όταν υπάρχει το market_context.demand_signals.flights, δείχνει τις "
+    "προγραμματισμένες αφίξεις πτήσεων στο αεροδρόμιο του νησιού κοντά στην "
+    "άφιξη (travel_dates): level=high σημαίνει ότι οι αεροπορικές πρόσθεσαν "
+    "πτήσεις από μια προηγούμενη ματιά (compared_with, flights_added), "
+    "level=low ότι αφαίρεσαν. Ισχύει ο ίδιος κανόνας με τα πλοία: δευτερεύον "
+    "σήμα μέσα στο εύρος της αγοράς· όταν πλοία και πτήσεις δείχνουν το ίδιο, "
+    "στάθμισέ το περισσότερο, όταν διαφωνούν, μείνε κοντά στη διάμεσο. "
     "Απάντησε αποκλειστικά στα ελληνικά: γράψε το reasoning και τα key_factors "
     "στα ελληνικά, με ποσά σε ευρώ (π.χ. «120 €»)."
 )
@@ -109,7 +137,7 @@ class PriceRecommendationAgent:
         self,
         api_key: str,
         model: str,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = 75.0,
         client_factory: Callable[[], Any] | None = None,
     ):
         self.api_key = api_key
@@ -152,7 +180,7 @@ class PriceRecommendationAgent:
             # always on for claude-opus-5-5 and explicit values would 400.
             response = client.messages.parse(
                 model=self.model,
-                max_tokens=2048,
+                max_tokens=_MAX_OUTPUT_TOKENS,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_payload}],
                 output_format=PriceRecommendation,
@@ -192,7 +220,9 @@ class PriceRecommendationAgent:
     def _build_client(self) -> Any:
         import anthropic
 
-        return anthropic.Anthropic(api_key=self.api_key, timeout=self.timeout_seconds)
+        # One retry at most: the SDK default of 2 turned a slow answer into
+        # 3 x timeout before the fallback, past the browser's 180 s budget.
+        return anthropic.Anthropic(api_key=self.api_key, timeout=self.timeout_seconds, max_retries=1)
 
     def _build_user_payload(
         self,
@@ -275,6 +305,7 @@ class PriceRecommendationAgent:
                 len(basis), len(trimmed_competitors), tracked_in_basis
             ),
             "competitors": trimmed_competitors,
+            "demand_signals": context.get("demand_signals"),
         }
 
     @staticmethod

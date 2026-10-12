@@ -11,15 +11,17 @@ from sqlalchemy import text
 from api.config import is_production_env, settings, validate_production_settings
 from api.db import get_engine
 from api.logging_utils import JsonLogFormatter, RequestIdFilter
-from api.middleware import RequestIDMiddleware, SecurityHeadersMiddleware
+from api.middleware import RequestIDMiddleware, SecurityHeadersMiddleware, UnhandledErrorMiddleware
 from api.rate_limit import RateLimitMiddleware
 from api.repositories.scrape_jobs_repository import QuotaExceededError
-from api.routers import agents, competitors, maps, market, me, notifications, onboarding, schedule, scrape_jobs, tracking
+from api.routers import agents, competitors, demand, maps, market, me, notifications, onboarding, schedule, scrape_jobs, tracking
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
+# httpx logs every request at INFO (the ferry collection alone makes ~200).
+logging.getLogger("httpx").setLevel(logging.WARNING)
 # LOG_FORMAT=json swaps the root formatter for one-JSON-object-per-line
 # output (stdlib only); the request-id filter enriches records in both modes.
 _request_id_filter = RequestIdFilter()
@@ -69,6 +71,15 @@ async def lifespan(app: FastAPI):
     # credentials or no database must refuse to boot, not come up half-working.
     validate_production_settings(settings)
     logger.info("RoomRate API starting up")
+    from api.services.auth_service import login_verification_configured, neon_auth_enabled
+
+    if not login_verification_configured():
+        logger.warning(
+            "Browser logins cannot be verified: set NEON_AUTH_URL in .env and restart. "
+            "Every signed-in request will fail until then."
+        )
+    else:
+        logger.info("Login verification: %s", "Neon Auth" if neon_auth_enabled() else "Supabase")
     # Health checks (Phase F) read liveness from app.state.scheduler_status:
     # the tick job stamps .last_tick_at on every cycle.
     from api.scheduler import SchedulerStatus
@@ -133,6 +144,8 @@ async def quota_exceeded_handler(request: Request, exc: QuotaExceededError) -> J
 # the LAST one added runs OUTERMOST. CORS stays outermost so short-circuit
 # responses from inner middlewares still carry CORS headers for browsers;
 # security headers wrap the rate limiter so 429s also carry them.
+# Innermost: an unhandled error becomes a JSON 500 that CORS can still decorate.
+app.add_middleware(UnhandledErrorMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(SecurityHeadersMiddleware, include_hsts=is_production_env(settings.app_env))
 # Request-id wraps everything below it so even rate-limit 429s are correlated.
@@ -150,6 +163,7 @@ app.include_router(market.router, prefix="/api/v1/market", tags=["Market"])
 app.include_router(competitors.router, prefix="/api/v1/competitors", tags=["Competitors"])
 app.include_router(maps.router, prefix="/api/v1/maps", tags=["Maps"])
 app.include_router(agents.router, prefix="/api/v1/agents", tags=["Agents"])
+app.include_router(demand.router, prefix="/api/v1/demand", tags=["Demand"])
 app.include_router(onboarding.router, prefix="/api/v1/onboarding", tags=["Onboarding"])
 app.include_router(schedule.router, prefix="/api/v1/schedule", tags=["Schedule"])
 app.include_router(scrape_jobs.router, prefix="/api/v1/scrape-jobs", tags=["Scrape Jobs"])

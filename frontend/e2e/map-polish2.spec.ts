@@ -146,8 +146,7 @@ test("the room is chosen at the top of the results column, and the filters no lo
   const { reads, calls } = await mockMap(page);
 
   await openMap(page);
-  // A restored search keeps the filters collapsed; the room switch is on screen all the same.
-  await expect(page.locator(".filters-sidebar")).toHaveCount(0);
+  // The room switch heads the results column, apart from the «Φίλτρα» column.
   const select = roomSelect(page);
   await expect(select).toBeVisible();
   await expect(select).toHaveValue(ROOM_TYPE_ID);
@@ -162,8 +161,6 @@ test("the room is chosen at the top of the results column, and the filters no lo
   expect(selectBox.y + selectBox.height).toBeLessThanOrEqual(summaryBox.y);
 
   // ONE room control on the page: the filters form lost its copy.
-  await page.getByRole("button", { name: "Φίλτρα", exact: true }).click();
-  await expect(page.locator(".filters-sidebar")).toBeVisible();
   await expect(page.locator(".filters-sidebar select")).toHaveCount(0);
   await expect(page.getByLabel("Σύγκριση για")).toHaveCount(1);
 
@@ -204,12 +201,15 @@ test("a card and its marker point at each other: hover or focus raises the marke
   await mirtoCheckbox.blur();
   await expect(page.locator(".roomrate-marker-dot.is-highlighted")).toHaveCount(0);
 
-  // A marker click marks its card (and only it) for a moment, then lets go.
+  // A marker click marks its card (and only it) while the popup is open, and lets go when it closes.
   await markerFor(page, "Hotel Keira").click();
   await expect(cardFor(page, "Hotel Keira")).toHaveClass(/\bis-highlighted\b/);
   await expect(page.locator(".competitor-card.is-highlighted")).toHaveCount(1);
   await expect(cardFor(page, "Hotel Keira")).toBeInViewport();
-  await expect(cardFor(page, "Hotel Keira")).not.toHaveClass(/\bis-highlighted\b/, { timeout: 5000 });
+  await page.waitForTimeout(2000);
+  await expect(cardFor(page, "Hotel Keira")).toHaveClass(/\bis-highlighted\b/);
+  await page.locator(".mapboxgl-popup-close-button").click();
+  await expect(cardFor(page, "Hotel Keira")).not.toHaveClass(/\bis-highlighted\b/);
 
   // Clicking a card (to ease the map there) still ticks it, exactly once.
   await cardFor(page, "Hotel Lotos").locator("strong").click();
@@ -257,11 +257,7 @@ test("the header chips only report, the links navigate, and an 800 px window doe
   await expect(nav.getByRole("link", { name: "Ρυθμίσεις" })).toHaveAttribute("href", "/settings");
   await expect(header.getByRole("button", { name: "Αποσύνδεση" })).toBeVisible();
 
-  // No sideways scroll at 800 px, with the filters closed and open.
-  await expect.poll(() => horizontalOverflow(page)).toEqual({ scrollWidth: 800, clientWidth: 800, wider: [] });
-  await page.getByRole("button", { name: "Φίλτρα", exact: true }).click();
+  // No sideways scroll at 800 px with the «Φίλτρα» column on screen.
   await expect(page.locator(".filters-sidebar")).toBeVisible();
-  const opened = await horizontalOverflow(page);
-  expect(opened.wider).toEqual([]);
-  expect(opened.scrollWidth).toBeLessThanOrEqual(opened.clientWidth);
+  await expect.poll(() => horizontalOverflow(page)).toEqual({ scrollWidth: 800, clientWidth: 800, wider: [] });
 });

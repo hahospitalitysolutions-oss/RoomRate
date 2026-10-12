@@ -3,7 +3,9 @@ import { Component, OnInit, signal } from "@angular/core";
 import { FormsModule } from "@angular/forms";
 import { Router, RouterLink } from "@angular/router";
 
-import { NotificationBellComponent } from "../components/notification-bell.component";
+import { AppHeaderComponent } from "../components/app-header.component";
+import { DemandSettingsComponent } from "../components/demand-settings.component";
+import { SelectMenuComponent, SelectMenuOption } from "../components/select-menu.component";
 import { NotificationToastsComponent } from "../components/notification-toasts.component";
 import { ApiClientService } from "../services/api-client.service";
 import { OnboardingService } from "../services/onboarding.service";
@@ -89,20 +91,22 @@ function athensHourToUtc(hourAthens: number): number {
 @Component({
   selector: "app-settings-page",
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink, NotificationBellComponent, NotificationToastsComponent],
+  imports: [
+    CommonModule,
+    FormsModule,
+    RouterLink,
+    AppHeaderComponent,
+    DemandSettingsComponent,
+    NotificationToastsComponent,
+    SelectMenuComponent,
+  ],
   template: `
     <main class="page-shell">
-      <header class="map-header">
-        <div>
-          <p class="eyebrow">RoomRate — Ρυθμίσεις</p>
-          <h1>Προγραμματισμένες αναζητήσεις</h1>
-        </div>
-        <div class="header-actions">
-          <a routerLink="/map">Χάρτης</a>
-          <a routerLink="/pricing">Τιμολόγηση</a>
-          <app-notification-bell />
-        </div>
-      </header>
+      <app-header>
+        <p class="eyebrow">Ρυθμίσεις</p>
+        <h1>Προγραμματισμένες αναζητήσεις</h1>
+        <p class="app-band-subtitle">Πόσο συχνά το RoomRate ελέγχει μόνο του τις τιμές των ανταγωνιστών σου.</p>
+      </app-header>
 
       <section class="page-body">
         <div *ngIf="status() === 'loading'" class="progress-panel">
@@ -143,6 +147,10 @@ function athensHourToUtc(hourAthens: number): number {
             <label>
               <span>Ημέρες πριν από την άφιξη</span>
               <input class="roomrate-input" type="number" name="lead_days" min="0" [ngModel]="form().lead_days" (ngModelChange)="updateScheduleField('lead_days', $event)">
+              <small class="muted field-hint" data-testid="tracked-arrival-hint">
+                Άφιξη Παρασκευή, τουλάχιστον τόσες ημέρες μπροστά. Μένει ίδια για 2 εβδομάδες,
+                ώστε να βλέπετε πώς αλλάζουν οι τιμές για την ίδια διαμονή.
+              </small>
             </label>
             <label>
               <span>Διανυκτερεύσεις ανά διαμονή</span>
@@ -187,6 +195,8 @@ function athensHourToUtc(hourAthens: number): number {
           </div>
         </form>
 
+        <app-demand-settings *ngIf="ownedPropertyId()" [ownedPropertyId]="ownedPropertyId()"></app-demand-settings>
+
         <section class="panel settings-form">
           <div class="section-title">
             <h2>Ειδοποιήσεις τιμών ανταγωνιστών</h2>
@@ -202,11 +212,12 @@ function athensHourToUtc(hourAthens: number): number {
             </label>
             <label>
               <span>Κατεύθυνση</span>
-              <select class="roomrate-input" name="alert_direction" [ngModel]="ruleForm().direction" (ngModelChange)="updateRuleForm('direction', $event)">
-                <option value="any">Άνοδος ή πτώση</option>
-                <option value="drop">Μόνο πτώση</option>
-                <option value="rise">Μόνο άνοδος</option>
-              </select>
+              <app-select-menu
+                name="alert_direction"
+                [options]="directionOptions"
+                [value]="ruleForm().direction"
+                (valueChange)="updateRuleForm('direction', $any($event))"
+              ></app-select-menu>
             </label>
             <button class="primary-button" type="submit" [disabled]="rulesBusy()">Προσθήκη κανόνα ειδοποίησης</button>
           </form>
@@ -290,7 +301,7 @@ function athensHourToUtc(hourAthens: number): number {
     </main>
   `,
   styles: [`
-    .danger-button { background: #b91c1c; color: #fff; border: none; border-radius: 0.375rem; padding: 0.5rem 0.9rem; cursor: pointer; }
+    .danger-button { background: var(--danger); color: #fff; border: none; border-radius: 0.375rem; padding: 0.5rem 0.9rem; cursor: pointer; }
     .danger-button:disabled { opacity: 0.5; cursor: not-allowed; }
     .setup-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
     .delete-confirm { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.75rem; max-width: 28rem; }
@@ -320,6 +331,11 @@ export class SettingsPageComponent implements OnInit {
   readonly rulesStatus = signal<LoadingState>("loading");
   readonly rulesError = signal("");
   readonly rulesBusy = signal(false);
+  readonly directionOptions: SelectMenuOption[] = [
+    { value: "any", label: "Άνοδος ή πτώση" },
+    { value: "drop", label: "Μόνο πτώση" },
+    { value: "rise", label: "Μόνο άνοδος" },
+  ];
   readonly ruleForm = signal<AlertRuleCreate>({
     rule_type: "price_change",
     threshold_pct: 10,
@@ -328,6 +344,8 @@ export class SettingsPageComponent implements OnInit {
   });
   readonly propertyStatus = signal<LoadingState>("loading");
   readonly propertyName = signal("");
+  /** The owned property, for «Ζήτηση νησιού»; empty until /me answers or without one. */
+  readonly ownedPropertyId = signal("");
   readonly propertyDestination = signal("");
   readonly deleteRequested = signal(false);
   readonly deleteConfirmText = signal("");
@@ -585,6 +603,7 @@ export class SettingsPageComponent implements OnInit {
       this.workflow.bindToSubject(me.auth_subject);
       this.propertyName.set(me.property_name || "");
       this.propertyDestination.set(me.raw_destination || me.destination || "");
+      this.ownedPropertyId.set(me.owned_property_id || "");
       this.propertyStatus.set("ready");
     } catch {
       this.propertyName.set("");

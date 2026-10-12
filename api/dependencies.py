@@ -10,6 +10,9 @@ from api.config import settings
 from api.db import db_connection
 from api.repositories.accounts_repository import AccountsRepository
 from api.repositories.alerts_repository import AlertsRepository
+from api.repositories.demand_settings_repository import DemandSettingsRepository
+from api.repositories.ferry_repository import FerryRepository
+from api.repositories.flight_repository import FlightRepository
 from api.repositories.price_history_repository import PriceHistoryRepository
 from api.repositories.price_recommendation_audit_repository import (
     PriceRecommendationAuditRepository,
@@ -20,10 +23,18 @@ from api.repositories.onboarding_repository import OnboardingRepository
 from api.repositories.schedule_repository import ScheduleRepository
 from api.repositories.scrape_jobs_repository import ScrapeJobRepository
 from api.repositories.tracking_repository import TrackingRepository
+from api.services.ferry_demand_service import FerryDemandService
+from api.services.ferryhopper_client import FerryhopperClient
+from api.services.flight_demand_service import FlightDemandService
 from api.services.market_service import MarketService
 from api.services.price_recommendation_agent import PriceRecommendationAgent
 from api.services.room_matching_agent import RoomMatchingAgentService
-from api.services.auth_service import SupabaseAuthService
+from api.services.auth_service import (
+    AccessTokenVerifier,
+    NeonAuthService,
+    SupabaseAuthService,
+    neon_auth_enabled,
+)
 from api.services.notification_broadcaster import NotificationBroadcaster
 from api.services.onboarding_service import OnboardingService
 from api.services.price_alert_service import PriceAlertService
@@ -75,8 +86,10 @@ def build_account_context(
     return AccountContext(account_id=account_id)
 
 
-def get_auth_service() -> SupabaseAuthService:
-    """Build SupabaseAuthService for browser bearer token verification."""
+def get_auth_service() -> AccessTokenVerifier:
+    """The browser token verifier: Neon Auth when NEON_AUTH_URL is set, else Supabase."""
+    if neon_auth_enabled():
+        return NeonAuthService()
     return SupabaseAuthService()
 
 
@@ -87,19 +100,19 @@ def get_accounts_repository() -> AccountsRepository:
 
 async def resolve_token_account(
     token: str,
-    auth_service: SupabaseAuthService,
+    auth_service: AccessTokenVerifier,
     accounts_repository: AccountsRepository,
 ) -> AccountContext:
-    """Resolve a tenant account from a verified Supabase access token.
+    """Resolve a tenant account from a verified access token.
 
     The single token→account path: verify the token, then map (or lazily
-    create) the account for the Supabase identity. Shared by the HTTP
+    create) the account for the identity (Neon Auth or Supabase). Shared by the HTTP
     dependency (via ``resolve_account_context``) and the WebSocket handshake
     so token verification lives in exactly one place.
     """
     user = await auth_service.verify_access_token(token)
     account_id = accounts_repository.get_or_create_account_for_identity(
-        auth_provider="supabase",
+        auth_provider=user.auth_provider,
         auth_subject=user.auth_subject,
         email=user.email,
         display_name=user.display_name,
@@ -107,7 +120,7 @@ async def resolve_token_account(
     return AccountContext(
         account_id=account_id,
         auth_subject=user.auth_subject,
-        auth_provider="supabase",
+        auth_provider=user.auth_provider,
         email=user.email,
     )
 
@@ -116,10 +129,10 @@ async def resolve_account_context(
     token: str | None,
     api_key: str | None,
     account_id_header: str | None,
-    auth_service: SupabaseAuthService,
+    auth_service: AccessTokenVerifier,
     accounts_repository: AccountsRepository,
 ) -> AccountContext:
-    """Resolve a tenant account from a Supabase token or the internal API key.
+    """Resolve a tenant account from a browser token or the internal API key.
 
     HTTP entry point (``get_account_context``). The token branch is delegated
     to ``resolve_token_account``, which the WebSocket handshake also calls —
@@ -141,7 +154,7 @@ async def get_account_context(
     credentials: HTTPAuthorizationCredentials | None = Security(bearer_auth),
     api_key: str | None = Security(api_key_header),
     account_id_header: str | None = Header(default=None, alias="X-RoomRate-Account-ID"),
-    auth_service: SupabaseAuthService = Depends(get_auth_service),
+    auth_service: AccessTokenVerifier = Depends(get_auth_service),
     accounts_repository: AccountsRepository = Depends(get_accounts_repository),
 ) -> AccountContext:
     """Resolve the tenant account for this request.
@@ -176,6 +189,56 @@ def get_price_history_repository() -> PriceHistoryRepository:
 def get_price_recommendation_audit_repository() -> PriceRecommendationAuditRepository:
     """Build the durable audit/quota/cache repository for pricing decisions."""
     return PriceRecommendationAuditRepository()
+
+
+def get_ferry_repository() -> FerryRepository:
+    """Build FerryRepository for the destination-level ferry demand data."""
+    return FerryRepository()
+
+
+def get_ferry_demand_service() -> FerryDemandService:
+    """Build the ferry demand service; each run opens its own Ferryhopper session."""
+    from api.services.schedule_service import tracked_check_in
+
+    return FerryDemandService(
+        repository=get_ferry_repository(),
+        client_factory=lambda: FerryhopperClient(
+            url=settings.ferryhopper_mcp_url,
+            min_interval_seconds=settings.ferry_demand_call_interval_seconds,
+        ),
+        daily_days=settings.ferry_demand_daily_days,
+        horizon_days=settings.ferry_demand_horizon_days,
+        max_calls_per_run=settings.ferry_demand_max_calls_per_run,
+        tracked_check_in=tracked_check_in,
+    )
+
+
+def get_demand_settings_repository() -> DemandSettingsRepository:
+    """Build the repository of the owners' demand collection settings and the run log."""
+    return DemandSettingsRepository()
+
+
+def get_flight_repository() -> FlightRepository:
+    """Build FlightRepository for the airport-level flight demand data."""
+    return FlightRepository()
+
+
+def get_flight_demand_service() -> FlightDemandService:
+    """Build the flight demand service on the configured AeroDataBox plan."""
+    from api.services.aerodatabox_client import AeroDataBoxClient
+
+    return FlightDemandService(
+        repository=get_flight_repository(),
+        client_factory=lambda: AeroDataBoxClient(
+            settings.aerodatabox_api_key.strip(),
+            host=settings.aerodatabox_host,
+            min_interval_seconds=settings.flight_demand_call_interval_seconds,
+        ),
+        plan=settings.flight_plan,
+        horizon_days=settings.flight_demand_horizon_days,
+        refresh_days=settings.flight_demand_refresh_days,
+        units_per_call=settings.flight_demand_units_per_call,
+    )
 
 
 def get_alerts_repository() -> AlertsRepository:

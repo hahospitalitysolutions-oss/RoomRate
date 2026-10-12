@@ -331,7 +331,6 @@ test("a facility filter reads in Greek and travels to the backend in English", a
   await page.setViewportSize({ width: 1280, height: 1400 });
   await page.goto("/map");
   await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
-  await page.getByRole("button", { name: "Φίλτρα" }).click();
 
   const wifi = page.locator(".amenity-list .checkbox-row", { hasText: "Δωρεάν WiFi" });
   await expect(wifi).toBeVisible();
@@ -398,7 +397,6 @@ test("a facility filter that hides every row says so instead of blaming the sear
   await page.setViewportSize({ width: 1280, height: 1400 });
   await page.goto("/map");
   await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
-  await page.getByRole("button", { name: "Φίλτρα" }).click();
 
   // A search of the user's own, because the banner this scenario also pins
   // belongs to one: the restore leaves a different banner up, and that one is
@@ -466,7 +464,6 @@ test("a filtered re-read that fails is the read's error, never the filter's doin
   await page.setViewportSize({ width: 1280, height: 1400 });
   await page.goto("/map");
   await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
-  await page.getByRole("button", { name: "Φίλτρα" }).click();
   await page.locator(".amenity-list .checkbox-row", { hasText: "Δωρεάν WiFi" })
     .locator("input[type=checkbox]").check();
 
@@ -502,7 +499,6 @@ test("a filter tick on a job that wrote nothing keeps the scrape's own answer", 
   await page.goto("/map");
   const results = page.locator(".results-sidebar");
   await expect(results).toContainText("Βρέθηκαν 4 προσφορές για μονόκλινα δωμάτια");
-  await page.getByRole("button", { name: "Φίλτρα" }).click();
   await page.locator(".amenity-list .checkbox-row", { hasText: "Δωρεάν WiFi" })
     .locator("input[type=checkbox]").check();
 
@@ -533,7 +529,6 @@ test("a search run with the filter on says so instead of blaming the exclusion",
   await page.setViewportSize({ width: 1280, height: 1400 });
   await page.goto("/map");
   await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
-  await page.getByRole("button", { name: "Φίλτρα" }).click();
   await page.locator(".amenity-list .checkbox-row", { hasText: "Δωρεάν WiFi" })
     .locator("input[type=checkbox]").check();
   await expect(page.locator(".results-sidebar")).toContainText("Τα φίλτρα παροχών κρύβουν όλα τα αποτελέσματα");
@@ -562,11 +557,8 @@ test.describe("the auto-picked room says so and goes through the service", () =>
     await page.goto("/map");
     await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
 
-    // No Filters click here, on purpose: the filters sidebar starts collapsed
-    // and the real skip path never expands it, so a notice that only lives in
-    // there is a notice nobody reads. It has to be legible from the panel that
-    // is always on screen.
-    await expect(page.getByRole("button", { name: "Φίλτρα" })).toBeVisible();
+    // The notice describes the room dropdown, so it sits right under it in
+    // the results column, not in the «Φίλτρα» column.
     const hint = page.locator(".results-sidebar").getByTestId("auto-picked-room-hint");
     await expect(hint).toContainText("Επιλέχθηκε αυτόματα το πρώτο δωμάτιο του καταλόγου");
 
@@ -609,7 +601,6 @@ test.describe("the auto-picked room says so and goes through the service", () =>
 
     await page.goto("/map");
     await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
-    await page.getByRole("button", { name: "Φίλτρα" }).click();
 
     await expect(page.getByTestId("auto-picked-room-hint")).toHaveCount(0);
   });
@@ -644,7 +635,6 @@ test("a Mapbox failure stays a map failure and never blanks the results", async 
 
   // ...and the results error slot stays empty: the restored-search banner is
   // still what the filters sidebar says.
-  await page.getByRole("button", { name: "Φίλτρα" }).click();
   await expect(page.locator(".filters-sidebar .alert-error")).toHaveCount(0);
   await expect(page.locator(".filters-sidebar")).toContainText("Φορτώθηκε η τελευταία ολοκληρωμένη αναζήτηση ανταγωνιστών");
 });

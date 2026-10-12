@@ -3,7 +3,7 @@ import { CommonModule } from "@angular/common";
 import { FormsModule } from "@angular/forms";
 import { ActivatedRoute, Router, RouterLink } from "@angular/router";
 
-import { AuthService } from "../services/auth.service";
+import { AuthService, PASSWORD_REQUIREMENTS, passwordRequirementError } from "../services/auth.service";
 import { OnboardingService } from "../services/onboarding.service";
 import { WorkflowStorageService } from "../services/workflow-storage.service";
 import { CurrentUser } from "../types/market";
@@ -29,9 +29,9 @@ type AuthStep =
       <section class="auth-panel">
         <div class="auth-brand">
           <p class="eyebrow">RoomRate</p>
-          <h1>{{ isRecovery ? "Επιλέξτε νέο κωδικό πρόσβασης" : mode() === "sign-in" ? "Συνδεθείτε στον χώρο εργασίας σας" : "Δημιουργήστε τον λογαριασμό σας στο RoomRate" }}</h1>
+          <h1>{{ isRecovery() ? "Επιλέξτε νέο κωδικό πρόσβασης" : mode() === "sign-in" ? "Συνδεθείτε στον χώρο εργασίας σας" : "Δημιουργήστε τον λογαριασμό σας στο RoomRate" }}</h1>
           <p class="muted">
-            {{ isRecovery
+            {{ isRecovery()
               ? "Ορίστε νέο κωδικό πρόσβασης για τον λογαριασμό σας στο RoomRate."
               : mode() === "sign-in"
               ? "Συνεχίστε στο ταίριασμα δωματίων και στον χάρτη ανταγωνιστών."
@@ -44,24 +44,24 @@ type AuthStep =
           <span>{{ message() }}</span>
         </div>
         <div *ngIf="!authConfigured" class="alert alert-error">
-          Λείπουν οι τιμές περιβάλλοντος του Supabase. Συμπληρώστε τις στη ρύθμιση περιβάλλοντος του Angular πριν από τη σύνδεση.
+          Λείπει η ρύθμιση σύνδεσης (neonAuthUrl). Συμπληρώστε τη στη ρύθμιση περιβάλλοντος του Angular πριν από τη σύνδεση.
         </div>
-        <div *ngIf="mode() === 'sign-up' && !isRecovery" class="alert">
-          Μετά τη δημιουργία του λογαριασμού, ελέγξτε τα εισερχόμενα και τον φάκελο ανεπιθύμητων. Το Supabase ενδέχεται να ζητήσει επιβεβαίωση email πριν από τη σύνδεση.
+        <div *ngIf="mode() === 'sign-up' && !isRecovery()" class="alert">
+          Μετά τη δημιουργία του λογαριασμού, ελέγξτε τα εισερχόμενα και τον φάκελο ανεπιθύμητων. Μπορεί να χρειαστεί επιβεβαίωση του email πριν από τη σύνδεση.
         </div>
 
         <form class="auth-form" (ngSubmit)="submit()">
           <label>
             <span>Όνομα καταλύματος</span>
-            <input class="roomrate-input" name="propertyName" [(ngModel)]="propertyName" [required]="mode() === 'sign-up'" [disabled]="isRecovery" autocomplete="organization" placeholder="π.χ. Rea Hotel">
+            <input class="roomrate-input" name="propertyName" [(ngModel)]="propertyName" [required]="mode() === 'sign-up'" [disabled]="isRecovery()" autocomplete="organization" placeholder="π.χ. Rea Hotel">
           </label>
           <label>
             <span>Τοποθεσία</span>
-            <input class="roomrate-input" name="location" [(ngModel)]="location" [required]="mode() === 'sign-up'" [disabled]="isRecovery" placeholder="π.χ. Φαληράκι">
+            <input class="roomrate-input" name="location" [(ngModel)]="location" [required]="mode() === 'sign-up'" [disabled]="isRecovery()" placeholder="π.χ. Φαληράκι">
           </label>
           <label>
             <span>Email</span>
-            <input class="roomrate-input" type="email" name="email" [(ngModel)]="email" [required]="!isRecovery" [disabled]="isRecovery" autocomplete="email">
+            <input class="roomrate-input" type="email" name="email" [(ngModel)]="email" [required]="!isRecovery()" [disabled]="isRecovery()" autocomplete="email">
           </label>
           <div>
             <label for="roomrate-password">
@@ -75,7 +75,8 @@ type AuthStep =
                 name="password"
                 [(ngModel)]="password"
                 required
-                [autocomplete]="isRecovery || mode() === 'sign-up' ? 'new-password' : 'current-password'"
+                [autocomplete]="isRecovery() || mode() === 'sign-up' ? 'new-password' : 'current-password'"
+                [attr.aria-describedby]="isRecovery() || mode() === 'sign-up' ? 'roomrate-password-requirements' : null"
               >
               <button
                 class="password-toggle"
@@ -90,16 +91,25 @@ type AuthStep =
                 {{ showPassword ? "Απόκρυψη" : "Εμφάνιση" }}
               </button>
             </div>
+            <p
+              *ngIf="mode() === 'sign-up' || isRecovery()"
+              id="roomrate-password-requirements"
+              class="password-requirements"
+              [class.password-requirements-met]="passwordMeetsRequirements()"
+            >
+              {{ passwordRequirements }}
+              <span *ngIf="password">({{ password.length }} χαρακτήρες{{ passwordMeetsRequirements() ? " ✓" : "" }})</span>
+            </p>
           </div>
 
           <div *ngIf="message() && !loading()" class="alert" [class.alert-error]="hasError()">{{ message() }}</div>
 
           <button class="primary-button" type="submit" [disabled]="loading() || !authConfigured">
-            {{ loading() ? loadingLabel() : isRecovery ? "Ενημέρωση κωδικού" : mode() === "sign-in" ? "Σύνδεση" : "Δημιουργία λογαριασμού" }}
+            {{ loading() ? loadingLabel() : isRecovery() ? "Ενημέρωση κωδικού" : mode() === "sign-in" ? "Σύνδεση" : "Δημιουργία λογαριασμού" }}
           </button>
         </form>
 
-        <div *ngIf="!isRecovery" class="auth-actions">
+        <div *ngIf="!isRecovery()" class="auth-actions">
           <button class="text-button" type="button" (click)="toggleMode()">
             {{ mode() === "sign-in" ? "Δημιουργία νέου λογαριασμού" : "Έχω ήδη λογαριασμό" }}
           </button>
@@ -143,6 +153,8 @@ type AuthStep =
   styles: [`
     .settings-legal { gap: 1rem; }
     .settings-legal a { color: var(--muted); font-size: 0.85rem; }
+    .password-requirements { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.85rem; }
+    .password-requirements-met { color: var(--teal); }
   `],
 })
 export class AuthPageComponent {
@@ -151,13 +163,17 @@ export class AuthPageComponent {
   email = "";
   password = "";
   showPassword = false;
+  readonly passwordRequirements = PASSWORD_REQUIREMENTS;
   readonly mode = signal<"sign-in" | "sign-up">("sign-in");
   readonly message = signal("");
   readonly hasError = signal(false);
   readonly loading = signal(false);
   readonly authStep = signal<AuthStep>("idle");
   readonly authConfigured: boolean;
-  readonly isRecovery: boolean;
+  /** The reset-link form; a signal because a successful reset turns it off after an await. */
+  readonly isRecovery = signal(false);
+  /** The reset link's token (Neon Auth appends ?token=… to the recovery redirect). */
+  private readonly recoveryToken: string | null;
 
   constructor(
     private readonly authService: AuthService,
@@ -167,8 +183,13 @@ export class AuthPageComponent {
     route: ActivatedRoute,
   ) {
     this.authConfigured = this.authService.isConfigured();
-    this.isRecovery = route.snapshot.queryParamMap.get("recovery") === "1";
-    if (route.snapshot.queryParamMap.get("updated") === "1") {
+    this.isRecovery.set(route.snapshot.queryParamMap.get("recovery") === "1");
+    this.recoveryToken = route.snapshot.queryParamMap.get("token");
+    if (this.isRecovery() && route.snapshot.queryParamMap.get("error")) {
+      // Neon Auth sends an expired or reused reset link back with ?error=INVALID_TOKEN.
+      this.hasError.set(true);
+      this.message.set("Ο σύνδεσμος επαναφοράς δεν είναι έγκυρος ή έχει λήξει. Ζητήστε νέο email επαναφοράς.");
+    } else if (route.snapshot.queryParamMap.get("updated") === "1") {
       this.message.set("Ο κωδικός πρόσβασης ενημερώθηκε. Συνδεθείτε με τον νέο σας κωδικό.");
     } else if (route.snapshot.queryParamMap.get("reason") === "session-expired") {
       // Byte-identical to ApiClientService's 401 message (inventory A-27 / SV-1):
@@ -185,9 +206,13 @@ export class AuthPageComponent {
     this.hasError.set(false);
   }
 
+  passwordMeetsRequirements(): boolean {
+    return passwordRequirementError(this.password) === null;
+  }
+
   loadingLabel(): string {
     const labels: Record<AuthStep, string> = {
-      idle: this.isRecovery ? "Ενημέρωση κωδικού" : this.mode() === "sign-in" ? "Σύνδεση" : "Δημιουργία λογαριασμού",
+      idle: this.isRecovery() ? "Ενημέρωση κωδικού" : this.mode() === "sign-in" ? "Σύνδεση" : "Δημιουργία λογαριασμού",
       "signing-in": "Γίνεται σύνδεση",
       "creating-account": "Δημιουργία λογαριασμού σε εξέλιξη",
       "loading-account": "Έλεγχος χώρου εργασίας",
@@ -201,13 +226,19 @@ export class AuthPageComponent {
   }
 
   async submit(): Promise<void> {
-    if (this.isRecovery) {
+    if (this.isRecovery()) {
       await this.updatePassword();
       return;
     }
     if (this.mode() === "sign-up" && (!this.propertyName.trim() || !this.location.trim())) {
       this.hasError.set(true);
       this.message.set("Συμπληρώστε όνομα καταλύματος και τοποθεσία πριν δημιουργήσετε τον λογαριασμό.");
+      return;
+    }
+    const passwordProblem = this.mode() === "sign-up" ? passwordRequirementError(this.password) : null;
+    if (passwordProblem) {
+      this.hasError.set(true);
+      this.message.set(passwordProblem);
       return;
     }
 
@@ -300,19 +331,26 @@ export class AuthPageComponent {
   }
 
   async updatePassword(): Promise<void> {
-    if (this.password.length < 8) {
+    const passwordProblem = passwordRequirementError(this.password);
+    if (passwordProblem) {
       this.hasError.set(true);
-      this.message.set("Χρησιμοποιήστε κωδικό με τουλάχιστον 8 χαρακτήρες.");
+      this.message.set(passwordProblem);
       return;
     }
     this.loading.set(true);
     this.hasError.set(false);
     this.setProgress("updating-password");
     try {
-      await this.authService.updatePassword(this.password);
+      await this.authService.updatePassword(this.password, this.recoveryToken);
       await this.authService.signOut();
+      // Same route, so Angular keeps this component: switch it back to the
+      // sign-in form here, and drop the used token from the address bar.
+      this.isRecovery.set(false);
+      this.mode.set("sign-in");
+      this.message.set("Ο κωδικός πρόσβασης ενημερώθηκε. Συνδεθείτε με τον νέο σας κωδικό.");
       await this.router.navigate(["/auth"], {
         queryParams: { updated: "1" },
+        replaceUrl: true,
       });
     } catch (error) {
       this.hasError.set(true);
@@ -412,12 +450,12 @@ export class AuthPageComponent {
     this.authStep.set(step);
     const messages: Record<AuthStep, string> = {
       idle: "",
-      "signing-in": "Σύνδεση με το Supabase Auth.",
-      "creating-account": "Δημιουργία του λογαριασμού σας στο Supabase. Αν είναι ενεργή η επιβεβαίωση, θα χρειαστεί να επιβεβαιώσετε το email σας πριν συνδεθείτε.",
+      "signing-in": "Σύνδεση στον λογαριασμό σας.",
+      "creating-account": "Δημιουργία του λογαριασμού σας. Αν είναι ενεργή η επιβεβαίωση, θα χρειαστεί να επιβεβαιώσετε το email σας πριν συνδεθείτε.",
       "loading-account": "Φόρτωση του λογαριασμού σας RoomRate από το FastAPI.",
       "matching-property": "Αναζήτηση στο Booking για το κατάλυμα και την τοποθεσία σας. Είναι ζωντανή αναζήτηση και μπορεί να διαρκέσει μερικά λεπτά.",
       "opening-map": "Άνοιγμα του χάρτη ανταγωνιστών σας.",
-      "resending-email": "Ζητείται νέο email επιβεβαίωσης από το Supabase.",
+      "resending-email": "Ζητείται νέο email επιβεβαίωσης.",
       "requesting-reset": "Ζητείται ασφαλές email επαναφοράς κωδικού.",
       "updating-password": "Αποθήκευση του νέου σας κωδικού με ασφάλεια.",
     };

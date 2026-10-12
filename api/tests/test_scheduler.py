@@ -3,13 +3,22 @@ from uuid import UUID
 
 import pytest
 
+from api.config import settings
 from api.scheduler import (
+    FERRY_COLLECTION_LOCK_KEY,
+    FERRY_OBSERVATION_RETENTION_DAYS,
+    FERRY_PROFILE_LOCK_KEY,
+    FLIGHT_COLLECTION_LOCK_KEY,
     SCHEDULER_TICK_LOCK_KEY,
     SchedulerStatus,
     purge_old_scrape_csvs,
+    run_ferry_demand_collection,
+    run_ferry_profile_resolution,
+    run_flight_demand_collection,
     run_queued_job_executor,
     run_schedule_tick,
     run_price_recommendation_audit_cleanup,
+    run_raw_ingestion_cleanup,
     run_scout_cache_cleanup,
     run_scrape_csv_cleanup,
     run_stale_job_sweeper,
@@ -392,6 +401,23 @@ def test_purge_deletes_old_csvs_and_keeps_recent_ones(tmp_path):
     assert (tmp_path / "old.log").exists()
 
 
+def test_purge_deletes_checkpoints_a_failed_job_left_behind(tmp_path):
+    import os
+
+    old_checkpoint = tmp_path / "checkpoint_old-job"
+    old_checkpoint.mkdir()
+    (old_checkpoint / "scout.json").write_text("{}")
+    stale_ts = NOW.timestamp() - 45 * 86_400
+    os.utime(old_checkpoint, (stale_ts, stale_ts))
+    (tmp_path / "checkpoint_running-job").mkdir()
+
+    deleted = purge_old_scrape_csvs(tmp_path, older_than_days=30, now=NOW)
+
+    assert deleted == 1
+    assert not old_checkpoint.exists()
+    assert (tmp_path / "checkpoint_running-job").exists()  # a job may still retry
+
+
 def test_purge_disabled_with_zero_retention(tmp_path):
     _write_csv(tmp_path, "ancient.csv", age_days=400, now=NOW)
 
@@ -444,6 +470,7 @@ def test_settings_expose_scheduler_defaults():
     assert fresh_settings.executor_batch_size == 3
     assert fresh_settings.stale_job_minutes == 5
     assert fresh_settings.scrape_csv_retention_days == 30
+    assert fresh_settings.raw_ingestion_retention_days == 30
 
 
 # ----------------------------------------------------------------------------
@@ -484,3 +511,221 @@ def test_audit_cleanup_is_disabled_by_zero_retention():
 
     assert deleted == 0
     assert connection.calls == []
+
+
+# ----------------------------------------------------------------------------
+# run_raw_ingestion_cleanup
+# ----------------------------------------------------------------------------
+
+
+def test_raw_ingestion_cleanup_deletes_payload_copies_past_retention():
+    """Raw events duplicate each package's payload and nothing reads them."""
+    connection = FakeLockConnection(scalar_results=[_ScalarResult(None, rowcount=4200)])
+
+    deleted = run_raw_ingestion_cleanup(engine=FakeEngine(connection), retention_days=30)
+
+    assert deleted == 4200
+    delete_sql, delete_params = next(
+        (sql, params) for sql, params in connection.calls if "DELETE FROM roomrate_raw_ingestion_events" in sql
+    )
+    assert "captured_at < now() - make_interval(days => :days)" in delete_sql
+    assert delete_params == {"days": 30}
+
+
+def test_raw_ingestion_cleanup_is_disabled_by_zero_retention_and_never_raises():
+    connection = FakeLockConnection(scalar_results=[])
+
+    assert run_raw_ingestion_cleanup(engine=FakeEngine(connection), retention_days=0) == 0
+    assert connection.calls == []
+
+    class BrokenEngine:
+        def begin(self):
+            raise RuntimeError("database unavailable")
+
+    assert run_raw_ingestion_cleanup(engine=BrokenEngine(), retention_days=30) == 0
+
+
+# ----------------------------------------------------------------------------
+# Ferry demand jobs
+# ----------------------------------------------------------------------------
+
+
+class FakeFerryRepository:
+    def __init__(self):
+        self.prune_calls = []
+
+    def prune(self, **kwargs):
+        self.prune_calls.append(kwargs)
+        return (0, 0)
+
+
+class FakeFerryService:
+    def __init__(self, resolved=0, report=None, error=None):
+        self.repository = FakeFerryRepository()
+        self.resolved = resolved
+        self.report = report
+        self.error = error
+        self.calls = []
+
+    def resolve_profiles(self, today):
+        self.calls.append(("resolve", today))
+        if self.error:
+            raise self.error
+        return self.resolved
+
+    def collect(self, today, **kwargs):
+        self.calls.append(("collect", today, *kwargs.values()))
+        if self.error:
+            raise self.error
+        return self.report
+
+
+def _report(saved=3):
+    from api.services.ferry_demand_service import CollectionReport
+
+    return CollectionReport(routes=1, calls=saved, saved=saved)
+
+
+def test_one_demand_tick_replaces_the_fixed_hour_jobs():
+    """Lookups and collections run from a tick every few minutes, first right after start."""
+    from api.scheduler import DEMAND_TICK_MINUTES, create_scheduler
+
+    scheduler = create_scheduler()
+    tick = scheduler.get_job("demand_tick")
+
+    assert tick is not None
+    assert tick.trigger.interval.total_seconds() == DEMAND_TICK_MINUTES * 60
+    for old_job in ("ferry_profile_resolution", "ferry_demand_collection", "flight_demand_collection"):
+        assert scheduler.get_job(old_job) is None
+
+
+def test_ferry_profile_lookup_runs_under_its_own_lock(monkeypatch):
+    monkeypatch.setattr(settings, "ferry_demand_enabled", True)
+    connection = FakeLockConnection()
+    service = FakeFerryService(resolved=2)
+
+    assert run_ferry_profile_resolution(service, engine=FakeEngine(connection), today=NOW.date()) == 2
+
+    assert service.calls == [("resolve", NOW.date())]
+    assert connection.calls[0][1] == {"key": FERRY_PROFILE_LOCK_KEY}
+    assert "pg_advisory_unlock" in connection.calls[-1][0]
+    assert connection.closed
+
+
+def test_ferry_collection_saves_then_prunes(monkeypatch):
+    monkeypatch.setattr(settings, "ferry_demand_enabled", True)
+    monkeypatch.setattr(settings, "ferry_raw_payload_retention_days", 7)
+    connection = FakeLockConnection()
+    service = FakeFerryService(report=_report(saved=5))
+
+    assert run_ferry_demand_collection(service, engine=FakeEngine(connection), today=NOW.date()) == 5
+
+    assert connection.calls[0][1] == {"key": FERRY_COLLECTION_LOCK_KEY}
+    assert service.repository.prune_calls == [
+        {"raw_payload_days": 7, "observation_days": FERRY_OBSERVATION_RETENTION_DAYS}
+    ]
+
+
+def test_ferry_jobs_skip_when_another_process_holds_the_lock(monkeypatch):
+    monkeypatch.setattr(settings, "ferry_demand_enabled", True)
+    service = FakeFerryService(report=_report())
+
+    assert run_ferry_demand_collection(service, engine=FakeEngine(FakeLockConnection(lock_acquired=False))) == 0
+    assert run_ferry_profile_resolution(service, engine=FakeEngine(FakeLockConnection(lock_acquired=False))) == 0
+
+    assert service.calls == []
+    assert service.repository.prune_calls == []
+
+
+def test_ferry_jobs_never_raise_and_release_the_lock(monkeypatch):
+    monkeypatch.setattr(settings, "ferry_demand_enabled", True)
+    connection = FakeLockConnection()
+
+    assert run_ferry_demand_collection(FakeFerryService(error=RuntimeError("boom")), engine=FakeEngine(connection)) == 0
+
+    assert "pg_advisory_unlock" in connection.calls[-1][0]
+    assert connection.closed
+
+
+def test_ferry_jobs_do_nothing_when_switched_off(monkeypatch):
+    monkeypatch.setattr(settings, "ferry_demand_enabled", False)
+    service = FakeFerryService(resolved=1, report=_report())
+
+    assert run_ferry_profile_resolution(service, engine=FakeEngine(FakeLockConnection())) == 0
+    assert run_ferry_demand_collection(service, engine=FakeEngine(FakeLockConnection())) == 0
+    assert service.calls == []
+
+
+# ----------------------------------------------------------------------------
+# Flight demand job
+# ----------------------------------------------------------------------------
+
+
+def _flight_report(saved=4, units_remaining=300):
+    from api.services.flight_demand_service import FlightCollectionReport
+
+    return FlightCollectionReport(
+        airports=["RHO"], due=8, allowance=6, calls=saved, saved=saved, units_remaining=units_remaining
+    )
+
+
+def _flights_on(monkeypatch, key="test-key"):
+    monkeypatch.setattr(settings, "flight_demand_enabled", True)
+    monkeypatch.setattr(settings, "aerodatabox_api_key", key)
+
+
+def test_flight_collection_saves_then_prunes_under_its_own_lock(monkeypatch):
+    _flights_on(monkeypatch)
+    monkeypatch.setattr(settings, "flight_raw_payload_retention_days", 7)
+    connection = FakeLockConnection()
+    service = FakeFerryService(report=_flight_report(saved=4))
+
+    assert run_flight_demand_collection(service, engine=FakeEngine(connection), today=NOW.date()) == 4
+
+    assert service.calls == [("collect", NOW.date(), None)]
+    assert connection.calls[0][1] == {"key": FLIGHT_COLLECTION_LOCK_KEY}
+    assert "pg_advisory_unlock" in connection.calls[-1][0]
+    assert service.repository.prune_calls == [
+        {"raw_payload_days": 7, "observation_days": FERRY_OBSERVATION_RETENTION_DAYS}
+    ]
+
+
+def test_flight_collection_passes_a_manual_call_count(monkeypatch):
+    _flights_on(monkeypatch)
+    service = FakeFerryService(report=_flight_report())
+
+    run_flight_demand_collection(service, engine=FakeEngine(FakeLockConnection()), today=NOW.date(), max_calls=16)
+
+    assert service.calls == [("collect", NOW.date(), 16)]
+
+
+def test_flight_collection_needs_a_key(monkeypatch):
+    """No AERODATABOX_API_KEY (or a blank one): nothing runs, no lock is taken."""
+    _flights_on(monkeypatch, key="  ")
+    connection = FakeLockConnection()
+    service = FakeFerryService(report=_flight_report())
+
+    assert run_flight_demand_collection(service, engine=FakeEngine(connection)) == 0
+
+    assert service.calls == [] and connection.calls == []
+
+
+def test_flight_collection_switched_off(monkeypatch):
+    _flights_on(monkeypatch)
+    monkeypatch.setattr(settings, "flight_demand_enabled", False)
+    service = FakeFerryService(report=_flight_report())
+
+    assert run_flight_demand_collection(service, engine=FakeEngine(FakeLockConnection())) == 0
+    assert service.calls == []
+
+
+def test_flight_collection_never_raises_and_skips_a_held_lock(monkeypatch):
+    _flights_on(monkeypatch)
+    connection = FakeLockConnection()
+
+    assert run_flight_demand_collection(FakeFerryService(error=RuntimeError("boom")), engine=FakeEngine(connection)) == 0
+    assert "pg_advisory_unlock" in connection.calls[-1][0]
+
+    service = FakeFerryService(report=_flight_report())
+    assert run_flight_demand_collection(service, engine=FakeEngine(FakeLockConnection(lock_acquired=False))) == 0
+    assert service.calls == [] and service.repository.prune_calls == []

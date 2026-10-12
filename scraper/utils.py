@@ -228,14 +228,30 @@ def _extract_meta(item: dict) -> dict:
 
 _MEAL_KEYWORDS = frozenset([
     "πρωινό", "γεύμα", "ημιδιατροφή", "breakfast",
-    "dinner", "lunch", "all inclusive", "διατροφή",
+    "dinner", "lunch", "all inclusive", "all-inclusive", "διατροφή",
     "half board", "full board",
 ])
 
+# A meal line with a price or marked optional is offered for a fee, not part
+# of the rate: «Πρωινό 12 € (προαιρετικό)», «Breakfast €12 (optional)».
+_PAID_MEAL_RE = re.compile(
+    r"[€$£]|\b(?:eur|usd|gbp)\b|optional|προαιρετικ|extra charge|επιπλέον χρέωση|επί πληρωμή",
+    re.IGNORECASE,
+)
+# «Δεν περιλαμβάνεται γεύμα», «No meals included».
+_NO_MEAL_RE = re.compile(r"δεν περιλαμβάνεται|χωρίς γεύμα|\bno meals?\b|room only", re.IGNORECASE)
+
+
 def _detect_meal(choices: list) -> str:
+    """The meal INCLUDED in the rate, as Booking words it, or "" when none is."""
     for c in choices:
-        if any(kw in str(c).lower() for kw in _MEAL_KEYWORDS):
-            return str(c).capitalize()
+        text = _clean_text(c)
+        lowered = text.lower()
+        if not any(kw in lowered for kw in _MEAL_KEYWORDS):
+            continue
+        if _PAID_MEAL_RE.search(text) or _NO_MEAL_RE.search(text):
+            continue
+        return text.capitalize()
     return ""
 
 

@@ -8,7 +8,12 @@ import {
   ACCOUNT_ID,
   API,
   CURRENT_USER,
+  E2E_AUTH_USER,
+  fakeAccessToken,
+  fulfillNeonAuth,
   JOB_ID,
+  NEON_AUTH_URL,
+  neonAuthSessionBody,
   OWNED_PROPERTY_ID,
   RecordedCall,
   recordCall,
@@ -97,28 +102,15 @@ const PROPOSED_CANDIDATE = {
 };
 
 /**
- * Drive the real sign-up flow through the UI: mock supabase's signup
+ * Drive the real sign-up flow through the UI: mock Neon Auth's sign-up
  * endpoint, then fill and submit the real form. Shared by the success and
  * auto-setup-failure scenarios below, which differ only in how they mock
- * the RoomRate backend's auto-setup response.
+ * the RoomRate backend's auto-setup response. The session the SDK reads after
+ * sign-up comes from seedSessionOnly's GET /get-session mock.
  */
 async function driveSignUp(page: Page): Promise<void> {
-  // supabase-js appends `?redirect_to=...` to the signup URL; a plain glob
-  // string here (as in the plan's sketch) does not match past the query
-  // string and lets the request escape to the real Supabase project, which
-  // then rejects the *.test email domain with a 400. A regex has no such
-  // anchor and matches regardless of query params.
-  await page.route(/https:\/\/.*\.supabase\.co\/auth\/v1\/signup/, (route) =>
-    route.fulfill({
-      json: {
-        access_token: "e2e-fake-access-token",
-        refresh_token: "e2e-fake-refresh-token",
-        token_type: "bearer",
-        expires_in: 3600,
-        user: { id: "e2e-user", aud: "authenticated", role: "authenticated", email: "e2e@roomrate.test" },
-      },
-    }),
-  );
+  await page.route(`${NEON_AUTH_URL}/sign-up/email**`, (route) =>
+    fulfillNeonAuth(route, { token: "e2e-session-token", user: E2E_AUTH_USER }));
   await page.goto("/auth");
   await page.getByRole("button", { name: /δημιουργία νέου λογαριασμού/i }).click();
   await page.getByLabel(/όνομα καταλύματος/i).fill("Rea Hotel");
@@ -637,7 +629,12 @@ test("scenario 3: picking a room PUTs selected-room-type and reaches step 3", as
   });
   await page.route(`${API}/api/v1/scrape-jobs/${JOB_ID}`, (route) => {
     recordCall(calls, route);
-    return route.fulfill({ json: { id: JOB_ID, status: "completed", scrape_runs_count: 1 } });
+    return route.fulfill({
+      json: {
+        id: JOB_ID, status: "completed", scrape_runs_count: 1,
+        check_in: "2026-11-03", check_out: "2026-11-07", adults: 2, children: 0, rooms: 1,
+      },
+    });
   });
   await page.route(`${API}/api/v1/onboarding/owned-property/${OWNED_PROPERTY_ID}/room-types`, (route) => {
     recordCall(calls, route);
@@ -683,6 +680,10 @@ test("scenario 3: picking a room PUTs selected-room-type and reaches step 3", as
   await page.getByRole("button", { name: "Ναι, αυτό είναι" }).click();
   await expect(page.getByTestId("setup-step-title")).toContainText("Βήμα 2");
   await expect(page.getByTestId("room-double")).toContainText("0 € / διανυκτέρευση");
+  // The prices say which search they come from, so the owner checks the same one on Booking.
+  await expect(page.getByTestId("room-price-basis")).toHaveText(
+    "Τιμές για 2 ενήλικες, μέση τιμή ανά διανυκτέρευση για 3/11–7/11/2026, όπως τις έδειξε το Booking.",
+  );
   // Non-default pick on purpose: the SECOND room catches a component that
   // forwards rooms[0] instead of the user's choice.
   await page.getByTestId("room-suite").click();
@@ -848,56 +849,27 @@ test("a /me blip is not cached: the page's read refetches", async ({ page }) => 
   await expect.poll(() => meCalls).toBe(2);
 });
 
-/**
- * A structurally-valid (unsigned) JWT for mocked Supabase token responses.
- *
- * `supabase-js`'s real `setSession()` -- exercised for the first time by the
- * scenario below, everything else in this suite seeds a session directly
- * into localStorage -- calls `decodeJWT()` on the access token and throws
- * "Invalid JWT structure" on anything that is not three base64url segments.
- * It never verifies the signature client-side, so the third segment can be
- * anything in the right alphabet.
- */
-function fakeJwt(payload: Record<string, unknown>): string {
-  const base64url = (value: unknown) =>
-    Buffer.from(JSON.stringify(value)).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  return `${base64url({ alg: "HS256", typ: "JWT" })}.${base64url(payload)}.e2e-fake-signature`;
-}
+const USER_B = { ...E2E_AUTH_USER, id: "e2e-user-b", email: "b@roomrate.test", name: "B" };
 
 /**
- * Every Supabase endpoint the sign-out -> sign-in-as-B round trip touches.
- *
- * - /token: the sign-in itself.
- * - /user: setSession() decodes the access token above for `exp`, and -- since
- *   it is not expired -- follows up with GET /user to build the session's user
- *   object (AuthService.signIn passes only the two token strings, never a full
- *   session, so supabase-js cannot skip this call).
- * - /logout: map-page's sign-out button calls the real supabase-js signOut(),
- *   which POSTs here before anything else runs; left unmocked it either escapes
- *   to the live project or hangs the test.
+ * Neon Auth for the sign-out -> sign-in-as-B round trip. Sign-out is
+ * seedSessionOnly's POST /sign-out mock (it flips that session off); sign-in
+ * is POST /sign-in/email, after which the SDK reads GET /get-session, which
+ * from then on answers as user B. Until then this get-session route falls back
+ * to seedSessionOnly's (user A, or signed out).
  */
-async function mockSupabaseSignInAsUserB(page: Page): Promise<void> {
-  await page.route(/https:\/\/.*\.supabase\.co\/auth\/v1\/token/, (route) =>
-    route.fulfill({
-      json: {
-        access_token: fakeJwt({
-          sub: "e2e-user-b",
-          aud: "authenticated",
-          role: "authenticated",
-          email: "b@roomrate.test",
-          exp: Math.floor(Date.now() / 1000) + 3600,
-        }),
-        refresh_token: "r",
-        token_type: "bearer",
-        expires_in: 3600,
-        user: { id: "e2e-user-b", aud: "authenticated", role: "authenticated", email: "b@roomrate.test" },
-      },
-    }),
-  );
-  await page.route(/https:\/\/.*\.supabase\.co\/auth\/v1\/user/, (route) =>
-    route.fulfill({ json: { id: "e2e-user-b", aud: "authenticated", role: "authenticated", email: "b@roomrate.test" } }),
-  );
-  await page.route(/https:\/\/.*\.supabase\.co\/auth\/v1\/logout/, (route) => route.fulfill({ status: 204 }));
+async function mockNeonSignInAsUserB(page: Page): Promise<void> {
+  let signedInAsB = false;
+  await page.route(`${NEON_AUTH_URL}/sign-in/email**`, (route) => {
+    signedInAsB = true;
+    return fulfillNeonAuth(route, { redirect: false, token: "e2e-session-token-b", user: USER_B });
+  });
+  await page.route(`${NEON_AUTH_URL}/get-session**`, (route) =>
+    signedInAsB
+      ? fulfillNeonAuth(route, neonAuthSessionBody(USER_B), {
+        "set-auth-jwt": fakeAccessToken({ sub: USER_B.id, email: USER_B.email }),
+      })
+      : route.fallback());
 }
 
 test("a second sign-in never reuses the previous account's /me", async ({ page }) => {
@@ -909,7 +881,7 @@ test("a second sign-in never reuses the previous account's /me", async ({ page }
     meCalls += 1;
     return route.fulfill({ json: meBody });
   });
-  await mockSupabaseSignInAsUserB(page);
+  await mockNeonSignInAsUserB(page);
 
   await page.goto("/map");
   await expect(page).toHaveURL(/\/map/);
@@ -951,7 +923,7 @@ test("scenario 3.3: a blank sign-in of a property-less account continues to the 
     recordCall(autoSetupCalls, route);
     return route.fulfill({ status: 202, json: {} });
   });
-  await mockSupabaseSignInAsUserB(page);
+  await mockNeonSignInAsUserB(page);
 
   await page.goto("/map");
   await expect(page).toHaveURL(/\/map/);
@@ -1023,7 +995,7 @@ test("scenario 3.3b: that blank sign-in also clears the account's stale property
   });
   await page.route(`${API}/api/v1/**`, (route) => route.fulfill({ json: [] }));
   await page.route(`${API}/api/v1/me`, (route) => route.fulfill({ json: meBody }));
-  await mockSupabaseSignInAsUserB(page);
+  await mockNeonSignInAsUserB(page);
 
   await page.goto("/map");
   await expect(page).toHaveURL(/\/map/);
@@ -1142,7 +1114,7 @@ test("scenario 5b: after «Αργότερα» the map checklist shows 2 done, st
   // NOT re-registering a generic `${API}/api/v1/**` wildcard here (same reason
   // as 5c, plus a sharper one this test hit three times in CI): step 3 issues
   // its OWN `/me` read from ngOnInit -> prepareIntent, and that request leaves
-  // the browser only after supabase's getSession() resolves, i.e. some ticks
+  // the browser only after the auth SDK's getSession() resolves, i.e. some ticks
   // AFTER the "Βήμα 3" heading that reachStepThree waits on. A second wildcard
   // registered in that window wins by recency over reachStepThree's `/me` mock,
   // answers `[]`, and buildAuthoritativeSearchIntent throws -> the step renders
@@ -1162,28 +1134,27 @@ test("scenario 5b: after «Αργότερα» the map checklist shows 2 done, st
   await expect(page).toHaveURL(/\/map/);
   await expect(page.getByTestId("setup-checklist")).toBeVisible();
   // Two-sided: the map must not overflow the grid (clipping) NOR collapse —
-  // its bottom edge coincides with the grid's, and it keeps real height.
+  // its bottom edge coincides with the grid's inner edge (the grid's bottom
+  // padding and the map card's border sit between them), and it keeps real height.
   const gridBox = await page.locator(".map-grid").boundingBox();
   const mapBox = await page.locator(".roomrate-map").boundingBox();
   expect(gridBox).not.toBeNull();
   expect(mapBox).not.toBeNull();
-  expect(Math.abs(mapBox!.y + mapBox!.height - (gridBox!.y + gridBox!.height))).toBeLessThanOrEqual(1);
+  const gridPaddingBottom = await page.locator(".map-grid").evaluate((el) => parseFloat(getComputedStyle(el).paddingBottom));
+  const shellBorderBottom = await page.locator(".map-shell").evaluate((el) => parseFloat(getComputedStyle(el).borderBottomWidth));
+  const gridInnerBottom = gridBox!.y + gridBox!.height - gridPaddingBottom - shellBorderBottom;
+  expect(Math.abs(mapBox!.y + mapBox!.height - gridInnerBottom)).toBeLessThanOrEqual(1);
   expect(mapBox!.height).toBeGreaterThan(200);
-  // The checklist sits at the top of .map-shell; its own overlays (the
-  // Filters toggle and the "no results" empty state) must not paint on top
-  // of it. jobs=[] means no competitors were restored, so the empty state
-  // renders -- and, since Round 6 (spec §4.1), the filters form opens by
-  // itself. Folding it back brings the Filters toggle onto the map, so both
-  // overlays are measured.
+  // The checklist sits at the top of .map-shell; the map's own overlay (the
+  // "no results" empty state) must not paint on top of it. jobs=[] means no
+  // competitors were restored, so the empty state renders. «Φίλτρα» is its
+  // own column left of the map, never on it.
   await expect(page.locator(".filters-sidebar")).toBeVisible();
-  await page.getByRole("button", { name: "Απόκρυψη" }).click();
+  await expect(page.locator(".map-shell").getByRole("button", { name: "Φίλτρα", exact: true })).toHaveCount(0);
   const checklistBox = await page.getByTestId("setup-checklist").boundingBox();
-  const filtersButtonBox = await page.getByRole("button", { name: "Φίλτρα", exact: true }).boundingBox();
   const emptyStateBox = await page.locator(".map-empty-state").boundingBox();
   expect(checklistBox).not.toBeNull();
-  expect(filtersButtonBox).not.toBeNull();
   expect(emptyStateBox).not.toBeNull();
-  expect(boxesIntersect(checklistBox!, filtersButtonBox!)).toBe(false);
   expect(boxesIntersect(checklistBox!, emptyStateBox!)).toBe(false);
   await expect(page.getByTestId("checklist-progress")).toContainText("2 από 5");
   await expect(page.getByTestId("checklist-open-step")).toContainText("Πρώτη αναζήτηση");

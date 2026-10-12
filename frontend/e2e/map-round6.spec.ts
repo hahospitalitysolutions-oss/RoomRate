@@ -219,15 +219,15 @@ test("the form defaults to 40 hotels, caps at 80 and no longer sends deep_crawl_
 
 const chipNames = (page: Page) => page.getByTestId("nearby-chip");
 
-test("with no previous search the form opens itself with the nearby areas and a 10 km radius", async ({ page }) => {
+test("with no previous search the form shows the nearby areas and a 10 km radius", async ({ page }) => {
   const calls: RecordedCall[] = [];
   const nearbyReads: URLSearchParams[] = [];
   await mockMapRound6(page, { restorable: false, calls, nearbyReads, nearby: ["Καλλιθέα Ρόδου", "Ιξιά", "Κολύμπια"] });
 
   await page.goto("/map");
-  // Nothing to restore, so the form is the one way forward: open without a click.
+  // «Φίλτρα» is a permanent column left of the map: nothing to open, nothing on the map.
   await expect(page.locator(".filters-sidebar")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Φίλτρα", exact: true })).toHaveCount(0);
+  await expect(page.locator(".map-canvas").getByRole("button", { name: "Φίλτρα", exact: true })).toHaveCount(0);
   await expect(chipNames(page)).toHaveText(["Καλλιθέα Ρόδου", "Ιξιά", "Κολύμπια"]);
   await expect(page.getByTestId("radius-input")).toHaveValue("10");
   expect(nearbyReads.map((query) => query.get("destination"))).toContain("Faliraki");
@@ -276,6 +276,30 @@ test("the nearby areas stop at eight", async ({ page }) => {
   await expect(areaInput).toBeEnabled();
 });
 
+test("«Απόκρυψη» folds the filters into a rail left of the map, and «Φίλτρα» opens them again", async ({ page }) => {
+  await mockMapRound6(page, {});
+
+  await page.goto("/map");
+  await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
+  const sidebar = page.locator(".filters-sidebar");
+  await expect(sidebar).toBeVisible();
+  await expect(sidebar.locator(".match-controls")).toBeVisible();
+
+  await sidebar.getByRole("button", { name: "Απόκρυψη" }).click();
+  await expect(sidebar).toHaveCount(0);
+  const reopen = page.getByTestId("show-filters");
+  await expect(reopen).toBeVisible();
+  // The rail is its own column: the button sits left of the map, not on it.
+  await expect(page.locator(".map-shell").getByTestId("show-filters")).toHaveCount(0);
+  const railBox = (await page.locator(".filters-rail").boundingBox())!;
+  const mapBox = (await page.locator(".map-shell").boundingBox())!;
+  expect(railBox.x + railBox.width).toBeLessThanOrEqual(mapBox.x);
+
+  await reopen.click();
+  await expect(sidebar).toBeVisible();
+  await expect(reopen).toHaveCount(0);
+});
+
 test("restoring the latest search shows the size, areas and radius it ran with", async ({ page }) => {
   const calls: RecordedCall[] = [];
   // The job ran with 1 area, 7 km and 25 hotels; the server's defaults are 4
@@ -284,9 +308,8 @@ test("restoring the latest search shows the size, areas and radius it ran with",
 
   await page.goto("/map");
   await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
-  // A previous search is on screen, so the form stays folded until asked for.
-  await expect(page.locator(".filters-sidebar")).toHaveCount(0);
-  await page.getByRole("button", { name: "Φίλτρα", exact: true }).click();
+  // The «Φίλτρα» column stays open over a restored search too.
+  await expect(page.locator(".filters-sidebar")).toBeVisible();
   await expect(chipNames(page)).toHaveText(["Ιξιά"]);
   await expect(page.getByTestId("radius-input")).toHaveValue("7");
   await expect(page.getByTestId("limit-input")).toHaveValue("25");
@@ -304,7 +327,6 @@ test("a restored job from before Round 6 keeps the default size, areas and radiu
 
   await page.goto("/map");
   await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
-  await page.getByRole("button", { name: "Φίλτρα", exact: true }).click();
   await expect(chipNames(page)).toHaveText(["Ιξιά", "Κολύμπια"]);
   await expect(page.getByTestId("radius-input")).toHaveValue("10");
   await expect(page.getByTestId("limit-input")).toHaveValue("40");
@@ -321,7 +343,6 @@ test("a restored job without areas keeps the default size, areas and radius but 
 
   await page.goto("/map");
   await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
-  await page.getByRole("button", { name: "Φίλτρα", exact: true }).click();
   await expect(page.getByTestId("limit-input")).toHaveValue("40");
   await expect(chipNames(page)).toHaveText(["Ιξιά", "Κολύμπια"]);
   await expect(page.getByTestId("radius-input")).toHaveValue("10");
@@ -450,7 +471,6 @@ test("an open marker popup survives a card tick, the map filter and a facility r
   await expect(openPopup(page)).toContainText("Hotel Beta");
 
   // A facility tick re-reads the whole job; the summary read is the last thing that re-read starts.
-  await page.getByRole("button", { name: "Φίλτρα", exact: true }).click();
   await page.locator(".amenity-list .checkbox-row", { hasText: "Δωρεάν WiFi" }).locator("input[type=checkbox]").check();
   await expect.poll(() => readsOf(reads, "/market/summary").filter((query) => query.has("amenities")).length).toBe(1);
   await expect(markers(page)).toHaveCount(3);

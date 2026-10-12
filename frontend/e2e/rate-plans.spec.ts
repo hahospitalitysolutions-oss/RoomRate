@@ -333,8 +333,7 @@ test("a new search lands with every plans list collapsed again", async ({ page }
   await expect(card.getByTestId("rate-plan-list")).toBeVisible();
   const readsBeforeSearch = competitorReads.length;
 
-  // Re-run the search: the restored page keeps its filters behind «Φίλτρα».
-  await page.getByRole("button", { name: "Φίλτρα", exact: true }).click();
+  // Re-run the search from the «Φίλτρα» column, where «Ταίριασμα δωματίου» lives too.
   await page.getByRole("button", { name: "Εύρεση ανταγωνιστών" }).click();
 
   // Wait for the NEW match load to land, then check the re-rendered card:

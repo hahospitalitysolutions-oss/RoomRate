@@ -7,6 +7,7 @@ header-dict operations.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
@@ -94,3 +95,52 @@ class RequestIDMiddleware:
             await self.app(scope, receive, send_with_request_id)
         finally:
             request_id_var.reset(token)
+
+
+class UnhandledErrorMiddleware:
+    """Turn an unhandled exception into a JSON 500 that still gets CORS headers.
+
+    Starlette's own 500 comes from ServerErrorMiddleware, outside
+    CORSMiddleware, so it carries no Access-Control-Allow-Origin: the browser
+    then reports a network failure and the app said "could not reach the
+    RoomRate API" for what was really a server error. Installed inside CORS,
+    this answers with a real 500 the frontend can read. The exception is still
+    logged with its traceback, and reported to Sentry when it is configured.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        response_started = False
+
+        async def send_tracking(message: dict[str, Any]) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_tracking)
+        except Exception as exc:
+            if response_started:
+                raise
+            logging.getLogger("api.errors").exception(
+                "Unhandled error on %s %s", scope.get("method"), scope.get("path")
+            )
+            try:
+                import sentry_sdk
+
+                sentry_sdk.capture_exception(exc)
+            except ImportError:
+                pass
+            body = b'{"detail":"Internal Server Error"}'
+            await send({
+                "type": "http.response.start",
+                "status": 500,
+                "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())],
+            })
+            await send({"type": "http.response.body", "body": body})

@@ -5,7 +5,9 @@ import { Router, RouterLink } from "@angular/router";
 
 import { environment } from "../../environments/environment";
 import { EmptyStateComponent } from "../components/empty-state.component";
-import { NotificationBellComponent } from "../components/notification-bell.component";
+import { IconComponent } from "../components/icon.component";
+import { SelectMenuComponent, SelectMenuOption } from "../components/select-menu.component";
+import { AppHeaderComponent } from "../components/app-header.component";
 import { NotificationToastsComponent } from "../components/notification-toasts.component";
 import { SetupChecklistComponent } from "../onboarding/setup-checklist.component";
 import { ApiClientService } from "../services/api-client.service";
@@ -72,7 +74,6 @@ import {
   SHOW_ALL_ROOMS_LABEL,
   START_SEARCH_MESSAGE,
   AUTO_PICKED_ROOM_HINT,
-  CARD_HIGHLIGHT_MS,
   DEFAULT_STAY,
   AmenityOption,
   COMMON_AMENITIES,
@@ -99,38 +100,46 @@ import { MatchedCompetitorCardComponent } from "./map/matched-competitor-card.co
     CompetitorCardComponent,
     CompetitorMapComponent,
     EmptyStateComponent,
+    IconComponent,
     MapFiltersSidebarComponent,
     MatchedCompetitorCardComponent,
-    NotificationBellComponent,
+    AppHeaderComponent,
     NotificationToastsComponent,
     SetupChecklistComponent,
+    SelectMenuComponent,
   ],
   template: `
     <main class="map-page">
-      <header class="map-header">
-        <div>
-          <p class="eyebrow">RoomRate — Χάρτης αγοράς</p>
-          <h1>{{ propertyName() || filters().destination || "Στοχευμένη ανάλυση δωματίων ανταγωνιστών" }}</h1>
-        </div>
-        <!--
-          Status first, then navigation: the two chips only report (spans with
-          a pill look, nothing to press), the links and «Αποσύνδεση» read as
-          navigation. The row wraps instead of pushing the page sideways on a
-          narrow window.
-        -->
-        <div class="header-actions map-header-actions">
-          <span class="status-chip" data-testid="header-count-chip">{{ status() === "loading" ? "Φόρτωση" : competitorCountLabel() }}</span>
-          <span class="status-chip status-chip-live" data-testid="header-live-chip">Ζωντανά δεδομένα</span>
-          <nav class="header-nav" aria-label="Πλοήγηση">
-            <a class="header-nav-link" routerLink="/pricing">Τιμολόγηση</a>
-            <a class="header-nav-link" routerLink="/settings">Ρυθμίσεις</a>
-          </nav>
-          <app-notification-bell />
-          <button class="header-nav-link header-signout" type="button" (click)="signOut()">Αποσύνδεση</button>
-        </div>
-      </header>
+      <!--
+        The Aegean band (design Δ), compact so the map keeps the height. The
+        count chip only reports: it sits in the band's actions, before the
+        navigation, where the e2e suite reads it (.header-actions).
+      -->
+      <app-header [compact]="true">
+        <span headerStatus class="status-chip" data-testid="header-count-chip">{{ status() === "loading" ? "Φόρτωση" : competitorCountLabel() }}</span>
+        <span headerStatus class="status-chip status-chip-live" data-testid="header-live-chip">Ζωντανά δεδομένα</span>
+        <p class="eyebrow">Χάρτης αγοράς</p>
+        <h1>{{ propertyName() || filters().destination || "Στοχευμένη ανάλυση δωματίων ανταγωνιστών" }}</h1>
+      </app-header>
 
+      <!--
+        «Φίλτρα» is a column left of the map, never an overlay on it (owner
+        decision 2026-10-06). It starts open; «Απόκρυψη» folds it into a narrow
+        rail, still left of the map, whose «Φίλτρα» button opens it again.
+      -->
       <section class="map-grid" [class.filters-collapsed]="filtersCollapsed()">
+        <aside *ngIf="filtersCollapsed()" class="filters-rail">
+          <button
+            class="filters-rail-button"
+            type="button"
+            data-testid="show-filters"
+            aria-label="Εμφάνιση φίλτρων"
+            (click)="toggleFiltersSidebar()"
+          >
+            <app-icon name="search" [size]="18"></app-icon>
+            <span>Φίλτρα</span>
+          </button>
+        </aside>
         <aside
           *ngIf="!filtersCollapsed()"
           appMapFiltersSidebar
@@ -157,7 +166,87 @@ import { MatchedCompetitorCardComponent } from "./map/matched-competitor-card.co
           (amenityToggle)="toggleAmenity($event)"
           (amenitiesClear)="clearAmenities()"
           (findRequest)="findCompetitors()"
-        ></aside>
+        >
+          <!--
+            «Ταίριασμα δωματίου» as its own highlighted card at the foot of the
+            «Φίλτρα» column (owner decision 2026-10-05), projected into the
+            sidebar so its bindings stay on this page. Same toggle, same
+            handlers as before.
+          -->
+          <section class="match-controls" [class.is-on]="matchRoomEnabled">
+            <label class="checkbox-row match-toggle-row">
+              <span class="match-toggle-icon" aria-hidden="true"><app-icon name="bed" [size]="20"></app-icon></span>
+              <span class="match-toggle-text">
+                <strong class="filter-section-label">Ταίριασμα δωματίου</strong>
+                <span>Ταίριασμα με το δικό μου δωμάτιο</span>
+              </span>
+              <input class="switch-input" type="checkbox" role="switch" [ngModel]="matchRoomEnabled" (ngModelChange)="onMatchToggle($event)">
+            </label>
+            <ng-container *ngIf="matchRoomEnabled">
+              <!-- Agents (spec Α.4): ONE source badge for everything the match list
+                   shows. «Εκτίμηση AI» is only ever earned by an agent read — a
+                   false source here would be worse than no badge at all. -->
+              <div class="match-source-row">
+                <span class="source-chip" data-testid="match-source-badge">{{ matchSourceLabel() }}</span>
+                <!-- Manual agent re-run (spec Α.1): needs the completed job on
+                     screen and a reference room to send it. -->
+                <button
+                  type="button"
+                  class="panel-toggle-button"
+                  data-testid="reassess-button"
+                  [disabled]="reassessInFlight() || !canReassess()"
+                  (click)="reassessMatches()"
+                >{{ reassessInFlight() ? "Εκτίμηση σε εξέλιξη…" : "Επανεκτίμηση ταιριάσματος" }}</button>
+              </div>
+              <div *ngIf="reassessNotice()" class="alert" [class.alert-error]="isAgentFailureNotice(reassessNotice())" data-testid="reassess-notice">{{ reassessNotice() }}</div>
+              <div class="match-settings">
+                <label class="match-range">
+                  <span>Ελάχιστο σκορ ταιριάσματος: <b>{{ minMatchScore }}</b></span>
+                  <input type="range" min="0" max="100" step="5" [style.--fill]="minMatchScore + '%'" [ngModel]="minMatchScore" (ngModelChange)="onMinScoreChange($event)">
+                </label>
+                <label>
+                  <span>Ταξινόμηση κατά</span>
+                  <app-select-menu
+                    [options]="matchSortOptions"
+                    [value]="matchSort"
+                    (valueChange)="onMatchSortChange($any($event))"
+                  ></app-select-menu>
+                </label>
+              </div>
+              <div *ngIf="matchError()" class="alert alert-error">{{ matchError() }}</div>
+              <div *ngIf="matchStatus() === 'loading'" class="results-empty">
+                <strong>Βαθμολόγηση δωματίων</strong>
+                <span>Σύγκριση των πακέτων των ανταγωνιστών με το δικό σας δωμάτιο.</span>
+              </div>
+              <div *ngIf="matchStatus() === 'ready' && !matchedCompetitors().length" class="results-empty">
+                <strong>Κανένα ταίριασμα σε αυτό το όριο</strong>
+                <span>Μειώστε το ελάχιστο σκορ ταιριάσματος ή τρέξτε πρώτα νέα αναζήτηση ανταγωνιστών.</span>
+              </div>
+              <div *ngIf="matchedCompetitors().length" class="matched-list">
+                <article
+                  *ngFor="let hotel of matchedCompetitors(); index as hotelIndex"
+                  appMatchedCompetitorCard
+                  class="matched-card"
+                  [hotel]="hotel"
+                  [groups]="roomGroupsFor(hotel)"
+                  [hotelIndex]="hotelIndex"
+                  [expandedPlanKeys]="expandedPlanKeys()"
+                  [selectable]="competitorRowsByHotel().has(hotel.hotel_name)"
+                  [selected]="isHotelSelected(hotel)"
+                  (plansToggle)="togglePlans(hotelIndex, $event)"
+                  (selectionToggle)="toggleHotelSelection(hotel)"
+                  [class.is-highlighted]="highlightedCardKey() === matchedHotelKey(hotel)"
+                  [attr.data-hotel-key]="matchedHotelKey(hotel)"
+                  (mouseenter)="highlightMarker(matchedHotelKey(hotel))"
+                  (mouseleave)="unhighlightMarker(matchedHotelKey(hotel))"
+                  (focusin)="highlightMarker(matchedHotelKey(hotel))"
+                  (focusout)="unhighlightMarker(matchedHotelKey(hotel))"
+                  (click)="easeToMatchedMarker($event, hotel)"
+                ></article>
+              </div>
+            </ng-container>
+          </section>
+        </aside>
 
         <section class="map-shell">
           <app-setup-checklist></app-setup-checklist>
@@ -169,11 +258,8 @@ import { MatchedCompetitorCardComponent } from "./map/matched-competitor-card.co
             [ownCoordinatesMissing]="ownCoordinatesMissing()"
             [showLegend]="showMapLegend()"
             (markerClick)="flashCard($event)"
-          >
-            <button *ngIf="filtersCollapsed()" class="show-filters-button" type="button" (click)="toggleFiltersSidebar()">
-              Φίλτρα
-            </button>
-          </div>
+            (popupClose)="releaseCard($event)"
+          ></div>
         </section>
 
         <aside class="results-sidebar">
@@ -187,10 +273,14 @@ import { MatchedCompetitorCardComponent } from "./map/matched-competitor-card.co
           -->
           <label class="compare-room-field">
             <span>Σύγκριση για</span>
-            <select class="roomrate-input" data-testid="room-select" [ngModel]="selectedRoomId()" (ngModelChange)="onRoomTypeChange($event)">
-              <option value="">Επιλέξτε το δωμάτιό σας</option>
-              <option *ngFor="let option of roomOptions()" [value]="option.value">{{ option.label }}</option>
-            </select>
+            <app-select-menu
+              testId="room-select"
+              placeholder="Επιλέξτε το δωμάτιό σας"
+              [emphasis]="true"
+              [options]="roomOptions()"
+              [value]="selectedRoomId()"
+              (valueChange)="onRoomTypeChange($event)"
+            ></app-select-menu>
           </label>
           <!--
             The auto-pick notice sits right under the dropdown it describes, in
@@ -287,6 +377,7 @@ import { MatchedCompetitorCardComponent } from "./map/matched-competitor-card.co
           </div>
           <div *ngIf="autoMatchNotice()" class="alert" [class.alert-error]="isAgentFailureNotice(autoMatchNotice())" data-testid="auto-match-notice">{{ autoMatchNotice() }}</div>
 
+
           <div *ngIf="status() === 'loading'" class="results-empty">
             <strong>Γίνεται αναζήτηση</strong>
             <span>Αναμονή για την ολοκλήρωση της ζωντανής αναζήτησης.</span>
@@ -310,8 +401,9 @@ import { MatchedCompetitorCardComponent } from "./map/matched-competitor-card.co
 
           <!--
             Map ↔ list linking: hovering or focusing a card raises its hotel's
-            marker, clicking it eases the map there; a marker click flashes the
-            hotel's cards (is-highlighted) and scrolls the first into view.
+            marker, clicking it eases the map there; a marker click marks the
+            hotel's cards (is-highlighted) while its popup is open and centres
+            the first in the list. The matched cards above link the same way.
             data-hotel-key is the marker's own key (hotelKey).
           -->
           <div class="competitor-list">
@@ -337,64 +429,6 @@ import { MatchedCompetitorCardComponent } from "./map/matched-competitor-card.co
             Τιμές επίσημης ιστοσελίδας (desktop, χωρίς σύνδεση)
           </p>
 
-          <div class="match-controls">
-            <div class="filter-section-label">Ταίριασμα δωματίου</div>
-            <label class="checkbox-row">
-              <input type="checkbox" [ngModel]="matchRoomEnabled" (ngModelChange)="onMatchToggle($event)">
-              <span>Ταίριασμα με το δικό μου δωμάτιο</span>
-            </label>
-            <ng-container *ngIf="matchRoomEnabled">
-              <!-- Agents (spec Α.4): ONE source badge for everything the match list
-                   shows. «Εκτίμηση AI» is only ever earned by an agent read — a
-                   false source here would be worse than no badge at all. -->
-              <div class="match-source-row">
-                <span class="source-chip" data-testid="match-source-badge">{{ matchSourceLabel() }}</span>
-                <!-- Manual agent re-run (spec Α.1): needs the completed job on
-                     screen and a reference room to send it. -->
-                <button
-                  type="button"
-                  class="panel-toggle-button"
-                  data-testid="reassess-button"
-                  [disabled]="reassessInFlight() || !canReassess()"
-                  (click)="reassessMatches()"
-                >{{ reassessInFlight() ? "Εκτίμηση σε εξέλιξη…" : "Επανεκτίμηση ταιριάσματος" }}</button>
-              </div>
-              <div *ngIf="reassessNotice()" class="alert" [class.alert-error]="isAgentFailureNotice(reassessNotice())" data-testid="reassess-notice">{{ reassessNotice() }}</div>
-              <label>
-                <span>Ελάχιστο σκορ ταιριάσματος: {{ minMatchScore }}</span>
-                <input type="range" min="0" max="100" step="5" [ngModel]="minMatchScore" (ngModelChange)="onMinScoreChange($event)">
-              </label>
-              <label>
-                <span>Ταξινόμηση κατά</span>
-                <select class="roomrate-input" [ngModel]="matchSort" (ngModelChange)="onMatchSortChange($event)">
-                  <option value="match">Καλύτερο ταίριασμα</option>
-                  <option value="price">Τιμή</option>
-                  <option value="distance">Απόσταση</option>
-                </select>
-              </label>
-              <div *ngIf="matchError()" class="alert alert-error">{{ matchError() }}</div>
-              <div *ngIf="matchStatus() === 'loading'" class="results-empty">
-                <strong>Βαθμολόγηση δωματίων</strong>
-                <span>Σύγκριση των πακέτων των ανταγωνιστών με το δικό σας δωμάτιο.</span>
-              </div>
-              <div *ngIf="matchStatus() === 'ready' && !matchedCompetitors().length" class="results-empty">
-                <strong>Κανένα ταίριασμα σε αυτό το όριο</strong>
-                <span>Μειώστε το ελάχιστο σκορ ταιριάσματος ή τρέξτε πρώτα νέα αναζήτηση ανταγωνιστών.</span>
-              </div>
-              <div *ngIf="matchedCompetitors().length" class="matched-list">
-                <article
-                  *ngFor="let hotel of matchedCompetitors(); index as hotelIndex"
-                  appMatchedCompetitorCard
-                  class="matched-card"
-                  [hotel]="hotel"
-                  [groups]="roomGroupsFor(hotel)"
-                  [hotelIndex]="hotelIndex"
-                  [expandedPlanKeys]="expandedPlanKeys()"
-                  (plansToggle)="togglePlans(hotelIndex, $event)"
-                ></article>
-              </div>
-            </ng-container>
-          </div>
         </aside>
       </section>
 
@@ -458,7 +492,7 @@ export class MapPageComponent implements OnInit, OnDestroy {
   readonly propertyName = signal("");
   readonly selectedRoomId = signal("");
   readonly selectedRoomType = signal("");
-  readonly filtersCollapsed = signal(true);
+  readonly filtersCollapsed = signal(false);
   readonly status = signal<LoadingState>("idle");
   readonly actionStatus = signal<LoadingState>("idle");
   readonly message = signal(START_SEARCH_MESSAGE);
@@ -540,6 +574,20 @@ export class MapPageComponent implements OnInit, OnDestroy {
   // per match load: the template reads the groups on every change-detection
   // pass, and rebuilding them there would hand *ngFor fresh identities each
   // time — recreating the rows (and their expand buttons) under the user.
+  // The result rows per hotel name: matched hotels carry no property id, so
+  // the name is what ties a matched card to its rows, ticks and marker.
+  readonly competitorRowsByHotel = computed(() => {
+    const byHotel = new Map<string, CompetitorMapMarker[]>();
+    for (const row of this.competitors()) {
+      const rows = byHotel.get(row.hotel_name);
+      if (rows) {
+        rows.push(row);
+      } else {
+        byHotel.set(row.hotel_name, [row]);
+      }
+    }
+    return byHotel;
+  });
   private readonly matchedRoomGroups = computed(() => {
     const groups = new Map<Competitor, RoomPlanGroup[]>();
     for (const hotel of this.matchedCompetitors()) {
@@ -555,12 +603,19 @@ export class MapPageComponent implements OnInit, OnDestroy {
   // a later search pre-opened.
   readonly expandedPlanKeys = signal<Set<string>>(new Set());
 
-  readonly roomOptions = computed(() =>
+  readonly roomOptions = computed<SelectMenuOption[]>(() =>
     this.roomTypes().map((item) => ({
       value: item.id,
       label: `${item.room_type} (${item.room_type_category})`,
+      display: item.room_type,
+      hint: item.room_type_category,
     })),
   );
+  readonly matchSortOptions: SelectMenuOption[] = [
+    { value: "match", label: "Καλύτερο ταίριασμα" },
+    { value: "price", label: "Τιμή" },
+    { value: "distance", label: "Απόσταση" },
+  ];
   readonly selectedOwnedRoom = computed(() =>
     this.roomTypes().find((item) => item.id === this.selectedRoomId())
       || this.roomTypes().find((item) => item.room_type_category === this.selectedRoomType()),
@@ -779,12 +834,11 @@ export class MapPageComponent implements OnInit, OnDestroy {
   private ownedPropertyId = "";
   private rawDestination = "";
   private hotelMatchScores = new Map<string, number>();
-  // Map ↔ list linking, keyed by hotelKey: the card flashed after a marker
-  // click (the map raises the marker of a hovered card itself). A signal: the
-  // flash is written from a Mapbox DOM listener and cleared by a timer
-  // (AGENTS.md), and the template reads it.
+  // Map ↔ list linking, keyed by hotelKey: the card marked after a marker
+  // click, for as long as that marker's popup stays open (the map raises the
+  // marker of a hovered card itself). A signal: it is written from Mapbox DOM
+  // listeners (AGENTS.md), and the template reads it.
   readonly highlightedCardKey = signal<string | null>(null);
-  private cardHighlightTimer: ReturnType<typeof window.setTimeout> | null = null;
   private readonly hostElement: ElementRef<HTMLElement> = inject(ElementRef);
   // What the map draws, read by the map at render time.
   readonly mapSource: CompetitorMapSource = {
@@ -887,9 +941,6 @@ export class MapPageComponent implements OnInit, OnDestroy {
     if (this.matchRefreshTimer) {
       window.clearTimeout(this.matchRefreshTimer);
     }
-    if (this.cardHighlightTimer) {
-      window.clearTimeout(this.cardHighlightTimer);
-    }
     this.stopScrapeProgress();
   }
 
@@ -929,24 +980,63 @@ export class MapPageComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * A marker click: its hotel's cards flash for CARD_HIGHLIGHT_MS and the first
-   * one scrolls into view, so the list says which result the map just opened.
-   * Runs in a Mapbox DOM listener, hence the signal and a timer that ngOnDestroy
-   * clears; a newer click restarts the flash for its own hotel.
+   * A marker click: its hotel's cards stay marked while the popup is open, and
+   * the first one scrolls to the middle of the list, so the list says which
+   * result the map just opened. With room matching on, the matched card
+   * (higher up, with the scores) is the one brought into view. Runs in a
+   * Mapbox DOM listener, hence the signal; a newer click moves the mark.
    */
   flashCard(key: string): void {
     this.highlightedCardKey.set(key);
-    if (this.cardHighlightTimer) {
-      window.clearTimeout(this.cardHighlightTimer);
-    }
-    this.cardHighlightTimer = window.setTimeout(() => {
-      this.cardHighlightTimer = null;
+    const escaped = CSS.escape(key);
+    const host = this.hostElement.nativeElement;
+    const card = host.querySelector<HTMLElement>(`.matched-card[data-hotel-key="${escaped}"]`)
+      ?? host.querySelector<HTMLElement>(`.competitor-card[data-hotel-key="${escaped}"]`);
+    card?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  /** Its popup closed: the hotel's cards let go, unless a newer click already moved the mark. */
+  releaseCard(key: string): void {
+    if (this.highlightedCardKey() === key) {
       this.highlightedCardKey.set(null);
-    }, CARD_HIGHLIGHT_MS);
-    const card = this.hostElement.nativeElement.querySelector<HTMLElement>(
-      `.competitor-card[data-hotel-key="${CSS.escape(key)}"]`,
-    );
-    card?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }
+
+  /** A matched card points at the same marker as the hotel's result rows. */
+  matchedHotelKey(hotel: Competitor): string {
+    const row = this.competitorRowsByHotel().get(hotel.hotel_name)?.[0];
+    return row ? hotelKey(row) : hotel.hotel_name;
+  }
+
+  /** A matched hotel is tracked when any of its result rows is ticked. */
+  isHotelSelected(hotel: Competitor): boolean {
+    const selected = this.selectedKeys();
+    return (this.competitorRowsByHotel().get(hotel.hotel_name) ?? []).some((row) => selected.has(markerKey(row)));
+  }
+
+  /**
+   * The matched card's checkbox: untick every row of the hotel, or tick its
+   * first row (the one its result card shows first). Hotels with no result
+   * row have nothing to track, and the card hides the checkbox.
+   */
+  toggleHotelSelection(hotel: Competitor): void {
+    const rows = this.competitorRowsByHotel().get(hotel.hotel_name) ?? [];
+    if (!rows.length) {
+      return;
+    }
+    const selected = this.selectedKeys();
+    const ticked = rows.filter((row) => selected.has(markerKey(row)));
+    for (const row of ticked.length ? ticked : rows.slice(0, 1)) {
+      this.toggleCompetitor(markerKey(row));
+    }
+  }
+
+  /** A matched-card click eases the map like a result card, but never from its own controls. */
+  easeToMatchedMarker(event: Event, hotel: Competitor): void {
+    if (event.target instanceof Element && event.target.closest("button, input, a")) {
+      return;
+    }
+    this.easeToMarker(event, this.matchedHotelKey(hotel));
   }
 
   setFilter(key: keyof MapFilters, value: string): void {
@@ -1514,22 +1604,11 @@ export class MapPageComponent implements OnInit, OnDestroy {
       : `Προστέθηκαν ${savedCount} δωμάτια ανταγωνιστών στην παρακολούθηση. ${kept}`;
   }
 
-  async signOut(): Promise<void> {
-    this.notifications.stop();
-    await this.auth.signOut();
-    this.workflow.clear();
-    await this.router.navigateByUrl("/auth");
-  }
 
   toggleFiltersSidebar(): void {
     this.filtersCollapsed.update((collapsed) => !collapsed);
+    // The map's column changes width: let Mapbox re-measure its canvas.
     window.setTimeout(() => this.mapView?.resize(), 0);
-  }
-
-  private openFiltersSidebar(): void {
-    if (this.filtersCollapsed()) {
-      this.toggleFiltersSidebar();
-    }
   }
 
   onMatchToggle(enabled: boolean): void {
@@ -2046,9 +2125,8 @@ export class MapPageComponent implements OnInit, OnDestroy {
         return;
       }
       if (!job) {
-        // No previous search to show (spec §4.1): the form is the only way
-        // forward, so it opens by itself instead of hiding behind «Φίλτρα».
-        this.openFiltersSidebar();
+        // No previous search to show (spec §4.1): the «Φίλτρα» column is the
+        // way forward.
         return;
       }
 

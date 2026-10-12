@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Protocol
 
 from api.repositories.scrape_jobs_repository import (
@@ -32,6 +32,16 @@ FAILURE_DISABLE_THRESHOLD = 3
 # any client-supplied "scheduled" key, so it is applied exclusively via
 # ScrapeJobService.create_job(..., scheduled=True) on the scheduler path below.
 SCHEDULED_FILTERS_PAYLOAD = {"limit": 25}
+
+# The schedule tracks one arrival for TRACKED_ARRIVAL_HOLD_DAYS daily runs.
+# Alerts, the 7-day trend and the price history compare runs of the SAME stay.
+# A check-in rolled to «today + lead_days» changed every day, so scheduled runs
+# never had a previous price to compare. Arrivals sit on a fixed 14-day grid
+# of Fridays (a Friday check-in is the weekend stay leisure hotels compete
+# on), so each stay is watched for two weeks as it approaches, and the 7-day
+# trend has a baseline for the second week.
+TRACKED_ARRIVAL_ANCHOR = date(2026, 1, 2)  # a Friday
+TRACKED_ARRIVAL_HOLD_DAYS = 14
 
 
 class ScheduleRepositoryProtocol(Protocol):
@@ -261,7 +271,7 @@ class ScheduleService:
         the UTC date is still yesterday.
         """
         today = local_date(now, schedule_zone(config.get("timezone")))
-        check_in = today + timedelta(days=config["lead_days"])
+        check_in = tracked_check_in(today + timedelta(days=config["lead_days"]))
         check_out = check_in + timedelta(days=config["nights"])
         return [
             ScrapeJobCreate(
@@ -283,3 +293,14 @@ class ScheduleService:
             )
             for schedulable_property in properties
         ]
+
+
+def tracked_check_in(earliest: date) -> date:
+    """The arrival the schedule tracks: the first grid Friday on or after ``earliest``.
+
+    It stays the same for TRACKED_ARRIVAL_HOLD_DAYS consecutive days of
+    ``earliest``, so the lead time runs from ``lead_days`` to
+    ``lead_days + 13``.
+    """
+    offset = (earliest - TRACKED_ARRIVAL_ANCHOR).days % TRACKED_ARRIVAL_HOLD_DAYS
+    return earliest if offset == 0 else earliest + timedelta(days=TRACKED_ARRIVAL_HOLD_DAYS - offset)

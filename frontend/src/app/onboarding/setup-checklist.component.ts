@@ -39,15 +39,15 @@ import { WorkflowStorageService } from "../services/workflow-storage.service";
     </section>
   `,
   styles: [`
-    .setup-checklist { background: #fff; border: 1px solid #e2e8f0; border-radius: 0.5rem; margin-bottom: 0.75rem; }
+    .setup-checklist { background: var(--panel); border: 1px solid var(--line); border-radius: 0.5rem; margin-bottom: 0.75rem; }
     .checklist-header { width: 100%; display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem 0.9rem; background: none; border: none; cursor: pointer; }
-    .checklist-bar { flex: 1; height: 4px; border-radius: 2px; background: #e2e8f0; overflow: hidden; }
-    .checklist-bar-fill { display: block; height: 100%; background: #0f766e; transition: width 0.3s; }
+    .checklist-bar { flex: 1; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+    .checklist-bar-fill { display: block; height: 100%; background: var(--sea); transition: width 0.3s; }
     .checklist-header .chevron-collapsed { transform: rotate(-90deg); }
     .checklist-steps { list-style: none; margin: 0; padding: 0.25rem 0.9rem 0.75rem; display: flex; flex-direction: column; gap: 0.4rem; }
     .checklist-steps li { display: flex; gap: 0.5rem; align-items: baseline; }
     .checklist-steps p { margin: 0.1rem 0 0; font-size: 0.82rem; }
-    .step-done strong { color: #64748b; font-weight: 500; }
+    .step-done strong { color: var(--muted); font-weight: 500; }
   `],
 })
 export class SetupChecklistComponent {

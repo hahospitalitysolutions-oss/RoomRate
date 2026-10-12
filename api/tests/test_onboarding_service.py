@@ -96,6 +96,41 @@ def test_booking_candidate_provider_falls_back_to_property_name_search(monkeypat
     assert candidates[0].display_name == "Aegean View"
 
 
+def test_booking_candidate_provider_searches_by_name_when_the_area_list_misses_the_property(monkeypatch):
+    """«Αναζήτηση ξανά» used to return the same cached top-of-area list forever."""
+    calls = []
+    salamina_hotels = [
+        {"name": "Salamis Bay Hotel", "url": "https://www.booking.com/hotel/gr/salamis-bay.html"},
+        {"name": "Sabbal Apartments", "url": "https://www.booking.com/hotel/gr/sabbal.el.html?aid=1"},
+    ]
+
+    def fake_fetch_hotel_list(client, config, engine=None):
+        _ = client, engine
+        calls.append(config.destination)
+        if config.destination == "Σαλαμίνα":
+            return [salamina_hotels[0], {"name": "Votsalo Studios", "url": "https://www.booking.com/hotel/gr/votsalo.html"}]
+        return [salamina_hotels[1], salamina_hotels[0]]
+
+    monkeypatch.setattr("scraper.build_client", lambda: object())
+    monkeypatch.setattr("scraper.fetch_hotel_list", fake_fetch_hotel_list)
+
+    candidates = BookingPropertyCandidateProvider().search(
+        property_name="Sabbal Apartments",
+        location="Σαλαμίνα",
+        check_in=date(2026, 11, 3),
+        check_out=date(2026, 11, 7),
+        adults=2,
+        children=0,
+        rooms=1,
+        limit=8,
+        cache_hours=24,
+    )
+
+    assert calls == ["Σαλαμίνα", "Sabbal Apartments, Σαλαμίνα"]
+    # Name results first, then the rest of the area, each listing once.
+    assert [c.display_name for c in candidates] == ["Sabbal Apartments", "Salamis Bay Hotel", "Votsalo Studios"]
+
+
 def test_booking_candidate_provider_forwards_cache_hours_to_scout_config(monkeypatch):
     """Pins the pass-through at the literal call site the live bug traced to
     (onboarding_service.py's _search_config, formerly a hardcoded
@@ -996,3 +1031,31 @@ def test_delete_owned_property_delegates_to_the_repository():
         candidate_provider=FakeCandidateProvider([]),
     )
     assert service.delete_owned_property(ACCOUNT_ID, OWNED_PROPERTY_ID) is False
+
+
+def test_booking_search_without_an_apify_token_is_a_clear_setup_error(monkeypatch):
+    """Not a raw OSError (a CORS-less 500): a 422 the onboarding routes pass on."""
+    import pytest
+
+    from api.services.onboarding_service import BOOKING_SEARCH_NOT_CONFIGURED
+
+    def missing_token():
+        raise OSError("Δεν βρέθηκε APIFY_TOKEN.")
+
+    monkeypatch.setattr("scraper.build_client", missing_token)
+
+    with pytest.raises(ValueError) as exc_info:
+        BookingPropertyCandidateProvider().search(
+            property_name="Aegean View",
+            location="Faliraki",
+            check_in=date(2026, 7, 1),
+            check_out=date(2026, 7, 5),
+            adults=2,
+            children=0,
+            rooms=1,
+            limit=3,
+            cache_hours=24,
+        )
+
+    assert str(exc_info.value) == BOOKING_SEARCH_NOT_CONFIGURED
+    assert "APIFY_TOKEN" in BOOKING_SEARCH_NOT_CONFIGURED
