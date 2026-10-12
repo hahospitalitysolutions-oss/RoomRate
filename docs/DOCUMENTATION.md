@@ -821,6 +821,152 @@ recommended = min(max(recommendation.recommended_price_eur, lower_bound), upper_
 `low <= recommended <= high`. Αν δεν υπάρχει θετική τιμή αναφοράς, η
 προϋπάρχουσα market-band επικύρωση παραμένει το ενεργό guardrail.
 
+#### `api/services/ferry_demand_service.py` (ferry demand)
+**Purpose:** The first outside demand signal for the price advisor: ferry
+sailings INTO island destinations, read from Ferryhopper's public MCP server
+(`FERRYHOPPER_MCP_URL`, no key). Destination-level data, shared by every
+account in a destination.
+
+1. **Port lookup** (worker job `ferry_profile_resolution`, hourly, acts only
+   when a destination has no lookup yet or it is 30 days old). Ferryhopper's
+   ports carry a name, a country and a code, no coordinates, and are named
+   in Greek transliteration (RODOS, PIRAEUS). So the island comes from the
+   owners' own coordinates (`api/services/greek_islands.py`: a box per
+   inhabited island with ferries, Crete split by prefecture; the smaller box
+   wins where two overlap), and the island's names find its port: the port
+   named exactly after it, then its "X (ALL PORTS)" group, then ports that
+   mention it ("SAMI (KEFALONIA)"). A hotel in Faliraki or Oia gets RODOS or
+   the Santorini port; a property outside every box (mainland, or an island
+   reached by road such as Evia and Lefkada) is `no_ferry`. Without the
+   property's coordinates only a near-certain name match counts. The direct
+   routes into the port, port groups excluded (ATHENS (ALL PORTS) would count
+   Piraeus twice), are ranked by sailings on a sample Friday (up to 60
+   searches, once a month); up to 4 are kept, mainland gateways first. If
+   the first port has no route with a sailing, the next candidate is tried;
+   if none has, the destination is `no_ferry` until the monthly refresh
+   (Ferryhopper does not sell Salamina's Perama–Paloukia shuttle; a seasonal
+   island opens again in season). A lookup whose searches failed is `error`
+   and retried after 6 hours; a destination that had routes keeps collecting
+   on them. `scripts/run_ferry_demand.py --show` prints the demand calendar.
+2. **Collection** (`ferry_demand_collection`, daily 05:10 UTC). Every day for
+   `FERRY_DEMAND_DAILY_DAYS`, then Fridays and Saturdays up to
+   `FERRY_DEMAND_HORIZON_DAYS`, plus the arrival and its eve of every enabled
+   schedule, within `FERRY_DEMAND_MAX_CALLS_PER_RUN` calls,
+   `FERRY_DEMAND_CALL_INTERVAL_SECONDS` apart. Per route and travel date one
+   row in `roomrate_ferry_observations`: sailings, the cheapest
+   accommodation's fare (min/median over the sailings), and the priced
+   accommodations the sailings still offer (`accommodation_options`,
+   migration 20261011_0032). Ferryhopper flags no sold-out sailing: a full
+   cabin or fare tier leaves the list, and the cheapest fare rises. Five
+   failures in a row stop the run. Both jobs run only while a worker is up;
+   `python scripts/run_ferry_demand.py [--lookup|--collect] [--refresh]`
+   runs them once by hand (it writes to the `.env` database).
+3. **Signal.** For a check-in: the sailings of the day before and the day
+   itself. The first live calendar (2026-10-11) showed that comparing one
+   travel date with others reads the timetable, not demand (every weekday
+   runs other ships, November fewer than October), so the signal reads:
+   - **pickup**: each sailing day's newest look against an earlier look at
+     the same one, 3 to 21 days older: accommodations still offered (a full
+     cabin or fare tier leaves Ferryhopper's list) and the cheapest
+     passenger fare (pet cabins and vehicles are not counted). Per route
+     its most telling window day (Friday's overnight ship is Saturday's
+     arrivals), routes weighted by what they usually offer, so Symi's day
+     boats cannot drown the Blue Star from Piraeus;
+   - **extra sailings**: each window day against the same route on the same
+     weekday (at least two other such days).
+   `high` when ≥25% of the accommodations are gone, or the cheapest fare is
+   ≥15% up, or sailings ≥50% above the same weekday (or, for a source that
+   flags it, ≥40% of the sailings have no seats); `low` when the cheapest
+   fare is ≥10% down with no accommodations gone; `unknown` until either
+   can be read (the first 3 days of collection) or when nothing sails.
+   Pickup needs a collection every day: with no worker up, run
+   `scripts/run_ferry_demand.py` from a scheduled task (its docstring has
+   the Windows `schtasks` line). `--show` prints the calendar with the
+   pickup columns; `--day YYYY-MM-DD` each stored sailing of a date.
+
+On `/pricing` the «Ζήτηση πλοίων» panel (frontend
+`pages/pricing/ferry-demand-panel.component.ts`, reading
+`GET /api/v1/demand/ferries`) shows the tracked routes and one cell per
+arrival day for three weeks, coloured by level, with the form's check-in
+outlined; before the first lookup, for a mainland destination and in the
+first days of collection it says which of these it is.
+
+The price-recommendation route attaches the signal to the LLM context
+(`market_context.demand_signals.ferries`, prompt v9: it may move the price
+inside the market band only) and returns it as `demand_signals` for the card.
+The statistical baseline does not use it yet: the thresholds are rules, to be
+calibrated once a season of observations exists.
+
+`api/services/ferryhopper_client.py` discovers the server's tools at runtime
+(names have changed before), maps arguments onto each tool's `inputSchema`
+and reads answers tolerantly; a figure the answer does not carry stays null.
+The answer shapes are not a published contract: run
+`python scripts/probe_ferryhopper.py` on a machine with internet access and
+check `tmp/ferryhopper_probe.json` against the parser (`--show` prints
+samples of it; `--profile --city … --lat … --lon …` runs the port lookup a
+hotel there would get, on live data, without writing). Ferryhopper's MCP
+server is made for AI assistants; systematic use needs their permission.
+
+#### `api/services/flight_demand_service.py` (flight demand)
+**Purpose:** The second outside demand signal: scheduled arrivals at the
+island's airport, from AeroDataBox on RapidAPI
+(`api/services/aerodatabox_client.py`, `AERODATABOX_API_KEY`; nothing runs
+without it). Airport-level data in `roomrate_flight_observations`
+(migration 20261011_0033), shared by every account on the island.
+
+1. **Airports.** The island each active property's own coordinates fall on
+   (`greek_islands.island_at`) and `ISLAND_AIRPORTS`: Rhodes RHO, Santorini
+   JTR, Corfu CFU…; Crete's Rethymno and Lasithi land at Heraklion. Islands
+   reached by sea only (Symi, Patmos, Hydra…), the mainland and road-reached
+   islands get no flight signal.
+2. **Collection** (worker job `flight_demand_collection`, daily 05:30 UTC,
+   advisory lock 815_372_004). One call = one airport and one local window
+   of at most 12 hours and costs 2 units (probe 2026-10-11). The plan
+   (`api/services/flight_plan.py`, `FLIGHT_DEMAND_PLAN`) sets the travel
+   weekdays, the windows and the month's units:
+   - `free` (400 units a month): Fridays and Saturdays, 08:00–20:00,
+     380 units, at most 20 calls a run;
+   - `pro` ($8, 5,000 units): every day, 00–12 and 12–24, 4,800 units,
+     at most 200 calls a run.
+   `FLIGHT_DEMAND_MONTHLY_UNITS`, `_WEEKDAYS`, `_WINDOWS` and
+   `_MAX_CALLS_PER_RUN` override one part; a bad value fails at startup.
+   Each travel date and window up to `FLIGHT_DEMAND_HORIZON_DAYS` (56) is
+   read again after `FLIGHT_DEMAND_REFRESH_DAYS` (7), nearest dates first.
+   A day spends the month's remaining units over its remaining days
+   (rounded up, so nothing is left unspent at the month's end); the units
+   spent are the `calls` of the month's rows (a repeat the same day adds
+   one). A run stops on HTTP 429, when AeroDataBox reports fewer units left
+   than a call costs (`units_remaining`, stored per row), on a wrong key
+   (401/403), or after 3 failures in a row. One airport on the free plan is
+   ~70 calls (140 units) a month, so the free plan covers two island
+   airports; more airports share it and read far dates less often.
+3. **Signal.** Pickup: a travel day's arrivals now against the oldest look
+   3 to 21 days before (per window; a window overlapping one read more
+   recently, after a plan change, is not counted). Airlines add frequencies
+   and charters where seats sell and drop them where they do not; how busy
+   the airport is on one read is the season, not demand. `high` at ≥ +8%
+   and at least 2 flights more, `low` at ≤ −8% and 2 fewer, `unknown`
+   until the same days are read twice (about a week on the free plan) or
+   when there were no flights before. A check-in that is not a collected
+   day reads the nearest collected days within 3 days (on the free plan,
+   a Wednesday reads Friday). The summary names the top origins
+   (Manchester, London Gatwick…) for the owner.
+
+The price-recommendation route attaches it next to the ferries
+(`market_context.demand_signals.flights`, prompt v10: same rule, inside the
+market band; ferries and flights agreeing weigh more) and returns it as
+`demand_signals.flights`; the card shows a «Πτήσεις» line. Its level and
+day are part of the recommendation's request hash.
+
+`python scripts/run_flight_demand.py` runs today's share by hand (`--calls N`
+for a first fill, within the month); `--show` prints arrivals by date and
+the units spent; `--day YYYY-MM-DD` each stored flight of a date.
+`scripts/probe_aerodatabox.py` checks with a RapidAPI key how far ahead
+AeroDataBox returns scheduled arrivals and what a plan's units cover.
+
+To move to Pro: subscribe the same RapidAPI key to AeroDataBox Pro, then
+`FLIGHT_DEMAND_PLAN=pro` in `.env` and restart the worker.
+
 #### `api/repositories/price_recommendation_audit_repository.py`
 **Purpose:** Stores immutable recommendation request/response evidence,
 latency, source, model version and prompt version; also implements the UTC
@@ -1514,6 +1660,50 @@ and the caller still receives its recommendation (without an `audit_id`).
 429 Daily account recommendation quota reached
 503 Recommendation audit could not be persisted
 ```
+
+#### GET /api/v1/demand/ferries
+**Purpose:** The ferry routes and the next days' sailings of the destination
+of one of the caller's owned properties (404 for any other).
+
+**Query:** `owned_property_id` (UUID).
+
+**Response (200):**
+```json
+{
+  "canonical_destination": "rodos",
+  "status": "ferry",
+  "island_port": "Rhodes",
+  "port_distance_km": 2.1,
+  "resolved_at": "2026-10-11T05:10:00Z",
+  "routes": [{"id": "…", "origin_port": "Piraeus", "destination_port": "Rhodes", "status": "auto", "sample_sailings": 1}],
+  "days": [{"travel_date": "2026-11-13", "sailings": 4, "availability_known": 4, "sold_out": 2, "min_price_eur": 62.0, "level": "high"}],
+  "observed_on": "2026-10-11"
+}
+```
+`status` is null before the first port lookup (within the hour after a
+property is claimed); `days` is empty before the first daily collection.
+
+#### GET /api/v1/demand/flights
+**Purpose:** The island airport of one of the caller's owned properties
+(404 for any other) and its collected arrivals by travel date.
+
+**Query:** `owned_property_id` (UUID).
+
+**Response (200):**
+```json
+{
+  "canonical_destination": "rodos",
+  "status": "flights",
+  "airport_iata": "RHO",
+  "island": "Ρόδος",
+  "days": [{"travel_date": "2026-10-17", "arrivals": 46, "airlines": 11, "arrivals_change_pct": 15.0,
+            "flights_added": 6, "compared_with": "2026-10-05", "top_origins": ["Manchester"], "level": "high"}],
+  "observed_on": "2026-10-12"
+}
+```
+`status` is `no_airport` off an island with an airport (or without the
+property's coordinates) and `off` without `AERODATABOX_API_KEY`; `days` is
+empty before the first collection.
 
 #### POST /api/v1/scrape-jobs/
 **Purpose:** Durably queue a Booking.com market scrape for the current account. The production Python worker starts it.

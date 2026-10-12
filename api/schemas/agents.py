@@ -14,6 +14,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from api.schemas.demand import DemandSignals
+
 # Where the owner's reference price came from (Round 6 §5.2): the property's
 # own live Booking row in the latest completed run, or the onboarding sample.
 OwnPriceSource = Literal["booking_live", "onboarding_sample"]
@@ -141,6 +143,9 @@ class PriceRecommendationResponse(BaseModel):
     model_version: str | None = None
     prompt_version: str | None = None
     own_price_source: OwnPriceSource | None = None
+    # Outside demand the advisor saw (ferries into the destination); None
+    # when the destination has none. Cached answers from before carry None.
+    demand_signals: DemandSignals | None = None
 
 
 # ---------------------------------------------------------------------------

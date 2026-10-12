@@ -93,6 +93,7 @@ type MockOptions = {
   statistics?: unknown;
   recommendation?: unknown;
   totalHotels?: number;
+  demandSignals?: unknown;
 };
 
 async function mockPricingPage(page: Page, options: MockOptions = {}): Promise<void> {
@@ -123,6 +124,7 @@ async function mockPricingPage(page: Page, options: MockOptions = {}): Promise<v
         statistics: options.statistics ?? statistics(),
         recommendation: options.recommendation ?? recommendation(),
         recommendation_available: true,
+        demand_signals: options.demandSignals ?? null,
       },
     }),
   );
@@ -209,4 +211,85 @@ test("B2: a 3-comparable market snapshot shows no small-sample notice", async ({
   // denies only ever renders inside the card.
   await expect(page.locator(".recommendation-card").getByText("Προτεινόμενη τιμή ανά βράδυ")).toBeVisible();
   await expect(page.getByText(/Μικρό δείγμα/)).toHaveCount(0);
+});
+
+test("Ferries: the card shows the ferry demand around the check-in, its level on the border", async ({ page }) => {
+  await mockPricingPage(page, {
+    demandSignals: {
+      ferries: {
+        level: "high",
+        check_in: "2026-09-01",
+        window: ["2026-08-31", "2026-09-01"],
+        sailings: 8,
+        availability_known: 8,
+        sold_out: 4,
+        sold_out_share_pct: 50,
+        min_price_eur: 62,
+        options_change_pct: -32,
+        price_change_pct: 18,
+        compared_with: "2026-08-15",
+        sailings_vs_usual_pct: null,
+        routes: ["PIRAEUS → RODOS"],
+        observed_on: "2026-08-20",
+        summary:
+          "Πλοία προς RODOS για 31/08–01/09: 8 δρομολόγια, 4 χωρίς θέσεις, από τις 15/08: θέσεις προς πώληση -32%, τιμές εισιτηρίων +18%. Ζήτηση πλοίων: Υψηλή.",
+      },
+    },
+  });
+
+  await page.goto("/pricing");
+  await page.getByRole("button", { name: "Λήψη σύστασης" }).click();
+
+  const ferry = page.getByTestId("ferry-demand");
+  await expect(ferry).toBeVisible();
+  await expect(ferry).toContainText("Πλοία");
+  await expect(ferry).toContainText("4 χωρίς θέσεις");
+  await expect(ferry).toContainText("Ζήτηση πλοίων: Υψηλή");
+  await expect(ferry).toHaveClass(/demand-high/);
+});
+
+test("Ferries: a mainland destination (no signal) shows no ferry line", async ({ page }) => {
+  await mockPricingPage(page);
+
+  await page.goto("/pricing");
+  await page.getByRole("button", { name: "Λήψη σύστασης" }).click();
+
+  await expect(page.getByText("Προτεινόμενη τιμή ανά βράδυ")).toBeVisible();
+  await expect(page.getByTestId("ferry-demand")).toHaveCount(0);
+  await expect(page.getByTestId("flight-demand")).toHaveCount(0);
+});
+
+test("Flights: the card shows the island airport's arrivals next to the ferries", async ({ page }) => {
+  await mockPricingPage(page, {
+    demandSignals: {
+      ferries: null,
+      flights: {
+        level: "low",
+        check_in: "2026-09-01",
+        airport_iata: "RHO",
+        island: "Ρόδος",
+        travel_dates: ["2026-08-29"],
+        arrivals: 36,
+        airlines: 11,
+        arrivals_before: 40,
+        flights_added: -4,
+        arrivals_change_pct: -10,
+        compared_with: "2026-08-15",
+        top_origins: ["Manchester", "London Gatwick"],
+        observed_on: "2026-08-22",
+        summary:
+          "Αφίξεις στο αεροδρόμιο RHO (Ρόδος) Σάβ 29/08 08:00–20:00: 36 πτήσεις από 11 αεροπορικές, κυρίως από Manchester, London Gatwick. Από τις 15/08: -4 πτήσεις (-10%). Ζήτηση πτήσεων: Χαμηλή.",
+      },
+    },
+  });
+
+  await page.goto("/pricing");
+  await page.getByRole("button", { name: "Λήψη σύστασης" }).click();
+
+  const flights = page.getByTestId("flight-demand");
+  await expect(flights).toBeVisible();
+  await expect(flights).toContainText("Πτήσεις");
+  await expect(flights).toContainText("-4 πτήσεις (-10%)");
+  await expect(flights).toHaveClass(/demand-low/);
+  await expect(page.getByTestId("ferry-demand")).toHaveCount(0);
 });

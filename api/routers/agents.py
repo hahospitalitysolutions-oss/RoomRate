@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+from datetime import date, datetime, timezone
 from time import perf_counter
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,6 +10,8 @@ from api.config import settings
 from api.dependencies import (
     AccountContext,
     get_account_context,
+    get_ferry_repository,
+    get_flight_repository,
     get_market_service,
     get_onboarding_repository,
     get_price_history_repository,
@@ -17,6 +20,8 @@ from api.dependencies import (
     get_room_matching_service,
     get_scrape_job_service,
 )
+from api.repositories.ferry_repository import FerryRepository
+from api.repositories.flight_repository import FlightRepository
 from api.repositories.onboarding_repository import OnboardingRepository
 from api.repositories.price_history_repository import PriceHistoryRepository
 from api.repositories.price_recommendation_audit_repository import (
@@ -29,6 +34,9 @@ from api.schemas.agents import (
     RoomMatchRunRequest,
     RoomMatchRunResponse,
 )
+from api.schemas.demand import DemandSignals, FerryDemandSignal, FlightDemandSignal
+from api.services.ferry_demand_service import load_ferry_signal
+from api.services.flight_demand_service import load_flight_signal
 from api.services.market_helpers import as_optional_float
 from api.services.market_service import MarketService, RoomRateFilters, build_agent_match_lookup
 from api.services.own_reference_price import resolve_own_reference_price
@@ -114,6 +122,59 @@ def run_room_matching(
     )
 
 
+def _ferry_signal(
+    repository: FerryRepository, canonical_destination: str, check_in: date
+) -> FerryDemandSignal | None:
+    """The ferry demand around this check-in; None when off, absent or unreadable.
+
+    An outside signal is never a reason to fail a recommendation: a read
+    error is logged and the advisor prices without it.
+    """
+    if not settings.ferry_demand_enabled:
+        return None
+    try:
+        return load_ferry_signal(
+            repository,
+            canonical_destination,
+            check_in,
+            today=datetime.now(timezone.utc).date(),
+            horizon_days=settings.ferry_demand_horizon_days,
+        )
+    except Exception:
+        logger.warning(
+            "Ferry demand signal unavailable; pricing without it: destination=%s",
+            canonical_destination,
+            exc_info=True,
+        )
+        return None
+
+
+def _flight_signal(
+    repository: FlightRepository, owned_property: dict, check_in: date
+) -> FlightDemandSignal | None:
+    """The flight demand around this check-in; None when off, off-island or unreadable.
+
+    Like the ferries, never a reason to fail a recommendation.
+    """
+    if not settings.flight_demand_active:
+        return None
+    origin = owned_property_origin(owned_property)
+    if origin is None:
+        return None
+    try:
+        return load_flight_signal(
+            repository,
+            *origin,
+            check_in,
+            today=datetime.now(timezone.utc).date(),
+            horizon_days=settings.flight_demand_horizon_days,
+            max_age_days=settings.flight_signal_max_age_days,
+        )
+    except Exception:
+        logger.warning("Flight demand signal unavailable; pricing without it", exc_info=True)
+        return None
+
+
 @router.post("/price-recommendation", response_model=PriceRecommendationResponse)
 def price_recommendation(
     request: PriceRecommendationRequest,
@@ -125,6 +186,8 @@ def price_recommendation(
     audit_repository: PriceRecommendationAuditRepository = Depends(
         get_price_recommendation_audit_repository
     ),
+    ferry_repository: FerryRepository = Depends(get_ferry_repository),
+    flight_repository: FlightRepository = Depends(get_flight_repository),
 ) -> PriceRecommendationResponse:
     """Hybrid (statistical + LLM) nightly-price recommendation for an owned room.
 
@@ -212,6 +275,11 @@ def price_recommendation(
         (str(row["created_at"]) for row in latest_agent_matches if row.get("created_at")),
         default=None,
     )
+    # The day's ferry and flight observations are part of the request
+    # identity: a new collection must not be answered from a recommendation
+    # made without it.
+    ferry_signal = _ferry_signal(ferry_repository, canonical_destination, request.check_in)
+    flight_signal = _flight_signal(flight_repository, owned_property, request.check_in)
     audit_request_payload = {
         **request.model_dump(mode="json"),
         "room_type_category": room_type_category,
@@ -220,6 +288,16 @@ def price_recommendation(
         "owned_room_type_id": str(owned_room_type_id) if owned_room_type_id else None,
         "agent_matches": len(latest_agent_matches),
         "agent_matches_written_at": agent_matches_written_at,
+        "ferry_signal": (
+            {"level": ferry_signal.level, "observed_on": str(ferry_signal.observed_on)}
+            if ferry_signal is not None
+            else None
+        ),
+        "flight_signal": (
+            {"level": flight_signal.level, "observed_on": str(flight_signal.observed_on)}
+            if flight_signal is not None
+            else None
+        ),
     }
     request_hash = build_recommendation_request_hash(
         str(account.account_id), audit_request_payload
@@ -354,6 +432,15 @@ def price_recommendation(
         agent_matches=agent_matches,
     )
 
+    # Only readable signals reach the model: "unknown" says nothing about demand.
+    readable_signals = {
+        key: signal.model_dump(mode="json")
+        for key, signal in (("ferries", ferry_signal), ("flights", flight_signal))
+        if signal is not None and signal.level != "unknown"
+    }
+    if readable_signals:
+        advisor_context = advisor_context.model_copy(update={"demand_signals": readable_signals})
+
     recommendation = apply_business_guardrails(
         agent.recommend(
             statistics, advisor_context, own_cancellation_type=own_cancellation_type
@@ -368,6 +455,11 @@ def price_recommendation(
         recommendation=recommendation,
         recommendation_available=recommendation is not None,
         own_price_source=own_price_source,
+        demand_signals=(
+            DemandSignals(ferries=ferry_signal, flights=flight_signal)
+            if ferry_signal is not None or flight_signal is not None
+            else None
+        ),
     )
     source = recommendation.source if recommendation is not None else None
     model_version = (

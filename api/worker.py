@@ -63,6 +63,8 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
+    # httpx logs every request at INFO (the ferry collection alone makes ~200).
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     if settings.log_format == "json":
         for handler in logging.getLogger().handlers:
             handler.setFormatter(JsonLogFormatter())
