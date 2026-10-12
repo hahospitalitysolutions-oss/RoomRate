@@ -384,8 +384,8 @@ class FakeRepository:
     def save_profile(self, canonical_destination, **fields):
         self.profiles.append((canonical_destination, fields))
 
-    def routes_to_collect(self):
-        return self.routes
+    def routes_to_collect(self, destinations=None):
+        return [route for route in self.routes if destinations is None or route["canonical_destination"] in destinations]
 
     def schedule_lead_days_by_destination(self):
         return self.lead_days

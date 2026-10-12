@@ -104,5 +104,18 @@ test("ferry demand: a mainland destination and one not looked up yet each say so
     resolved_at: null, routes: [], days: [], observed_on: null,
   });
   await page.goto("/pricing");
-  await expect(page.getByTestId("ferry-pending")).toContainText("μέσα στην επόμενη ώρα");
+  await expect(page.getByTestId("ferry-pending")).toContainText("μέσα σε λίγα λεπτά");
+  await expect(page.getByTestId("ferry-pending").getByRole("link", { name: "Ρυθμίσεις" })).toHaveAttribute("href", "/settings#demand");
+});
+
+test("ferry demand switched off by the owner says so and links to the settings", async ({ page }) => {
+  await mockPricing(page, {
+    canonical_destination: "faliraki", enabled: false, status: null, island_port: null, port_distance_km: null,
+    resolved_at: null, routes: [], days: [], observed_on: null,
+  });
+
+  await page.goto("/pricing");
+
+  await expect(page.getByTestId("ferry-off")).toContainText("απενεργοποιημένη");
+  await expect(page.getByTestId("ferry-pending")).toHaveCount(0);
 });

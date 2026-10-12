@@ -586,13 +586,17 @@ def _report(saved=3):
     return CollectionReport(routes=1, calls=saved, saved=saved)
 
 
-def test_ferry_jobs_are_registered_on_the_worker_scheduler():
-    from api.scheduler import create_scheduler
+def test_one_demand_tick_replaces_the_fixed_hour_jobs():
+    """Lookups and collections run from a tick every few minutes, first right after start."""
+    from api.scheduler import DEMAND_TICK_MINUTES, create_scheduler
 
     scheduler = create_scheduler()
+    tick = scheduler.get_job("demand_tick")
 
-    assert scheduler.get_job("ferry_profile_resolution") is not None
-    assert scheduler.get_job("ferry_demand_collection") is not None
+    assert tick is not None
+    assert tick.trigger.interval.total_seconds() == DEMAND_TICK_MINUTES * 60
+    for old_job in ("ferry_profile_resolution", "ferry_demand_collection", "flight_demand_collection"):
+        assert scheduler.get_job(old_job) is None
 
 
 def test_ferry_profile_lookup_runs_under_its_own_lock(monkeypatch):
@@ -668,12 +672,6 @@ def _flight_report(saved=4, units_remaining=300):
 def _flights_on(monkeypatch, key="test-key"):
     monkeypatch.setattr(settings, "flight_demand_enabled", True)
     monkeypatch.setattr(settings, "aerodatabox_api_key", key)
-
-
-def test_flight_job_is_registered_on_the_worker_scheduler():
-    from api.scheduler import create_scheduler
-
-    assert create_scheduler().get_job("flight_demand_collection") is not None
 
 
 def test_flight_collection_saves_then_prunes_under_its_own_lock(monkeypatch):

@@ -1,12 +1,13 @@
 """Run the ferry demand jobs once, now: the port lookup and the day's collection.
 
-The worker runs them by itself while the API is up (lookup hourly,
-collection daily at 05:10 UTC = 08:10 Greek time). When the API was closed
-at that hour, run this from the project folder:
+The worker runs them by itself while the API is up: it looks up new
+destinations within minutes and collects each one daily at the hour its
+owner chose (Ρυθμίσεις → Ζήτηση νησιού, 08:00 by default), or on «Συλλογή
+τώρα». When the API was closed at that hour, run this from the project folder:
 
-    python scripts/run_ferry_demand.py              # lookup, then collection
+    python scripts/run_ferry_demand.py              # lookup, then today's collection
     python scripts/run_ferry_demand.py --lookup     # port lookup only
-    python scripts/run_ferry_demand.py --collect    # collection only
+    python scripts/run_ferry_demand.py --collect    # today's collection only
     python scripts/run_ferry_demand.py --lookup --refresh   # redo every lookup
     python scripts/run_ferry_demand.py --show       # the demand calendar, no calls
     python scripts/run_ferry_demand.py --day 2026-10-17   # each sailing that day, no calls
@@ -41,7 +42,7 @@ from sqlalchemy import text  # noqa: E402
 from api.config import settings  # noqa: E402
 from api.db import get_engine  # noqa: E402
 from api.repositories.ferry_repository import FerryRepository  # noqa: E402
-from api.scheduler import run_ferry_demand_collection, run_ferry_profile_resolution  # noqa: E402
+from api.scheduler import run_demand_tick, run_ferry_profile_resolution  # noqa: E402
 from api.services.ferry_demand_service import daily_levels, history_window  # noqa: E402
 from api.services.ferryhopper_client import is_passenger_accommodation  # noqa: E402
 
@@ -96,8 +97,13 @@ def main() -> int:
 
     if do_collect:
         print("\n== Συλλογή δρομολογίων ==")
-        saved = run_ferry_demand_collection(today=today)
-        print(f"Αποθηκεύτηκαν {saved} παρατηρήσεις (γραμμή × ημερομηνία ταξιδιού).")
+        # Every destination with ferries on, whatever its owner's hour; one
+        # collection a Greek day, as the worker keeps it.
+        saved = run_demand_tick(force=True, kinds=("ferries",)).get("ferries", 0)
+        if saved:
+            print(f"Αποθηκεύτηκαν {saved} παρατηρήσεις (γραμμή × ημερομηνία ταξιδιού).")
+        else:
+            print("Τίποτα για συλλογή: έγινε ήδη σήμερα, ή κανένας προορισμός με πλοία δεν έχει ακόμη γραμμές.")
     return 0
 
 

@@ -172,6 +172,8 @@ export type FerryDay = {
 /** GET /api/v1/demand/ferries: the island port, its inbound routes, the next days. */
 export type FerryDemandResponse = {
   canonical_destination: string;
+  // false when the owner switched ferries off (Ρυθμίσεις → Ζήτηση νησιού).
+  enabled?: boolean;
   // null until the worker's first port lookup.
   status: "ferry" | "no_ferry" | "error" | null;
   island_port: string | null;

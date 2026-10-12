@@ -21,7 +21,7 @@ import logging
 import shutil
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -48,6 +48,11 @@ FERRY_PROFILE_LOCK_KEY = 815_372_002
 FERRY_COLLECTION_LOCK_KEY = 815_372_003
 # Flight demand collection: one process spends the AeroDataBox units at a time.
 FLIGHT_COLLECTION_LOCK_KEY = 815_372_004
+# The demand tick (lookups, then the due ferry and flight collections).
+DEMAND_TICK_LOCK_KEY = 815_372_005
+DEMAND_TICK_MINUTES = 5
+# Run-log rows kept: a request is compared with its scope's last run.
+DEMAND_RUN_RETENTION_DAYS = 60
 
 # Ferry and flight observations of travel dates further back than this are dropped.
 FERRY_OBSERVATION_RETENTION_DAYS = 400
@@ -450,6 +455,144 @@ def run_flight_demand_collection(
     return report.saved
 
 
+def run_demand_tick(
+    now: datetime | None = None,
+    *,
+    settings_repository: Any = None,
+    ferry_service: Any = None,
+    flight_service: Any = None,
+    engine: Any = None,
+    force: bool = False,
+    kinds: tuple[str, ...] = ("ferries", "flights"),
+) -> dict[str, int]:
+    """Port lookups, then the ferry and flight collections that are due. Never raises.
+
+    Every DEMAND_TICK_MINUTES on the worker, so a property claimed or a
+    «Συλλογή τώρα» pressed is served within minutes, and the owner's hour
+    is kept while the worker is up. Each scope runs once a Greek day
+    (roomrate_demand_runs). ``force`` treats every owner's hour as come
+    (scripts/run_ferry_demand.py, run_flight_demand.py). Returns the
+    lookups made and the observations saved per kind.
+    """
+    ferries_on = settings.ferry_demand_enabled and "ferries" in kinds
+    flights_on = settings.flight_demand_active and "flights" in kinds
+    if not (ferries_on or flights_on):
+        return {}
+    try:
+        from api import dependencies
+
+        if settings_repository is None:
+            settings_repository = dependencies.get_demand_settings_repository()
+        if ferries_on and ferry_service is None:
+            ferry_service = dependencies.get_ferry_demand_service()
+        if flights_on and flight_service is None:
+            flight_service = dependencies.get_flight_demand_service()
+        moment = now if now is not None else datetime.now(timezone.utc)
+        result = _run_with_advisory_lock(
+            DEMAND_TICK_LOCK_KEY,
+            lambda: _demand_tick(
+                moment,
+                settings_repository,
+                ferry_service if ferries_on else None,
+                flight_service if flights_on else None,
+                force,
+            ),
+            engine if engine is not None else get_engine(role="api"),
+            "Demand tick",
+        )
+    except Exception:
+        logger.exception("Demand tick crashed")
+        return {}
+    return result or {}
+
+
+def _demand_tick(
+    now: datetime, settings_repository: Any, ferry_service: Any, flight_service: Any, force: bool
+) -> dict[str, int]:
+    from api.services.demand_schedule import FLIGHTS_SCOPE, due_scopes, greek_now
+
+    now_local = greek_now(now)
+    # Observations and runs are dated by the Greek day, whatever the hour.
+    day = now_local.date()
+    result = {"lookups": 0, "ferries": 0, "flights": 0}
+    if ferry_service is not None:
+        result["lookups"] = ferry_service.resolve_profiles(day)
+
+    runs = settings_repository.runs(since=day - timedelta(days=7))
+    last_started: dict[tuple[str, str], datetime] = {}
+    for run in runs:
+        last_started.setdefault((run["kind"], run["scope"]), run["started_at"])
+    due = due_scopes(
+        settings_repository.demand_properties(),
+        ran_today={(run["kind"], run["scope"]) for run in runs if run["run_on"] == day},
+        last_started=last_started,
+        now_local=now_local,
+        ferries_on=ferry_service is not None,
+        flights_on=flight_service is not None,
+        force=force,
+    )
+
+    if ferry_service is not None and due.ferry_destinations:
+        # A destination without routes yet (lookup pending or failed) is not
+        # claimed: it is collected once its routes exist, the same day.
+        with_routes = sorted(
+            {route["canonical_destination"] for route in ferry_service.repository.routes_to_collect(sorted(due.ferry_destinations))}
+        )
+        claimed = [destination for destination in with_routes if settings_repository.claim_run("ferries", destination, day)]
+        if claimed:
+            saved_by_destination: dict[str, int] = {}
+            try:
+                report = ferry_service.collect(day, destinations=claimed)
+                saved_by_destination = report.destinations
+                result["ferries"] = report.saved
+                logger.info(
+                    "Ferry demand collection %s: %s call(s), %s saved, %s failed%s",
+                    ",".join(claimed),
+                    report.calls,
+                    report.saved,
+                    report.failed,
+                    " (stopped early)" if report.aborted else "",
+                )
+                ferry_service.repository.prune(
+                    raw_payload_days=settings.ferry_raw_payload_retention_days,
+                    observation_days=FERRY_OBSERVATION_RETENTION_DAYS,
+                )
+            except Exception:
+                logger.exception("Ferry demand collection crashed")
+            finally:
+                for destination in claimed:
+                    settings_repository.finish_run("ferries", destination, day, saved_by_destination.get(destination, 0))
+
+    if flight_service is not None and due.flights and settings_repository.claim_run("flights", FLIGHTS_SCOPE, day):
+        saved = 0
+        try:
+            report = flight_service.collect(day)
+            saved = report.saved
+            result["flights"] = saved
+            logger.info(
+                "Flight demand collection: airports %s, %s due, %s call(s) of %s allowed, %s saved, units left %s%s",
+                ",".join(report.airports) or "none",
+                report.due,
+                report.calls,
+                report.allowance,
+                report.saved,
+                report.units_remaining if report.units_remaining is not None else "?",
+                " (stopped early)" if report.aborted or report.out_of_units else "",
+            )
+            flight_service.repository.prune(
+                raw_payload_days=settings.flight_raw_payload_retention_days,
+                observation_days=FERRY_OBSERVATION_RETENTION_DAYS,
+            )
+        except Exception:
+            logger.exception("Flight demand collection crashed")
+        finally:
+            settings_repository.finish_run("flights", FLIGHTS_SCOPE, day, saved)
+
+    if result["ferries"] or result["flights"]:
+        settings_repository.prune_runs(keep_days=DEMAND_RUN_RETENTION_DAYS, today=day)
+    return result
+
+
 def purge_old_scrape_csvs(directory: Path, older_than_days: int, now: datetime | None = None) -> int:
     """Delete ``*.csv`` files and leftover job checkpoints older than ``older_than_days``.
 
@@ -601,28 +744,16 @@ def create_scheduler(
         id="raw_ingestion_cleanup",
         name="Delete raw ingestion events past retention",
     )
+    # Lookups within minutes of a claim, collections at each owner's hour or
+    # on «Συλλογή τώρα»; the first tick shortly after the worker starts, so
+    # a worker that is up only now and then still collects.
     scheduler.add_job(
-        run_ferry_profile_resolution,
+        run_demand_tick,
         trigger="interval",
-        minutes=60,
-        id="ferry_profile_resolution",
-        name="Find the island port of new destinations",
-    )
-    scheduler.add_job(
-        run_ferry_demand_collection,
-        trigger="cron",
-        hour=5,
-        minute=10,
-        id="ferry_demand_collection",
-        name="Read the next days' ferry sailings into island destinations",
-    )
-    scheduler.add_job(
-        run_flight_demand_collection,
-        trigger="cron",
-        hour=5,
-        minute=30,
-        id="flight_demand_collection",
-        name="Read scheduled arrivals at island airports",
+        minutes=DEMAND_TICK_MINUTES,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=30),
+        id="demand_tick",
+        name="Find island ports and collect the due ferry and flight demand",
     )
     scheduler.add_job(
         run_price_recommendation_audit_cleanup,

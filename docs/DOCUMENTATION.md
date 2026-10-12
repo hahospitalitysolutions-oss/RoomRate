@@ -827,8 +827,9 @@ sailings INTO island destinations, read from Ferryhopper's public MCP server
 (`FERRYHOPPER_MCP_URL`, no key). Destination-level data, shared by every
 account in a destination.
 
-1. **Port lookup** (worker job `ferry_profile_resolution`, hourly, acts only
-   when a destination has no lookup yet or it is 30 days old). Ferryhopper's
+1. **Port lookup** (worker job `demand_tick`, every 5 minutes, acts only
+   when a destination with ferries on has no lookup yet or it is 30 days
+   old). Ferryhopper's
    ports carry a name, a country and a code, no coordinates, and are named
    in Greek transliteration (RODOS, PIRAEUS). So the island comes from the
    owners' own coordinates (`api/services/greek_islands.py`: a box per
@@ -848,7 +849,8 @@ account in a destination.
    island opens again in season). A lookup whose searches failed is `error`
    and retried after 6 hours; a destination that had routes keeps collecting
    on them. `scripts/run_ferry_demand.py --show` prints the demand calendar.
-2. **Collection** (`ferry_demand_collection`, daily 05:10 UTC). Every day for
+2. **Collection** (`demand_tick`, once a Greek day per destination, at the
+   hour its owners chose or on «Συλλογή τώρα»; see «Ζήτηση νησιού» below). Every day for
    `FERRY_DEMAND_DAILY_DAYS`, then Fridays and Saturdays up to
    `FERRY_DEMAND_HORIZON_DAYS`, plus the arrival and its eve of every enabled
    schedule, within `FERRY_DEMAND_MAX_CALLS_PER_RUN` calls,
@@ -919,8 +921,9 @@ without it). Airport-level data in `roomrate_flight_observations`
    JTR, Corfu CFU…; Crete's Rethymno and Lasithi land at Heraklion. Islands
    reached by sea only (Symi, Patmos, Hydra…), the mainland and road-reached
    islands get no flight signal.
-2. **Collection** (worker job `flight_demand_collection`, daily 05:30 UTC,
-   advisory lock 815_372_004). One call = one airport and one local window
+2. **Collection** (worker job `demand_tick`, once a Greek day for every
+   airport, at the earliest hour an island owner chose or on «Συλλογή
+   τώρα»). One call = one airport and one local window
    of at most 12 hours and costs 2 units (probe 2026-10-11). The plan
    (`api/services/flight_plan.py`, `FLIGHT_DEMAND_PLAN`) sets the travel
    weekdays, the windows and the month's units:
@@ -966,6 +969,40 @@ AeroDataBox returns scheduled arrivals and what a plan's units cover.
 
 To move to Pro: subscribe the same RapidAPI key to AeroDataBox Pro, then
 `FLIGHT_DEMAND_PLAN=pro` in `.env` and restart the worker.
+
+#### «Ζήτηση νησιού»: the owner's collection settings
+**Purpose:** The owner decides whether ferries and flights are read for
+their island, and when (`roomrate_demand_settings`, migration
+20261012_0034; `api/repositories/demand_settings_repository.py`). Per owned
+property: `ferries_enabled`, `flights_enabled`, `hour_local` (Greek time,
+default 08:00) and `collect_requested_at` («Συλλογή τώρα»). A property
+without a row has the defaults, both on.
+
+- **Settings** (`/settings`, «Ζήτηση νησιού: πλοία και πτήσεις»,
+  `components/demand-settings.component.ts`): the two switches (each shown
+  only where it applies: an island, an island with an airport and an
+  AeroDataBox key), the hour, the last run of each and the next one, and
+  «Συλλογή τώρα». A mainland property is told that neither applies.
+- **Onboarding** (setup step 3, under the first search): on an island, one
+  button «Ενεργοποίηση και πρώτη συλλογή τώρα» saves both on and asks for
+  the first collection; off an island nothing is shown.
+- **Worker** (`api/scheduler.py` `run_demand_tick`, every 5 minutes, first
+  30 seconds after start, advisory lock 815_372_005;
+  `api/services/demand_schedule.py`): port lookups first, then the scopes
+  that are due. Ferries are due per destination, flights once for every
+  airport, when the hour of an enabled property there has come or one asked
+  for a collection after the scope's last run. `roomrate_demand_runs` gets
+  a row per kind, scope and Greek day before the run starts, so each scope
+  is collected once a day; a destination whose lookup has not found routes
+  yet is not claimed and is collected once they exist. A collection that
+  crashes still closes its run; one that saved nothing may be asked again
+  («Συλλογή τώρα» releases it). Observations are dated by the Greek day.
+- A property with ferries (flights) off gets neither the panel's days nor
+  the signal in its price recommendation; a destination is still collected
+  while any other owner there has it on.
+- `scripts/run_ferry_demand.py` and `scripts/run_flight_demand.py` run the
+  same tick with every hour treated as come (once a day still holds);
+  `run_flight_demand.py --calls N` is a manual fill outside it.
 
 #### `api/repositories/price_recommendation_audit_repository.py`
 **Purpose:** Stores immutable recommendation request/response evidence,
@@ -1682,6 +1719,33 @@ of one of the caller's owned properties (404 for any other).
 ```
 `status` is null before the first port lookup (within the hour after a
 property is claimed); `days` is empty before the first daily collection.
+
+#### GET / PUT /api/v1/demand/settings, POST /api/v1/demand/collect
+**Purpose:** The owner's «Ζήτηση νησιού» settings for one of their owned
+properties (404 for any other), and «Συλλογή τώρα».
+
+**Query:** `owned_property_id` (UUID).
+
+**PUT body:** `{"ferries_enabled": true, "flights_enabled": true, "hour_local": 8, "collect_now": false}`
+(`hour_local` 0–23, Greek time; `collect_now` also asks for a collection).
+
+**Response (200, GET and PUT):**
+```json
+{
+  "owned_property_id": "…", "ferries_enabled": true, "flights_enabled": true, "hour_local": 8,
+  "timezone": "Europe/Athens", "island": "Ρόδος", "airport_iata": "RHO",
+  "ferries_available": true, "flights_available": true,
+  "collect_requested_at": null, "collection_pending": false,
+  "ferries_last_run": {"started_at": "2026-10-12T05:00:10Z", "finished_at": "2026-10-12T05:03:40Z", "saved": 108},
+  "flights_last_run": null,
+  "next_collection_at": "2026-10-13T08:00:00+03:00"
+}
+```
+**POST /collect (200):** `{"queued": true, "message": "Η συλλογή ξεκινά μέσα σε λίγα λεπτά.", "settings": {…}}`;
+`queued` is false, with the reason in `message`, when today's collection
+already saved data, is running, or nothing is on. The ferry and flight
+panels (`GET /demand/ferries`, `/demand/flights`) carry `enabled: false`
+when the owner switched that kind off.
 
 #### GET /api/v1/demand/flights
 **Purpose:** The island airport of one of the caller's owned properties

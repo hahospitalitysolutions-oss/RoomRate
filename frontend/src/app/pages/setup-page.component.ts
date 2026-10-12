@@ -1,5 +1,6 @@
 import { Component, OnInit, signal } from "@angular/core";
 import { AppHeaderComponent } from "../components/app-header.component";
+import { DemandSettingsComponent } from "../components/demand-settings.component";
 import { CommonModule } from "@angular/common";
 import { ActivatedRoute, Router } from "@angular/router";
 
@@ -15,7 +16,14 @@ export type WizardStep = 1 | 2 | 3;
 @Component({
   selector: "app-setup-page",
   standalone: true,
-  imports: [CommonModule, AppHeaderComponent, SetupPropertyStepComponent, SetupRoomStepComponent, SetupSearchStepComponent],
+  imports: [
+    CommonModule,
+    AppHeaderComponent,
+    DemandSettingsComponent,
+    SetupPropertyStepComponent,
+    SetupRoomStepComponent,
+    SetupSearchStepComponent,
+  ],
   template: `
     <main class="page-shell setup-page">
       <app-header [showNav]="false">
@@ -54,6 +62,12 @@ export type WizardStep = 1 | 2 | 3;
             (finished)="goToMap()"
             (postponed)="goToMap()"
           ></app-setup-search-step>
+          <!-- Ferries and flights into the island: free, one click, shown only on an island. -->
+          <app-demand-settings
+            *ngIf="step() === 3 && ownedPropertyId()"
+            mode="onboarding"
+            [ownedPropertyId]="ownedPropertyId()"
+          ></app-demand-settings>
         </ng-container>
       </section>
     </main>

@@ -26,16 +26,18 @@ class FlightRepository:
         return self._engine_factory(role) if self._engine_factory else get_engine(role=role)
 
     def property_points(self) -> list[dict[str, Any]]:
-        """Coordinates of the active owned properties: their islands give the airports to collect."""
+        """Coordinates of the active owned properties with flights on: their islands give the airports."""
         with self._engine().connect() as connection:
             rows = connection.execute(
                 text(
                     """
-                    SELECT DISTINCT latitude::float AS latitude, longitude::float AS longitude
-                    FROM roomrate_owned_properties
-                    WHERE is_active
-                      AND latitude IS NOT NULL AND longitude IS NOT NULL
-                      AND latitude <> 0 AND longitude <> 0
+                    SELECT DISTINCT op.latitude::float AS latitude, op.longitude::float AS longitude
+                    FROM roomrate_owned_properties op
+                    LEFT JOIN roomrate_demand_settings ds ON ds.owned_property_id = op.id
+                    WHERE op.is_active
+                      AND COALESCE(ds.flights_enabled, true)
+                      AND op.latitude IS NOT NULL AND op.longitude IS NOT NULL
+                      AND op.latitude <> 0 AND op.longitude <> 0
                     """
                 )
             ).mappings().all()

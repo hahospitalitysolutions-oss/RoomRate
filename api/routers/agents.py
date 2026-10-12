@@ -10,6 +10,7 @@ from api.config import settings
 from api.dependencies import (
     AccountContext,
     get_account_context,
+    get_demand_settings_repository,
     get_ferry_repository,
     get_flight_repository,
     get_market_service,
@@ -20,6 +21,7 @@ from api.dependencies import (
     get_room_matching_service,
     get_scrape_job_service,
 )
+from api.repositories.demand_settings_repository import DemandSettingsRepository
 from api.repositories.ferry_repository import FerryRepository
 from api.repositories.flight_repository import FlightRepository
 from api.repositories.onboarding_repository import OnboardingRepository
@@ -149,6 +151,15 @@ def _ferry_signal(
         return None
 
 
+def _demand_choice(repository: DemandSettingsRepository, account_id, owned_property_id) -> dict:
+    """The owner's ferry and flight switches; both on when unreadable (the defaults)."""
+    try:
+        return repository.get(account_id, owned_property_id)
+    except Exception:
+        logger.warning("Demand settings unavailable; using the defaults", exc_info=True)
+        return {"ferries_enabled": True, "flights_enabled": True}
+
+
 def _flight_signal(
     repository: FlightRepository, owned_property: dict, check_in: date
 ) -> FlightDemandSignal | None:
@@ -188,6 +199,7 @@ def price_recommendation(
     ),
     ferry_repository: FerryRepository = Depends(get_ferry_repository),
     flight_repository: FlightRepository = Depends(get_flight_repository),
+    demand_settings_repository: DemandSettingsRepository = Depends(get_demand_settings_repository),
 ) -> PriceRecommendationResponse:
     """Hybrid (statistical + LLM) nightly-price recommendation for an owned room.
 
@@ -278,8 +290,18 @@ def price_recommendation(
     # The day's ferry and flight observations are part of the request
     # identity: a new collection must not be answered from a recommendation
     # made without it.
-    ferry_signal = _ferry_signal(ferry_repository, canonical_destination, request.check_in)
-    flight_signal = _flight_signal(flight_repository, owned_property, request.check_in)
+    # The owner's switches (Ρυθμίσεις → Ζήτηση νησιού) decide whether either is read.
+    demand_choice = _demand_choice(demand_settings_repository, account.account_id, request.owned_property_id)
+    ferry_signal = (
+        _ferry_signal(ferry_repository, canonical_destination, request.check_in)
+        if demand_choice["ferries_enabled"]
+        else None
+    )
+    flight_signal = (
+        _flight_signal(flight_repository, owned_property, request.check_in)
+        if demand_choice["flights_enabled"]
+        else None
+    )
     audit_request_payload = {
         **request.model_dump(mode="json"),
         "room_type_category": room_type_category,

@@ -12,6 +12,7 @@
  */
 import { CommonModule } from "@angular/common";
 import { Component, computed, input } from "@angular/core";
+import { RouterLink } from "@angular/router";
 
 import type { DemandLevel, FerryDay, FerryDemandResponse } from "../../types/pricing";
 import type { LoadingState } from "./pricing-format";
@@ -28,7 +29,7 @@ const SHOWN_DAYS = 21;
 @Component({
   selector: "div[appFerryDemandPanel]",
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, RouterLink],
   template: `
     <div class="section-title">
       <h2>Ζήτηση πλοίων</h2>
@@ -39,8 +40,12 @@ const SHOWN_DAYS = 21;
     <p *ngIf="status() === 'error'" class="muted">Η ζήτηση πλοίων δεν είναι διαθέσιμη αυτή τη στιγμή.</p>
 
     <ng-container *ngIf="status() === 'ready' && demand() as ferries">
-      <p *ngIf="ferries.status === null" class="muted" data-testid="ferry-pending">
-        Το λιμάνι του νησιού σας εντοπίζεται αυτόματα μέσα στην επόμενη ώρα.
+      <p *ngIf="ferries.enabled === false" class="muted" data-testid="ferry-off">
+        Η ζήτηση πλοίων είναι απενεργοποιημένη. <a class="text-button" routerLink="/settings" fragment="demand">Ενεργοποίηση από τις Ρυθμίσεις</a>
+      </p>
+      <p *ngIf="ferries.enabled !== false && ferries.status === null" class="muted" data-testid="ferry-pending">
+        Το λιμάνι του νησιού σας εντοπίζεται μέσα σε λίγα λεπτά.
+        Την ώρα της ημερήσιας συλλογής την ορίζετε στις <a class="text-button" routerLink="/settings" fragment="demand">Ρυθμίσεις</a>.
       </p>
       <p *ngIf="ferries.status === 'no_ferry'" class="muted" data-testid="ferry-none">
         Ο προορισμός σας δεν εξυπηρετείται από πλοία που πουλά η Ferryhopper, οπότε η ζήτηση πλοίων δεν μετρά εδώ.
@@ -50,7 +55,8 @@ const SHOWN_DAYS = 21;
           <li *ngFor="let route of activeRoutes()" class="factor-chip">{{ route }}</li>
         </ul>
         <p *ngIf="!days().length" class="muted" data-testid="ferry-no-days">
-          Τα δρομολόγια συλλέγονται κάθε πρωί· η πρώτη συλλογή δεν έχει γίνει ακόμη.
+          Τα δρομολόγια συλλέγονται μία φορά τη μέρα· η πρώτη συλλογή δεν έχει γίνει ακόμη.
+          <a class="text-button" routerLink="/settings" fragment="demand">Συλλογή τώρα ή αλλαγή ώρας</a>
         </p>
         <ol *ngIf="days().length" class="ferry-days" aria-label="Ζήτηση πλοίων ανά ημέρα άφιξης" data-testid="ferry-days">
           <li
@@ -74,6 +80,7 @@ const SHOWN_DAYS = 21;
           <span class="ferry-swatch demand-normal"></span> Κανονική
           <span class="ferry-swatch demand-low"></span> Χαμηλή
           · Παραμονή και ημέρα άφιξης · Πηγή: Ferryhopper<ng-container *ngIf="ferries.observed_on">, {{ observedOn() }}</ng-container>
+          · <a class="text-button" routerLink="/settings" fragment="demand">Ρυθμίσεις συλλογής</a>
         </p>
       </ng-container>
     </ng-container>

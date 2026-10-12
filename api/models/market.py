@@ -20,6 +20,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
     text,
+    true,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -1149,3 +1150,57 @@ class RoomRateFlightObservation(Base):
     units_remaining: Mapped[int | None] = mapped_column()
     raw_payload: Mapped[dict | None] = mapped_column(JSONB)
     parser_version: Mapped[str] = mapped_column(String(20), nullable=False)
+
+
+class RoomRateDemandSettings(TimestampMixin, Base):
+    """Whether ferries and flights are read for an owned property's island, and when.
+
+    Migration 20261012_0034. A missing row means the defaults: both on,
+    collected daily at 08:00 Greek time. ``collect_requested_at`` is the
+    owner's «Συλλογή τώρα»: the worker's next tick collects without waiting
+    for the hour, once a day.
+    """
+
+    __tablename__ = "roomrate_demand_settings"
+    __table_args__ = (
+        CheckConstraint("hour_local BETWEEN 0 AND 23", name="ck_roomrate_demand_settings_hour_local"),
+        Index("ix_roomrate_demand_settings_account_id", "account_id"),
+    )
+
+    owned_property_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("roomrate_owned_properties.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("roomrate_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ferries_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=true())
+    flights_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=true())
+    # Greek hour (Europe/Athens) of the daily collection.
+    hour_local: Mapped[int] = mapped_column(nullable=False, server_default="8")
+    collect_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RoomRateDemandRun(Base):
+    """One demand collection run per kind, scope and Greek day (migration 20261012_0034).
+
+    ``scope`` is the canonical destination for ferries and "all" for flights
+    (one run reads every collected airport within the day's unit share).
+    Inserted before the run starts: the frequent worker tick claims a scope
+    for the day with it, so nothing is collected twice a day.
+    """
+
+    __tablename__ = "roomrate_demand_runs"
+    __table_args__ = (
+        CheckConstraint("kind IN ('ferries', 'flights')", name="ck_roomrate_demand_runs_kind"),
+    )
+
+    kind: Mapped[str] = mapped_column(String(16), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(255), primary_key=True)
+    run_on: Mapped[date] = mapped_column(Date, primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    saved: Mapped[int | None] = mapped_column()

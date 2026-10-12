@@ -96,6 +96,8 @@ class FerryDayOut(BaseModel):
 
 class FerryDemandResponse(BaseModel):
     canonical_destination: str
+    # False when the owner switched ferries off (Ρυθμίσεις): nothing else is sent.
+    enabled: bool = True
     # None until the first port lookup; "ferry" | "no_ferry" | "error" after.
     status: str | None = None
     island_port: str | None = None
@@ -124,7 +126,58 @@ class FlightDemandResponse(BaseModel):
     # "flights": an island airport is collected; "no_airport": the property
     # is not on an island with one; "off": no AeroDataBox key or disabled.
     status: Literal["flights", "no_airport", "off"]
+    # False when the owner switched flights off (Ρυθμίσεις): no days are sent.
+    enabled: bool = True
     airport_iata: str | None = None
     island: str | None = None
     days: list[FlightDayOut] = Field(default_factory=list)
     observed_on: date | None = None
+
+
+class DemandRunOut(BaseModel):
+    started_at: datetime
+    finished_at: datetime | None = None
+    saved: int | None = None
+
+
+class DemandSettingsIn(BaseModel):
+    ferries_enabled: bool
+    flights_enabled: bool
+    # Greek hour (Europe/Athens) of the daily collection.
+    hour_local: int = Field(ge=0, le=23)
+    # Also ask for a collection now (onboarding's «Ενεργοποίηση»).
+    collect_now: bool = False
+
+
+class DemandSettingsOut(BaseModel):
+    """The owner's demand collection settings and what they apply to.
+
+    ``island`` / ``airport_iata`` are None when the property is not on an
+    island / one with an airport: ferries / flights do not apply there.
+    ``flights_available`` is False without an AeroDataBox key.
+    """
+
+    owned_property_id: UUID
+    ferries_enabled: bool
+    flights_enabled: bool
+    hour_local: int
+    timezone: str = "Europe/Athens"
+    island: str | None = None
+    airport_iata: str | None = None
+    ferries_available: bool
+    flights_available: bool
+    collect_requested_at: datetime | None = None
+    # A requested collection the worker has not run yet.
+    collection_pending: bool = False
+    ferries_last_run: DemandRunOut | None = None
+    flights_last_run: DemandRunOut | None = None
+    # Greek time of the next daily collection; None when nothing is on.
+    next_collection_at: datetime | None = None
+
+
+class DemandCollectOut(BaseModel):
+    """POST /demand/collect: queued, or why not (already collected today)."""
+
+    queued: bool
+    message: str
+    settings: DemandSettingsOut

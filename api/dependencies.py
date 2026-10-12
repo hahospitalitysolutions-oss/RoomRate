@@ -10,6 +10,7 @@ from api.config import settings
 from api.db import db_connection
 from api.repositories.accounts_repository import AccountsRepository
 from api.repositories.alerts_repository import AlertsRepository
+from api.repositories.demand_settings_repository import DemandSettingsRepository
 from api.repositories.ferry_repository import FerryRepository
 from api.repositories.flight_repository import FlightRepository
 from api.repositories.price_history_repository import PriceHistoryRepository
@@ -210,6 +211,11 @@ def get_ferry_demand_service() -> FerryDemandService:
         max_calls_per_run=settings.ferry_demand_max_calls_per_run,
         tracked_check_in=tracked_check_in,
     )
+
+
+def get_demand_settings_repository() -> DemandSettingsRepository:
+    """Build the repository of the owners' demand collection settings and the run log."""
+    return DemandSettingsRepository()
 
 
 def get_flight_repository() -> FlightRepository:

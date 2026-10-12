@@ -10,6 +10,7 @@ from api.config import settings
 from api.dependencies import (
     AccountContext,
     get_account_context,
+    get_demand_settings_repository,
     get_ferry_repository,
     get_market_service,
     get_onboarding_repository,
@@ -121,6 +122,19 @@ class FakeAudit:
         return {"id": UUID(int=999), "created_at": datetime(2030, 1, 1, tzinfo=timezone.utc)}
 
 
+class FakeDemandSettings:
+    """The owner's switches: both on unless a test turns one off."""
+
+    def __init__(self, ferries_enabled=True, flights_enabled=True):
+        self.stored = {"ferries_enabled": ferries_enabled, "flights_enabled": flights_enabled,
+                       "hour_local": 8, "collect_requested_at": None}
+        self.gets = []
+
+    def get(self, account_id, owned_property_id):
+        self.gets.append((account_id, owned_property_id))
+        return dict(self.stored)
+
+
 def ferry_row(travel_date, *, known=0, sold_out=0, price=60.0):
     return {
         "route_id": ROUTE_ID, "origin_port": "Piraeus", "destination_port": "Rhodes",
@@ -155,9 +169,10 @@ def busy_rows():
     ]
 
 
-def recommend(ferry_repository, agent=None, audit=None):
+def recommend(ferry_repository, agent=None, audit=None, demand_settings=None):
     agent = agent or CapturingAgent()
     audit = audit or FakeAudit()
+    app.dependency_overrides[get_demand_settings_repository] = lambda: demand_settings or FakeDemandSettings()
     app.dependency_overrides[get_account_context] = lambda: AccountContext(account_id=ACCOUNT_ID)
     app.dependency_overrides[get_price_recommendation_audit_repository] = lambda: audit
     app.dependency_overrides[get_price_history_repository] = lambda: FakeHistory()
@@ -222,8 +237,9 @@ def test_switched_off_the_ferry_data_is_not_read(monkeypatch):
     assert body["demand_signals"] is None
 
 
-def get_ferries(ferry_repository, onboarding=None):
+def get_ferries(ferry_repository, onboarding=None, demand_settings=None):
     app.dependency_overrides[get_account_context] = lambda: AccountContext(account_id=ACCOUNT_ID)
+    app.dependency_overrides[get_demand_settings_repository] = lambda: demand_settings or FakeDemandSettings()
     app.dependency_overrides[get_onboarding_repository] = lambda: onboarding or FakeOnboardingRepository()
     app.dependency_overrides[get_ferry_repository] = lambda: ferry_repository
     return TestClient(app).get("/api/v1/demand/ferries", params={"owned_property_id": str(OWNED_PROPERTY_ID)})
@@ -257,9 +273,23 @@ def test_ferries_endpoint_before_the_first_lookup():
     body = get_ferries(FakeFerryRepository()).json()
 
     assert body == {
-        "canonical_destination": "rodos", "status": None, "island_port": None, "port_distance_km": None,
+        "canonical_destination": "rodos", "enabled": True, "status": None, "island_port": None, "port_distance_km": None,
         "resolved_at": None, "routes": [], "days": [], "observed_on": None,
     }
+
+
+def test_ferries_switched_off_by_the_owner_are_neither_shown_nor_priced():
+    ferry_repository = FakeFerryRepository(busy_rows())
+    off = FakeDemandSettings(ferries_enabled=False)
+
+    body = get_ferries(ferry_repository, demand_settings=off).json()
+    assert (body["enabled"], body["status"], body["days"]) == (False, None, [])
+    assert off.gets == [(ACCOUNT_ID, OWNED_PROPERTY_ID)]
+
+    recommendation, agent, audit = recommend(ferry_repository, demand_settings=off)
+    assert recommendation["demand_signals"] is None
+    assert agent.contexts[0].demand_signals is None
+    assert audit.inserts[0]["request_payload"]["ferry_signal"] is None
 
 
 def test_ferries_endpoint_404_for_a_property_not_of_this_account():

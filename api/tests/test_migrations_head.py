@@ -12,6 +12,8 @@ from alembic.script import ScriptDirectory
 
 from api.models.market import (
     RoomRateAgentLease,
+    RoomRateDemandRun,
+    RoomRateDemandSettings,
     RoomRateFerryDestinationProfile,
     RoomRateFerryObservation,
     RoomRateFerryRoute,
@@ -36,6 +38,7 @@ SCHEDULE_LOCAL_HOUR_REVISION = "20260930_0030"
 FERRY_DEMAND_REVISION = "20261011_0031"
 FERRY_OPTIONS_REVISION = "20261011_0032"
 FLIGHT_OBSERVATIONS_REVISION = "20261011_0033"
+DEMAND_SETTINGS_REVISION = "20261012_0034"
 
 
 def _script_directory() -> ScriptDirectory:
@@ -44,8 +47,26 @@ def _script_directory() -> ScriptDirectory:
     return ScriptDirectory.from_config(config)
 
 
-def test_flight_observations_migration_is_the_single_alembic_head():
-    assert _script_directory().get_heads() == [FLIGHT_OBSERVATIONS_REVISION]
+def test_demand_settings_migration_is_the_single_alembic_head():
+    assert _script_directory().get_heads() == [DEMAND_SETTINGS_REVISION]
+
+
+def test_demand_settings_migration_revises_the_flight_observations_migration():
+    assert _script_directory().get_revision(DEMAND_SETTINGS_REVISION).down_revision == FLIGHT_OBSERVATIONS_REVISION
+
+
+def test_orm_declares_the_demand_settings_and_run_tables():
+    """Per owned property (deleted with it); one run per kind, scope and Greek day."""
+    settings_table = RoomRateDemandSettings.__table__
+    runs = RoomRateDemandRun.__table__
+
+    assert [column.name for column in settings_table.primary_key] == ["owned_property_id"]
+    foreign = {fk.target_fullname: fk.ondelete for fk in settings_table.foreign_keys}
+    assert foreign == {"roomrate_owned_properties.id": "CASCADE", "roomrate_accounts.id": "CASCADE"}
+    assert settings_table.columns["hour_local"].server_default.arg == "8"
+    assert "ck_roomrate_demand_settings_hour_local" in {c.name for c in settings_table.constraints}
+    assert [column.name for column in runs.primary_key] == ["kind", "scope", "run_on"]
+    assert "ck_roomrate_demand_runs_kind" in {c.name for c in runs.constraints}
 
 
 def test_flight_observations_migration_revises_the_ferry_options_migration():
