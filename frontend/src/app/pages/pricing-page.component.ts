@@ -1,9 +1,10 @@
 import { CommonModule } from "@angular/common";
 import { Component, computed, OnInit, signal } from "@angular/core";
 import { FormsModule } from "@angular/forms";
-import { ActivatedRoute, RouterLink } from "@angular/router";
+import { ActivatedRoute } from "@angular/router";
 
-import { NotificationBellComponent } from "../components/notification-bell.component";
+import { AppHeaderComponent } from "../components/app-header.component";
+import { SelectMenuComponent, SelectMenuOption } from "../components/select-menu.component";
 import { NotificationToastsComponent } from "../components/notification-toasts.component";
 import { ApiClientService } from "../services/api-client.service";
 import { OnboardingService } from "../services/onboarding.service";
@@ -41,26 +42,20 @@ const DEFAULT_STAY = defaultStayDates();
     CommonModule,
     FerryDemandPanelComponent,
     FormsModule,
-    RouterLink,
     MarketStatisticsPanelComponent,
-    NotificationBellComponent,
+    AppHeaderComponent,
     NotificationToastsComponent,
     PriceHistoryCardComponent,
     RecommendationCardComponent,
+    SelectMenuComponent,
   ],
   template: `
     <main class="page-shell">
-      <header class="map-header">
-        <div>
-          <p class="eyebrow">RoomRate — Τιμολόγηση</p>
-          <h1>{{ propertyName() || destination() || "Ανάλυση τιμών" }}</h1>
-        </div>
-        <div class="header-actions">
-          <a routerLink="/map">Χάρτης</a>
-          <a routerLink="/settings">Ρυθμίσεις</a>
-          <app-notification-bell />
-        </div>
-      </header>
+      <app-header>
+        <p class="eyebrow">Τιμολόγηση</p>
+        <h1>{{ propertyName() || destination() || "Ανάλυση τιμών" }}</h1>
+        <p class="app-band-subtitle">Τι τιμή να βάλεις, με βάση τα συγκρίσιμα δωμάτια της γειτονιάς σου.</p>
+      </app-header>
 
       <section class="page-body">
         <div *ngIf="contextError()" class="alert alert-error">{{ contextError() }}</div>
@@ -73,17 +68,14 @@ const DEFAULT_STAY = defaultStayDates();
              must stay two options. -->
         <div class="panel comparison-bar">
           <label class="comparison-bar-label" for="pricing-comparison-room">Σύγκριση για</label>
-          <select
-            id="pricing-comparison-room"
-            class="roomrate-input comparison-bar-select"
-            [ngModel]="selectedRoomId()"
-            (ngModelChange)="setRoom($event)"
-          >
-            <option value="">Το επιλεγμένο δωμάτιο αναφοράς</option>
-            <option *ngFor="let room of roomTypes()" [value]="room.id">
-              {{ room.room_type }} ({{ room.room_type_category }})
-            </option>
-          </select>
+          <app-select-menu
+            class="comparison-bar-select"
+            selectId="pricing-comparison-room"
+            [emphasis]="true"
+            [options]="roomSelectOptions()"
+            [value]="selectedRoomId()"
+            (valueChange)="setRoom($event)"
+          ></app-select-menu>
         </div>
 
         <div class="pricing-grid">
@@ -240,6 +232,16 @@ export class PricingPageComponent implements OnInit {
   // `owned_room_type_id`, and its category is derived from the same row.
   // "" = «Το επιλεγμένο δωμάτιο αναφοράς» (the server's persisted room).
   readonly selectedRoomId = signal("");
+  // "" is a real choice here (the server's persisted room), so it is an option, not a placeholder.
+  readonly roomSelectOptions = computed<SelectMenuOption[]>(() => [
+    { value: "", label: "Το επιλεγμένο δωμάτιο αναφοράς" },
+    ...this.roomTypes().map((room) => ({
+      value: room.id,
+      label: `${room.room_type} (${room.room_type_category})`,
+      display: room.room_type,
+      hint: room.room_type_category,
+    })),
+  ]);
   readonly selectedRoom = computed(() =>
     this.roomTypes().find((room) => room.id === this.selectedRoomId()) ?? null);
   readonly selectedCategory = computed(() => this.selectedRoom()?.room_type_category ?? "");

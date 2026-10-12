@@ -26,7 +26,7 @@ import { IconComponent, IconName } from "./icon.component";
   styles: [`
     .empty-state {
       display: flex; flex-direction: column; align-items: center; gap: 0.5rem;
-      padding: 1.5rem 1rem; text-align: center; color: #475569;
+      padding: 1.5rem 1rem; text-align: center; color: var(--ink-soft);
     }
     .empty-state strong { color: var(--foreground); }
     .empty-state p { margin: 0; max-width: 32rem; font-size: 0.9rem; }

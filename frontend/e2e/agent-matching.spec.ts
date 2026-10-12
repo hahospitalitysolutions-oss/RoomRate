@@ -342,6 +342,8 @@ test("without a completed job on screen the button is disabled", async ({ page }
   await page.goto("/map");
   // Nothing restored: no job on screen, only the empty state.
   await expect(page.getByText("Δεν έχετε τρέξει ακόμη αναζήτηση")).toBeVisible();
+  // «Ταίριασμα δωματίου» sits under the filters in the «Φίλτρα» column.
+  await expect(page.locator(".filters-sidebar .match-controls")).toBeVisible();
   await matchToggle(page).check();
   await expect(badge(page)).toHaveText("Στατιστική εκτίμηση");
   await expect(reassess(page)).toBeDisabled();

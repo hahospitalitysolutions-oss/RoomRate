@@ -327,13 +327,13 @@ test.describe("the recommendation card leads with the price", () => {
     await expect(card.getByRole("button", { name: "Γιατί αυτή η τιμή;" })).toHaveAttribute("aria-expanded", "false");
   });
 
-  test("the confidence pill is green for Υψηλή, amber for Μέτρια and grey for Χαμηλή", async ({ page }) => {
+  test("the confidence pill is Aegean blue for Υψηλή, amber for Μέτρια and sand-neutral for Χαμηλή", async ({ page }) => {
     const mocks: PolishMocks = {};
     await mockPricingPage(page, mocks);
     const cases = [
-      { confidence: "high", label: "Υψηλή βεβαιότητα", background: "rgb(236, 253, 245)", source: "agent", sourceLabel: "AI agent" },
-      { confidence: "medium", label: "Μέτρια βεβαιότητα", background: "rgb(255, 251, 235)", source: "statistical", sourceLabel: "Στατιστική" },
-      { confidence: "low", label: "Χαμηλή βεβαιότητα", background: "rgb(241, 245, 249)", source: "statistical", sourceLabel: "Στατιστική" },
+      { confidence: "high", label: "Υψηλή βεβαιότητα", background: "rgb(227, 238, 241)", source: "agent", sourceLabel: "AI agent" },
+      { confidence: "medium", label: "Μέτρια βεβαιότητα", background: "rgb(253, 243, 220)", source: "statistical", sourceLabel: "Στατιστική" },
+      { confidence: "low", label: "Χαμηλή βεβαιότητα", background: "rgb(243, 237, 227)", source: "statistical", sourceLabel: "Στατιστική" },
     ];
     for (const { confidence, label, background, source, sourceLabel } of cases) {
       await test.step(confidence, async () => {
