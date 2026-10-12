@@ -333,8 +333,6 @@ test("the search banner names the filter instead of claiming an empty map is ful
   await page.getByTestId("only-selected-toggle").check();
   await expect(markers(page)).toHaveCount(0);
 
-  // The banner lives in the filters sidebar, which starts collapsed.
-  await page.getByRole("button", { name: "Φίλτρα" }).click();
   await page.getByRole("button", { name: "Εύρεση ανταγωνιστών" }).click();
 
   await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();

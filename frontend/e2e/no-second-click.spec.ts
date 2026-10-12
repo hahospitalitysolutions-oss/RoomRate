@@ -446,7 +446,6 @@ test.describe("data renders without a second click or manual refresh", () => {
     await page.goto("/map");
     await expect(page.getByText("Hotel Alpha")).toBeVisible();
 
-    await page.getByRole("button", { name: "Φίλτρα" }).click();
     const checkIn = page.locator('input[type="date"]').first();
     const checkOut = page.locator('input[type="date"]').nth(1);
     const today = new Date().toISOString().slice(0, 10);
@@ -484,7 +483,6 @@ test.describe("data renders without a second click or manual refresh", () => {
     await page.goto("/map");
     await expect(page.getByText("Hotel Alpha")).toBeVisible();
 
-    await page.getByRole("button", { name: "Φίλτρα" }).click();
     const checkIn = page.locator('input[type="date"]').first();
     // Wait for the restore chain's own date write before overwriting it, so
     // this fill cannot be clobbered by a late rollforward.
@@ -677,7 +675,6 @@ test.describe("data renders without a second click or manual refresh", () => {
     await page.goto("/map");
     await restoreMarkers.requested;
 
-    await page.getByRole("button", { name: "Φίλτρα" }).click();
     await page.getByRole("button", { name: "Εύρεση ανταγωνιστών" }).click();
     await jobPosted;
     // In-window proof, DOM-free (same as the scenarios above): the click and
@@ -737,7 +734,6 @@ test.describe("data renders without a second click or manual refresh", () => {
     await page.goto("/map");
     await newJob.restoreLookupRequested;
 
-    await page.getByRole("button", { name: "Φίλτρα" }).click();
     const checkIn = page.locator('input[type="date"]').first();
     const checkOut = page.locator('input[type="date"]').nth(1);
     await checkIn.fill(typedStay.checkIn);
@@ -789,7 +785,6 @@ test.describe("data renders without a second click or manual refresh", () => {
     await page.goto("/map");
     await restoreMarkers.requested;
 
-    await page.getByRole("button", { name: "Φίλτρα" }).click();
     await page.getByRole("button", { name: "Εύρεση ανταγωνιστών" }).click();
     await jobPosted;
     expect(restoreMarkers.settled()).toBe(false);
@@ -840,7 +835,6 @@ test.describe("data renders without a second click or manual refresh", () => {
     await expect(page.locator(".map-canvas")).not.toContainText("Γίνεται αναζήτηση συγκρίσιμων δωματίων");
     // The way out has to be usable: a Find click is the whole point of the
     // message the catch leaves behind.
-    await page.getByRole("button", { name: "Φίλτρα" }).click();
     await expect(page.locator(".filters-sidebar")).toContainText("Ρυθμίστε τα φίλτρα και πατήστε «Εύρεση ανταγωνιστών»");
     await expect(page.getByRole("button", { name: "Εύρεση ανταγωνιστών" })).toBeEnabled();
   });
@@ -883,7 +877,6 @@ test.describe("data renders without a second click or manual refresh", () => {
     // exercised the guard.
     await summaryRequested;
 
-    await page.getByRole("button", { name: "Φίλτρα" }).click();
     await page.getByRole("button", { name: "Εύρεση ανταγωνιστών" }).click();
     await jobPosted;
     // Requested but not answered: the click provably landed mid-read.
@@ -939,7 +932,6 @@ test.describe("data renders without a second click or manual refresh", () => {
     await page.goto("/map");
     await amenitiesRequested;
 
-    await page.getByRole("button", { name: "Φίλτρα" }).click();
     await page.getByRole("button", { name: "Εύρεση ανταγωνιστών" }).click();
     await jobPosted;
     expect(amenitiesSettled).toBe(false);
@@ -1037,7 +1029,6 @@ test.describe("data renders without a second click or manual refresh", () => {
     await page.goto("/map");
     await expect(page.getByText("Hotel Alpha")).toBeVisible();
 
-    await page.getByRole("button", { name: "Φίλτρα" }).click();
     const checkIn = page.locator('input[type="date"]').first();
     const checkOut = page.locator('input[type="date"]').nth(1);
     await checkIn.fill(newStay.check_in);
@@ -1119,7 +1110,6 @@ test.describe("data renders without a second click or manual refresh", () => {
     await page.setViewportSize({ width: 1280, height: 1400 });
     await page.goto("/map");
     await expect(page.getByText("Hotel Alpha")).toBeVisible();
-    await page.getByRole("button", { name: "Φίλτρα" }).click();
     await page.getByRole("button", { name: "Εύρεση ανταγωνιστών" }).click();
 
     // Provably mid-search — the job has been polled at least once — and only

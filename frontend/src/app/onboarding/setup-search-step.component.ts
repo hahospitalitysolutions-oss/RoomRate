@@ -81,7 +81,7 @@ type PostContext = "ordinary" | "reconciled-no-match";
   `,
   styles: [`
     .search-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.75rem; margin-bottom: 0.75rem; }
-    .search-summary span { display: block; color: #64748b; font-size: 0.8rem; }
+    .search-summary span { display: block; color: var(--muted); font-size: 0.8rem; }
     .alert-error { align-items: center; flex-wrap: wrap; }
   `],
 })

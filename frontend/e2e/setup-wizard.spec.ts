@@ -1134,28 +1134,27 @@ test("scenario 5b: after «Αργότερα» the map checklist shows 2 done, st
   await expect(page).toHaveURL(/\/map/);
   await expect(page.getByTestId("setup-checklist")).toBeVisible();
   // Two-sided: the map must not overflow the grid (clipping) NOR collapse —
-  // its bottom edge coincides with the grid's, and it keeps real height.
+  // its bottom edge coincides with the grid's inner edge (the grid's bottom
+  // padding and the map card's border sit between them), and it keeps real height.
   const gridBox = await page.locator(".map-grid").boundingBox();
   const mapBox = await page.locator(".roomrate-map").boundingBox();
   expect(gridBox).not.toBeNull();
   expect(mapBox).not.toBeNull();
-  expect(Math.abs(mapBox!.y + mapBox!.height - (gridBox!.y + gridBox!.height))).toBeLessThanOrEqual(1);
+  const gridPaddingBottom = await page.locator(".map-grid").evaluate((el) => parseFloat(getComputedStyle(el).paddingBottom));
+  const shellBorderBottom = await page.locator(".map-shell").evaluate((el) => parseFloat(getComputedStyle(el).borderBottomWidth));
+  const gridInnerBottom = gridBox!.y + gridBox!.height - gridPaddingBottom - shellBorderBottom;
+  expect(Math.abs(mapBox!.y + mapBox!.height - gridInnerBottom)).toBeLessThanOrEqual(1);
   expect(mapBox!.height).toBeGreaterThan(200);
-  // The checklist sits at the top of .map-shell; its own overlays (the
-  // Filters toggle and the "no results" empty state) must not paint on top
-  // of it. jobs=[] means no competitors were restored, so the empty state
-  // renders -- and, since Round 6 (spec §4.1), the filters form opens by
-  // itself. Folding it back brings the Filters toggle onto the map, so both
-  // overlays are measured.
+  // The checklist sits at the top of .map-shell; the map's own overlay (the
+  // "no results" empty state) must not paint on top of it. jobs=[] means no
+  // competitors were restored, so the empty state renders. «Φίλτρα» is its
+  // own column left of the map, never on it.
   await expect(page.locator(".filters-sidebar")).toBeVisible();
-  await page.getByRole("button", { name: "Απόκρυψη" }).click();
+  await expect(page.locator(".map-shell").getByRole("button", { name: "Φίλτρα", exact: true })).toHaveCount(0);
   const checklistBox = await page.getByTestId("setup-checklist").boundingBox();
-  const filtersButtonBox = await page.getByRole("button", { name: "Φίλτρα", exact: true }).boundingBox();
   const emptyStateBox = await page.locator(".map-empty-state").boundingBox();
   expect(checklistBox).not.toBeNull();
-  expect(filtersButtonBox).not.toBeNull();
   expect(emptyStateBox).not.toBeNull();
-  expect(boxesIntersect(checklistBox!, filtersButtonBox!)).toBe(false);
   expect(boxesIntersect(checklistBox!, emptyStateBox!)).toBe(false);
   await expect(page.getByTestId("checklist-progress")).toContainText("2 από 5");
   await expect(page.getByTestId("checklist-open-step")).toContainText("Πρώτη αναζήτηση");

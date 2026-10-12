@@ -179,13 +179,10 @@ export const SHOW_ALL_ROOMS_LABEL = "Εμφάνιση όλων";
 export const START_SEARCH_MESSAGE =
   "Ρυθμίστε τα φίλτρα και πατήστε «Εύρεση ανταγωνιστών» για να ξεκινήσει ζωντανή αναζήτηση.";
 // Shown when ensureSelectedRoom picked the room instead of the user. Rendered
-// in the results sidebar, which is the only part of the page that is up
-// unconditionally — the filters sidebar starts collapsed.
+// in the results sidebar, right under the room dropdown it describes.
 export const AUTO_PICKED_ROOM_HINT =
   "Επιλέχθηκε αυτόματα το πρώτο δωμάτιο του καταλόγου — αλλάξτε το αν χρειάζεται.";
 
-// How long a card stays highlighted after its marker was clicked.
-export const CARD_HIGHLIGHT_MS = 1500;
 
 export const DEFAULT_STAY = defaultStayDates();
 // A facility filter is two different things at once, and 5.1 split them

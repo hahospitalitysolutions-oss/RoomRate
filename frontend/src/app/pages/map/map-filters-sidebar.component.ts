@@ -1,5 +1,5 @@
 /**
- * The collapsible «Φίλτρα αναζήτησης» form of the map page: stay dates, the
+ * The collapsible «Φίλτρα αναζήτησης» column of the map page: stay dates, the
  * hotel count, nearby areas, radius, facilities and the «Εύρεση
  * ανταγωνιστών» button with the search's own banners under it.
  *
@@ -13,6 +13,7 @@ import { CommonModule } from "@angular/common";
 import { Component, input, output } from "@angular/core";
 import { FormsModule } from "@angular/forms";
 
+import { IconComponent } from "../../components/icon.component";
 import type { OwnedPropertyRoomType } from "../../types/market";
 import { AmenityOption, MAX_NEARBY_DESTINATIONS, MapFilters } from "./map-page.constants";
 
@@ -21,7 +22,7 @@ export type MapFilterChange = { key: keyof MapFilters; value: string };
 @Component({
   selector: "aside[appMapFiltersSidebar]",
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, IconComponent],
   template: `
     <div class="filters-title-row">
       <h2>Φίλτρα αναζήτησης</h2>
@@ -32,11 +33,15 @@ export type MapFilterChange = { key: keyof MapFilters; value: string };
       <strong>{{ baselineRoom()?.room_type }}</strong>
       <small>Το RoomRate ταιριάζει δωμάτια ανταγωνιστών με παρόμοια ονόματα και την ίδια κανονικοποιημένη κατηγορία.</small>
     </div>
+    <div class="filter-group">
+    <div class="filter-section-label"><app-icon name="map-pin" [size]="16"></app-icon>Περιοχή</div>
     <label>
-      <span>Περιοχή</span>
+      <span>Κύρια περιοχή</span>
       <input class="roomrate-input muted-input" [value]="filters().destination" readonly>
     </label>
-    <div class="filter-section-label">Ημερομηνίες διαμονής</div>
+    </div>
+    <div class="filter-group">
+    <div class="filter-section-label"><app-icon name="bed" [size]="16"></app-icon>Ημερομηνίες διαμονής</div>
     <div class="two-cols">
       <label>
         <span>Άφιξη</span>
@@ -47,10 +52,19 @@ export type MapFilterChange = { key: keyof MapFilters; value: string };
         <input class="roomrate-input" type="date" [ngModel]="filters().check_out" (ngModelChange)="change('check_out', $event)">
       </label>
     </div>
+    </div>
+    <div class="filter-group">
+    <div class="filter-section-label"><app-icon name="search" [size]="16"></app-icon>Εύρος αναζήτησης</div>
+    <div class="two-cols">
     <label>
-      <span>Πλήθος ανταγωνιστών</span>
+      <span>Ανταγωνιστές</span>
       <input class="roomrate-input" min="1" max="80" type="number" data-testid="limit-input" [ngModel]="filters().limit" (ngModelChange)="change('limit', $event)">
     </label>
+    <label>
+      <span>Ακτίνα (km)</span>
+      <input class="roomrate-input" min="1" max="30" step="1" type="number" data-testid="radius-input" [ngModel]="filters().radius_km" (ngModelChange)="change('radius_km', $event)">
+    </label>
+    </div>
     <!--
       A div, not a label: it holds the chips' own remove buttons. Enter in
       the input and the button both add; the list is what the POST sends.
@@ -79,20 +93,19 @@ export type MapFilterChange = { key: keyof MapFilters; value: string };
       </div>
       <small class="nearby-hint">Έως {{ maxNearbyDestinations }} περιοχές εκτός από την κύρια.</small>
     </div>
-    <label>
-      <span>Ακτίνα (km)</span>
-      <input class="roomrate-input" min="1" max="30" step="1" type="number" data-testid="radius-input" [ngModel]="filters().radius_km" (ngModelChange)="change('radius_km', $event)">
-    </label>
+    </div>
 
-    <div class="amenity-list">
+    <div class="filter-group amenity-list">
       <div class="amenity-list-header">
-        <span>Δημοφιλέστερες παροχές</span>
+        <span class="filter-section-label"><app-icon name="check" [size]="16"></app-icon>Δημοφιλέστερες παροχές</span>
         <button type="button" [disabled]="!selectedAmenities().size" (click)="amenitiesClear.emit()">Καθαρισμός</button>
       </div>
-      <label *ngFor="let amenity of amenities()" class="checkbox-row">
-        <input type="checkbox" [checked]="selectedAmenities().has(amenity.value)" (change)="amenityToggle.emit(amenity.value)">
-        <span>{{ amenity.label }}</span>
-      </label>
+      <div class="amenity-pills">
+        <label *ngFor="let amenity of amenities()" class="checkbox-row amenity-pill" [class.is-checked]="selectedAmenities().has(amenity.value)">
+          <input type="checkbox" [checked]="selectedAmenities().has(amenity.value)" (change)="amenityToggle.emit(amenity.value)">
+          <span>{{ amenity.label }}</span>
+        </label>
+      </div>
     </div>
 
     <button class="primary-button" type="button" [disabled]="searching()" (click)="findRequest.emit()">
@@ -107,6 +120,8 @@ export type MapFilterChange = { key: keyof MapFilters; value: string };
       <span *ngIf="scrapeElapsedLabel()" class="scrape-progress-clock" data-testid="scrape-elapsed">{{ scrapeElapsedLabel() }}</span>
     </div>
     <div *ngIf="error()" class="alert alert-error">{{ error() }}</div>
+    <!-- The page's «Ταίριασμα δωματίου» card, under the filters. -->
+    <ng-content></ng-content>
   `,
 })
 export class MapFiltersSidebarComponent {

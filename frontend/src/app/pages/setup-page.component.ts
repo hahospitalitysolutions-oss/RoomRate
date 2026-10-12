@@ -1,4 +1,5 @@
 import { Component, OnInit, signal } from "@angular/core";
+import { AppHeaderComponent } from "../components/app-header.component";
 import { CommonModule } from "@angular/common";
 import { ActivatedRoute, Router } from "@angular/router";
 
@@ -14,16 +15,14 @@ export type WizardStep = 1 | 2 | 3;
 @Component({
   selector: "app-setup-page",
   standalone: true,
-  imports: [CommonModule, SetupPropertyStepComponent, SetupRoomStepComponent, SetupSearchStepComponent],
+  imports: [CommonModule, AppHeaderComponent, SetupPropertyStepComponent, SetupRoomStepComponent, SetupSearchStepComponent],
   template: `
     <main class="page-shell setup-page">
-      <header class="map-header">
-        <div>
-          <p class="eyebrow">RoomRate</p>
-          <h1 data-testid="setup-step-title">Βήμα {{ step() }} από 3 — {{ stepTitle() }}</h1>
-          <p class="muted">{{ stepSubtitle() }}</p>
-        </div>
-      </header>
+      <app-header [showNav]="false">
+        <p class="eyebrow">Ρύθμιση λογαριασμού</p>
+        <h1 data-testid="setup-step-title">Βήμα {{ step() }} από 3 — {{ stepTitle() }}</h1>
+        <p class="app-band-subtitle">{{ stepSubtitle() }}</p>
+      </app-header>
 
       <section class="page-body">
         <div *ngIf="status() === 'loading'" class="progress-panel">

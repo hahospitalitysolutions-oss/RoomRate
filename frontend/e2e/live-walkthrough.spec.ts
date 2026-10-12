@@ -57,8 +57,6 @@ test("walk the app as a signed-in user", async ({ page }) => {
   const headerCount = await page.locator(".header-actions span").first().innerText();
   await page.screenshot({ path: `${SHOTS}/1-map.png`, fullPage: false });
 
-  // Open the filters rail so the search controls are visible in the shot.
-  await page.getByRole("button", { name: "Φίλτρα" }).click();
   await expect(page.getByText("Φίλτρα αναζήτησης")).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/2-map-filters.png` });
 
