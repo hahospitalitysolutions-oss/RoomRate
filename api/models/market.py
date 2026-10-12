@@ -1100,3 +1100,52 @@ class RoomRateFerryObservation(Base):
     # Priced accommodations the sailings still offer (migration 20261011_0032):
     # Ferryhopper drops a full cabin or fare tier instead of flagging it.
     accommodation_options: Mapped[int | None] = mapped_column()
+
+
+class RoomRateFlightObservation(Base):
+    """One look at an island airport's scheduled arrivals in one local window of one day.
+
+    Migration 20261011_0033. Airport-level, shared by every account on the
+    island. Upserted per ``(airport_iata, travel_date, window_start_hour,
+    observed_on)``; the flight-demand signal compares a day's newest look
+    with an earlier one (flights added or dropped).
+    """
+
+    __tablename__ = "roomrate_flight_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "airport_iata",
+            "travel_date",
+            "window_start_hour",
+            "observed_on",
+            name="uq_roomrate_flight_observations_window_day",
+        ),
+        CheckConstraint(
+            "window_start_hour >= 0 AND window_end_hour <= 24 AND window_start_hour < window_end_hour",
+            name="ck_roomrate_flight_observations_window",
+        ),
+        Index("ix_roomrate_flight_observations_observed_at", "observed_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=False), primary_key=True)
+    airport_iata: Mapped[str] = mapped_column(String(3), nullable=False)
+    travel_date: Mapped[date] = mapped_column(Date, nullable=False)
+    window_start_hour: Mapped[int] = mapped_column(nullable=False)
+    window_end_hour: Mapped[int] = mapped_column(nullable=False)
+    observed_on: Mapped[date] = mapped_column(Date, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    arrivals: Mapped[int] = mapped_column(nullable=False)
+    airlines: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    # {"LGW": {"name": "London Gatwick", "flights": 4}, ...}: where they come from.
+    origins: Mapped[dict | None] = mapped_column(JSONB)
+    # Calls behind the row (a repeat the same day overwrites it): the monthly
+    # unit budget sums them.
+    calls: Mapped[int] = mapped_column(nullable=False, server_default="1")
+    # The plan's units left after the call, as AeroDataBox reported them.
+    units_remaining: Mapped[int | None] = mapped_column()
+    raw_payload: Mapped[dict | None] = mapped_column(JSONB)
+    parser_version: Mapped[str] = mapped_column(String(20), nullable=False)

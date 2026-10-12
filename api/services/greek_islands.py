@@ -35,6 +35,11 @@ class Island:
     def area(self) -> float:
         return (self.lat_max - self.lat_min) * (self.lon_max - self.lon_min)
 
+    @property
+    def airport(self) -> str | None:
+        """IATA code of the island's own airport; None for an island reached by sea only."""
+        return ISLAND_AIRPORTS.get(self.label)
+
 
 ISLANDS: tuple[Island, ...] = (
     # Dodecanese
@@ -107,6 +112,42 @@ ISLANDS: tuple[Island, ...] = (
     Island("Ηράκλειο", ("heraklion", "irakleio", "iraklion"), 34.90, 35.45, 24.75, 25.40),
     Island("Λασίθι", ("agios nikolaos", "sitia"), 34.90, 35.35, 25.40, 26.35),
 )
+
+
+# The airport visitors of each island land at. Islands without one (Symi,
+# Patmos, Hydra…) are reached by sea only. Crete's prefectures land at their
+# main airport; Rethymno and Lasithi guests mostly fly into Heraklion.
+ISLAND_AIRPORTS: dict[str, str] = {
+    "Ρόδος": "RHO",
+    "Κως": "KGS",
+    "Κάλυμνος": "JKL",
+    "Λέρος": "LRS",
+    "Κάρπαθος": "AOK",
+    "Αστυπάλαια": "JTY",
+    "Κάσος": "KSJ",
+    "Καστελλόριζο": "KZS",
+    "Μύκονος": "JMK",
+    "Σαντορίνη": "JTR",
+    "Πάρος": "PAS",
+    "Νάξος": "JNX",
+    "Μήλος": "MLO",
+    "Σύρος": "JSY",
+    "Σκιάθος": "JSI",
+    "Σκύρος": "SKU",
+    "Κέρκυρα": "CFU",
+    "Κεφαλονιά": "EFL",
+    "Ζάκυνθος": "ZTH",
+    "Κύθηρα": "KIT",
+    "Λέσβος": "MJT",
+    "Χίος": "JKH",
+    "Σάμος": "SMI",
+    "Ικαρία": "JIK",
+    "Λήμνος": "LXS",
+    "Χανιά": "CHQ",
+    "Ρέθυμνο": "HER",
+    "Ηράκλειο": "HER",
+    "Λασίθι": "HER",
+}
 
 
 def island_at(latitude: float | None, longitude: float | None) -> Island | None:

@@ -1,4 +1,4 @@
-"""Outside demand signals for the price advisor (ferries first)."""
+"""Outside demand signals for the price advisor: ferries and flights into the destination."""
 
 from __future__ import annotations
 
@@ -40,8 +40,34 @@ class FerryDemandSignal(BaseModel):
     summary: str
 
 
+class FlightDemandSignal(BaseModel):
+    """Scheduled arrivals at the island's airport around the check-in.
+
+    ``travel_dates``: the collected days read, the check-in itself when it is
+    collected, else the nearest within a few days (the free plan collects
+    Fridays and Saturdays). Pickup: the same days' arrivals now against an
+    earlier look (``compared_with``): airlines add flights where seats sell.
+    """
+
+    level: DemandLevel
+    check_in: date
+    airport_iata: str
+    island: str
+    travel_dates: list[date] = Field(default_factory=list)
+    arrivals: int = Field(0, ge=0)
+    airlines: int = Field(0, ge=0)
+    arrivals_before: int | None = None
+    flights_added: int | None = None
+    arrivals_change_pct: float | None = None
+    compared_with: date | None = None
+    top_origins: list[str] = Field(default_factory=list)
+    observed_on: date | None = None
+    summary: str
+
+
 class DemandSignals(BaseModel):
     ferries: FerryDemandSignal | None = None
+    flights: FlightDemandSignal | None = None
 
 
 class FerryRouteOut(BaseModel):
@@ -77,4 +103,28 @@ class FerryDemandResponse(BaseModel):
     resolved_at: datetime | None = None
     routes: list[FerryRouteOut] = Field(default_factory=list)
     days: list[FerryDayOut] = Field(default_factory=list)
+    observed_on: date | None = None
+
+
+class FlightDayOut(BaseModel):
+    """The airport's collected arrivals on one travel date (every window of the day)."""
+
+    travel_date: date
+    arrivals: int
+    airlines: int
+    arrivals_change_pct: float | None = None
+    flights_added: int | None = None
+    compared_with: date | None = None
+    top_origins: list[str] = Field(default_factory=list)
+    level: DemandLevel
+
+
+class FlightDemandResponse(BaseModel):
+    canonical_destination: str
+    # "flights": an island airport is collected; "no_airport": the property
+    # is not on an island with one; "off": no AeroDataBox key or disabled.
+    status: Literal["flights", "no_airport", "off"]
+    airport_iata: str | None = None
+    island: str | None = None
+    days: list[FlightDayOut] = Field(default_factory=list)
     observed_on: date | None = None

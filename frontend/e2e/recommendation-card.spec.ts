@@ -256,4 +256,40 @@ test("Ferries: a mainland destination (no signal) shows no ferry line", async ({
 
   await expect(page.getByText("Προτεινόμενη τιμή ανά βράδυ")).toBeVisible();
   await expect(page.getByTestId("ferry-demand")).toHaveCount(0);
+  await expect(page.getByTestId("flight-demand")).toHaveCount(0);
+});
+
+test("Flights: the card shows the island airport's arrivals next to the ferries", async ({ page }) => {
+  await mockPricingPage(page, {
+    demandSignals: {
+      ferries: null,
+      flights: {
+        level: "low",
+        check_in: "2026-09-01",
+        airport_iata: "RHO",
+        island: "Ρόδος",
+        travel_dates: ["2026-08-29"],
+        arrivals: 36,
+        airlines: 11,
+        arrivals_before: 40,
+        flights_added: -4,
+        arrivals_change_pct: -10,
+        compared_with: "2026-08-15",
+        top_origins: ["Manchester", "London Gatwick"],
+        observed_on: "2026-08-22",
+        summary:
+          "Αφίξεις στο αεροδρόμιο RHO (Ρόδος) Σάβ 29/08 08:00–20:00: 36 πτήσεις από 11 αεροπορικές, κυρίως από Manchester, London Gatwick. Από τις 15/08: -4 πτήσεις (-10%). Ζήτηση πτήσεων: Χαμηλή.",
+      },
+    },
+  });
+
+  await page.goto("/pricing");
+  await page.getByRole("button", { name: "Λήψη σύστασης" }).click();
+
+  const flights = page.getByTestId("flight-demand");
+  await expect(flights).toBeVisible();
+  await expect(flights).toContainText("Πτήσεις");
+  await expect(flights).toContainText("-4 πτήσεις (-10%)");
+  await expect(flights).toHaveClass(/demand-low/);
+  await expect(page.getByTestId("ferry-demand")).toHaveCount(0);
 });

@@ -1,7 +1,7 @@
 /**
  * The recommendation card: the price headline, its range, how sure and from
- * where, one sentence of why, the key factors, the ferry demand around the
- * check-in (island destinations), the full reasoning behind
+ * where, one sentence of why, the key factors, the ferry and flight demand
+ * around the check-in (island destinations), the full reasoning behind
  * «Γιατί αυτή η τιμή;» and the audit footer.
  *
  * The host is the page's `<div class="panel recommendation-card">` itself
@@ -52,6 +52,15 @@ import { firstSentence, formatEuro, formatEuroCeil, formatEuroFloor } from "./pr
       <span class="demand-signal-label">Πλοία</span>
       {{ ferry.summary }}
     </p>
+    <p
+      *ngIf="flightSignal() as flights"
+      class="demand-signal"
+      [ngClass]="'demand-' + flights.level"
+      data-testid="flight-demand"
+    >
+      <span class="demand-signal-label">Πτήσεις</span>
+      {{ flights.summary }}
+    </p>
     <!-- A one-sentence reasoning IS its summary: a toggle would only
          repeat it, so it appears when there is more to read. -->
     <div *ngIf="hasMoreReasoning()" class="reasoning-disclosure">
@@ -85,6 +94,8 @@ export class RecommendationCardComponent {
 
   /** Ferries into the destination around the check-in, when the destination has them. */
   readonly ferrySignal = computed(() => this.response().demand_signals?.ferries ?? null);
+  /** Arrivals at the island's airport around the check-in, when the island has one. */
+  readonly flightSignal = computed(() => this.response().demand_signals?.flights ?? null);
 
   /** The card's one-line «why»: the reasoning's first sentence. */
   readonly reasoningSummary = computed(() => firstSentence(this.recommendation().reasoning ?? ""));

@@ -11,6 +11,7 @@ from api.db import db_connection
 from api.repositories.accounts_repository import AccountsRepository
 from api.repositories.alerts_repository import AlertsRepository
 from api.repositories.ferry_repository import FerryRepository
+from api.repositories.flight_repository import FlightRepository
 from api.repositories.price_history_repository import PriceHistoryRepository
 from api.repositories.price_recommendation_audit_repository import (
     PriceRecommendationAuditRepository,
@@ -23,6 +24,7 @@ from api.repositories.scrape_jobs_repository import ScrapeJobRepository
 from api.repositories.tracking_repository import TrackingRepository
 from api.services.ferry_demand_service import FerryDemandService
 from api.services.ferryhopper_client import FerryhopperClient
+from api.services.flight_demand_service import FlightDemandService
 from api.services.market_service import MarketService
 from api.services.price_recommendation_agent import PriceRecommendationAgent
 from api.services.room_matching_agent import RoomMatchingAgentService
@@ -207,6 +209,29 @@ def get_ferry_demand_service() -> FerryDemandService:
         horizon_days=settings.ferry_demand_horizon_days,
         max_calls_per_run=settings.ferry_demand_max_calls_per_run,
         tracked_check_in=tracked_check_in,
+    )
+
+
+def get_flight_repository() -> FlightRepository:
+    """Build FlightRepository for the airport-level flight demand data."""
+    return FlightRepository()
+
+
+def get_flight_demand_service() -> FlightDemandService:
+    """Build the flight demand service on the configured AeroDataBox plan."""
+    from api.services.aerodatabox_client import AeroDataBoxClient
+
+    return FlightDemandService(
+        repository=get_flight_repository(),
+        client_factory=lambda: AeroDataBoxClient(
+            settings.aerodatabox_api_key.strip(),
+            host=settings.aerodatabox_host,
+            min_interval_seconds=settings.flight_demand_call_interval_seconds,
+        ),
+        plan=settings.flight_plan,
+        horizon_days=settings.flight_demand_horizon_days,
+        refresh_days=settings.flight_demand_refresh_days,
+        units_per_call=settings.flight_demand_units_per_call,
     )
 
 

@@ -907,9 +907,65 @@ samples of it; `--profile --city … --lat … --lon …` runs the port lookup a
 hotel there would get, on live data, without writing). Ferryhopper's MCP
 server is made for AI assistants; systematic use needs their permission.
 
-`scripts/probe_aerodatabox.py` checks, with a RapidAPI key, how far ahead
-AeroDataBox returns scheduled arrivals and whether a plan's quota covers
-flight demand. Flights are not collected yet.
+#### `api/services/flight_demand_service.py` (flight demand)
+**Purpose:** The second outside demand signal: scheduled arrivals at the
+island's airport, from AeroDataBox on RapidAPI
+(`api/services/aerodatabox_client.py`, `AERODATABOX_API_KEY`; nothing runs
+without it). Airport-level data in `roomrate_flight_observations`
+(migration 20261011_0033), shared by every account on the island.
+
+1. **Airports.** The island each active property's own coordinates fall on
+   (`greek_islands.island_at`) and `ISLAND_AIRPORTS`: Rhodes RHO, Santorini
+   JTR, Corfu CFU…; Crete's Rethymno and Lasithi land at Heraklion. Islands
+   reached by sea only (Symi, Patmos, Hydra…), the mainland and road-reached
+   islands get no flight signal.
+2. **Collection** (worker job `flight_demand_collection`, daily 05:30 UTC,
+   advisory lock 815_372_004). One call = one airport and one local window
+   of at most 12 hours and costs 2 units (probe 2026-10-11). The plan
+   (`api/services/flight_plan.py`, `FLIGHT_DEMAND_PLAN`) sets the travel
+   weekdays, the windows and the month's units:
+   - `free` (400 units a month): Fridays and Saturdays, 08:00–20:00,
+     380 units, at most 20 calls a run;
+   - `pro` ($8, 5,000 units): every day, 00–12 and 12–24, 4,800 units,
+     at most 200 calls a run.
+   `FLIGHT_DEMAND_MONTHLY_UNITS`, `_WEEKDAYS`, `_WINDOWS` and
+   `_MAX_CALLS_PER_RUN` override one part; a bad value fails at startup.
+   Each travel date and window up to `FLIGHT_DEMAND_HORIZON_DAYS` (56) is
+   read again after `FLIGHT_DEMAND_REFRESH_DAYS` (7), nearest dates first.
+   A day spends the month's remaining units over its remaining days
+   (rounded up, so nothing is left unspent at the month's end); the units
+   spent are the `calls` of the month's rows (a repeat the same day adds
+   one). A run stops on HTTP 429, when AeroDataBox reports fewer units left
+   than a call costs (`units_remaining`, stored per row), on a wrong key
+   (401/403), or after 3 failures in a row. One airport on the free plan is
+   ~70 calls (140 units) a month, so the free plan covers two island
+   airports; more airports share it and read far dates less often.
+3. **Signal.** Pickup: a travel day's arrivals now against the oldest look
+   3 to 21 days before (per window; a window overlapping one read more
+   recently, after a plan change, is not counted). Airlines add frequencies
+   and charters where seats sell and drop them where they do not; how busy
+   the airport is on one read is the season, not demand. `high` at ≥ +8%
+   and at least 2 flights more, `low` at ≤ −8% and 2 fewer, `unknown`
+   until the same days are read twice (about a week on the free plan) or
+   when there were no flights before. A check-in that is not a collected
+   day reads the nearest collected days within 3 days (on the free plan,
+   a Wednesday reads Friday). The summary names the top origins
+   (Manchester, London Gatwick…) for the owner.
+
+The price-recommendation route attaches it next to the ferries
+(`market_context.demand_signals.flights`, prompt v10: same rule, inside the
+market band; ferries and flights agreeing weigh more) and returns it as
+`demand_signals.flights`; the card shows a «Πτήσεις» line. Its level and
+day are part of the recommendation's request hash.
+
+`python scripts/run_flight_demand.py` runs today's share by hand (`--calls N`
+for a first fill, within the month); `--show` prints arrivals by date and
+the units spent; `--day YYYY-MM-DD` each stored flight of a date.
+`scripts/probe_aerodatabox.py` checks with a RapidAPI key how far ahead
+AeroDataBox returns scheduled arrivals and what a plan's units cover.
+
+To move to Pro: subscribe the same RapidAPI key to AeroDataBox Pro, then
+`FLIGHT_DEMAND_PLAN=pro` in `.env` and restart the worker.
 
 #### `api/repositories/price_recommendation_audit_repository.py`
 **Purpose:** Stores immutable recommendation request/response evidence,
@@ -1626,6 +1682,28 @@ of one of the caller's owned properties (404 for any other).
 ```
 `status` is null before the first port lookup (within the hour after a
 property is claimed); `days` is empty before the first daily collection.
+
+#### GET /api/v1/demand/flights
+**Purpose:** The island airport of one of the caller's owned properties
+(404 for any other) and its collected arrivals by travel date.
+
+**Query:** `owned_property_id` (UUID).
+
+**Response (200):**
+```json
+{
+  "canonical_destination": "rodos",
+  "status": "flights",
+  "airport_iata": "RHO",
+  "island": "Ρόδος",
+  "days": [{"travel_date": "2026-10-17", "arrivals": 46, "airlines": 11, "arrivals_change_pct": 15.0,
+            "flights_added": 6, "compared_with": "2026-10-05", "top_origins": ["Manchester"], "level": "high"}],
+  "observed_on": "2026-10-12"
+}
+```
+`status` is `no_airport` off an island with an airport (or without the
+property's coordinates) and `off` without `AERODATABOX_API_KEY`; `days` is
+empty before the first collection.
 
 #### POST /api/v1/scrape-jobs/
 **Purpose:** Durably queue a Booking.com market scrape for the current account. The production Python worker starts it.

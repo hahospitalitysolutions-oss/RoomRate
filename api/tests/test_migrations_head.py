@@ -15,6 +15,7 @@ from api.models.market import (
     RoomRateFerryDestinationProfile,
     RoomRateFerryObservation,
     RoomRateFerryRoute,
+    RoomRateFlightObservation,
     RoomRateAgentRun,
     RoomRateRateLimitHit,
     RoomRateScheduleConfig,
@@ -34,6 +35,7 @@ RATE_LIMIT_REVISION = "20260930_0029"
 SCHEDULE_LOCAL_HOUR_REVISION = "20260930_0030"
 FERRY_DEMAND_REVISION = "20261011_0031"
 FERRY_OPTIONS_REVISION = "20261011_0032"
+FLIGHT_OBSERVATIONS_REVISION = "20261011_0033"
 
 
 def _script_directory() -> ScriptDirectory:
@@ -42,8 +44,30 @@ def _script_directory() -> ScriptDirectory:
     return ScriptDirectory.from_config(config)
 
 
-def test_ferry_options_migration_is_the_single_alembic_head():
-    assert _script_directory().get_heads() == [FERRY_OPTIONS_REVISION]
+def test_flight_observations_migration_is_the_single_alembic_head():
+    assert _script_directory().get_heads() == [FLIGHT_OBSERVATIONS_REVISION]
+
+
+def test_flight_observations_migration_revises_the_ferry_options_migration():
+    revision = _script_directory().get_revision(FLIGHT_OBSERVATIONS_REVISION)
+
+    assert revision.down_revision == FERRY_OPTIONS_REVISION
+
+
+def test_orm_declares_the_flight_observations_table():
+    """One look per airport, travel date, window and day; calls counted for the unit budget."""
+    table = RoomRateFlightObservation.__table__
+
+    assert table.name == "roomrate_flight_observations"
+    assert table.columns["airport_iata"].type.length == 3
+    assert table.columns["calls"].server_default.arg == "1"
+    assert table.columns["units_remaining"].nullable is True
+    constraints = {constraint.name for constraint in table.constraints}
+    assert {
+        "uq_roomrate_flight_observations_window_day",
+        "ck_roomrate_flight_observations_window",
+    } <= constraints
+    assert {index.name for index in table.indexes} == {"ix_roomrate_flight_observations_observed_at"}
 
 
 def test_ferry_options_migration_revises_the_ferry_demand_migration():

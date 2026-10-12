@@ -3,8 +3,10 @@ from functools import lru_cache
 from uuid import UUID
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from api.services.flight_plan import FlightPlan, resolve_plan
 
 
 logger = logging.getLogger(__name__)
@@ -194,6 +196,30 @@ class Settings(BaseSettings):
     ferry_raw_payload_retention_days: int = Field(
         default=7, ge=0, alias="FERRY_RAW_PAYLOAD_RETENTION_DAYS"
     )
+    # Flight demand (api/services/flight_demand_service.py): scheduled arrivals
+    # at island airports, from AeroDataBox on RapidAPI. Nothing runs without
+    # AERODATABOX_API_KEY. FLIGHT_DEMAND_PLAN picks what is read (free: Fri/Sat
+    # 08–20 within 400 units a month; pro: every day, all day, within 5,000);
+    # the four overrides below change one part of the plan.
+    flight_demand_enabled: bool = Field(default=True, alias="FLIGHT_DEMAND_ENABLED")
+    aerodatabox_api_key: str = Field(default="", alias="AERODATABOX_API_KEY")
+    aerodatabox_host: str = Field(default="aerodatabox.p.rapidapi.com", alias="AERODATABOX_HOST")
+    flight_demand_plan: str = Field(default="free", alias="FLIGHT_DEMAND_PLAN")
+    flight_demand_monthly_units: int | None = Field(default=None, ge=0, alias="FLIGHT_DEMAND_MONTHLY_UNITS")
+    flight_demand_weekdays: str = Field(default="", alias="FLIGHT_DEMAND_WEEKDAYS")
+    flight_demand_windows: str = Field(default="", alias="FLIGHT_DEMAND_WINDOWS")
+    flight_demand_max_calls_per_run: int | None = Field(
+        default=None, ge=1, le=2000, alias="FLIGHT_DEMAND_MAX_CALLS_PER_RUN"
+    )
+    # Units one call costs (2 on the airport-arrivals endpoint, probe 2026-10-11).
+    flight_demand_units_per_call: int = Field(default=2, ge=1, le=20, alias="FLIGHT_DEMAND_UNITS_PER_CALL")
+    flight_demand_horizon_days: int = Field(default=56, ge=7, le=330, alias="FLIGHT_DEMAND_HORIZON_DAYS")
+    # Each travel date and window is read again after this many days.
+    flight_demand_refresh_days: int = Field(default=7, ge=1, le=30, alias="FLIGHT_DEMAND_REFRESH_DAYS")
+    flight_demand_call_interval_seconds: float = Field(
+        default=1.5, ge=0.0, le=30.0, alias="FLIGHT_DEMAND_CALL_INTERVAL_SECONDS"
+    )
+    flight_raw_payload_retention_days: int = Field(default=7, ge=0, alias="FLIGHT_RAW_PAYLOAD_RETENTION_DAYS")
     # Optional error-monitoring integration (Sentry, see api.main.init_sentry).
     # A blank DSN keeps it off entirely and sentry_sdk is never imported.
     # Performance tracing defaults to 0 (errors only); raise deliberately
@@ -203,6 +229,33 @@ class Settings(BaseSettings):
     sentry_traces_sample_rate: float = Field(
         default=0.0, ge=0.0, le=1.0, alias="SENTRY_TRACES_SAMPLE_RATE"
     )
+
+    @model_validator(mode="after")
+    def _check_flight_plan(self) -> "Settings":
+        # A typo in the plan or its overrides fails at startup, not at 05:30.
+        self.flight_plan
+        return self
+
+    @property
+    def flight_plan(self) -> FlightPlan:
+        """FLIGHT_DEMAND_PLAN with its overrides applied."""
+        return resolve_plan(
+            self.flight_demand_plan,
+            monthly_units=self.flight_demand_monthly_units,
+            weekdays=self.flight_demand_weekdays,
+            windows=self.flight_demand_windows,
+            max_calls_per_run=self.flight_demand_max_calls_per_run,
+        )
+
+    @property
+    def flight_demand_active(self) -> bool:
+        """On and keyed: the collection runs and the advisor reads flights."""
+        return self.flight_demand_enabled and bool(self.aerodatabox_api_key.strip())
+
+    @property
+    def flight_signal_max_age_days(self) -> int:
+        """How old the newest look may be: a refresh cycle plus slack for a tight budget."""
+        return self.flight_demand_refresh_days + 3
 
     @property
     def allowed_origins(self) -> list[str]:

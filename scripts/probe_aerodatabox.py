@@ -71,6 +71,8 @@ def main() -> int:
     headers = {"x-rapidapi-key": key, "x-rapidapi-host": RAPIDAPI_HOST}
     results = []
     quota: dict[str, str] = {}
+    # The plan's units left after each call: their drop is what a call costs.
+    units_left: list[int] = []
     with httpx.Client(timeout=30) as client:
         for offset in OFFSETS_DAYS:
             day = date.today() + timedelta(days=offset)
@@ -82,6 +84,9 @@ def main() -> int:
                 results.append({"offset_days": offset, "date": str(day), "error": str(exc)})
                 break
             quota.update({name: value for name, value in response.headers.items() if name.lower().startswith("x-ratelimit")})
+            remaining = response.headers.get("x-ratelimit-api-units-remaining")
+            if remaining and remaining.isdigit():
+                units_left.append(int(remaining))
             entry = {"offset_days": offset, "date": str(day), "status": response.status_code}
             if response.status_code == 204:
                 entry["arrivals"] = 0
@@ -109,16 +114,27 @@ def main() -> int:
         print("  Όρια πλάνου (headers):")
         for name, value in sorted(quota.items()):
             print(f"    {name}: {value}")
+    # The plan bills units, not requests (probe 2026-10-11: 400 units but
+    # 1,600 requests a month on the free plan, 2 units a call).
+    units_per_call = (
+        (units_left[0] - units_left[-1]) / (len(units_left) - 1) if len(units_left) > 1 else None
+    ) or 2.0
+    print(f"  Κόστος μιας κλήσης: {units_per_call:g} μονάδες.")
     # Two 12-hour windows cover a day; a weekly refresh of the horizon.
-    monthly = args.airports_planned * args.horizon_days * 2 * 4.3
+    monthly_calls = args.airports_planned * args.horizon_days * 2 * 4.3
+    monthly_units = monthly_calls * units_per_call
     print(
         f"  Για {args.airports_planned} αεροδρόμια × {args.horizon_days} μέρες × 2 παράθυρα, "
-        f"με εβδομαδιαία ανανέωση: ~{monthly:,.0f} κλήσεις τον μήνα."
+        f"με εβδομαδιαία ανανέωση: ~{monthly_calls:,.0f} κλήσεις = ~{monthly_units:,.0f} μονάδες τον μήνα."
     )
-    limit = next((value for name, value in quota.items() if "limit" in name.lower() and "request" in name.lower()), None)
-    if limit and limit.isdigit():
-        verdict = "καλύπτει" if int(limit) >= monthly else "ΔΕΝ καλύπτει"
-        print(f"  Το όριο του πλάνου σου είναι {limit}: {verdict} αυτή τη χρήση.")
+    units_limit = next(
+        (value for name, value in quota.items() if name.lower() == "x-ratelimit-api-units-limit"), None
+    )
+    if units_limit and units_limit.isdigit():
+        verdict = "καλύπτει" if int(units_limit) >= monthly_units else "ΔΕΝ καλύπτει"
+        print(f"  Το πλάνο σου έχει {units_limit} μονάδες τον μήνα: {verdict} αυτή τη χρήση.")
+        if units_left:
+            print(f"  Απομένουν {units_left[-1]} μονάδες.")
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT.write_text(

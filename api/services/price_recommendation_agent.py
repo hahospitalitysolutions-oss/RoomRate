@@ -69,7 +69,9 @@ _MAX_COMPETITORS = 15
 # around the arrival) is a secondary signal inside the market band.
 # v9: the ferry level is pickup (the same sailings filling up since an
 # earlier look) and extra sailings, not a comparison across travel dates.
-PRICE_RECOMMENDATION_PROMPT_VERSION = "2026-10-12.v9"
+# v10: market_context.demand_signals.flights (scheduled arrivals at the
+# island's airport, added or dropped since an earlier look), same rule.
+PRICE_RECOMMENDATION_PROMPT_VERSION = "2026-10-12.v10"
 
 # Greek annotation of the statistical basis (spec 2026-09-29 Β.2): the payload
 # spells out what stats_scope.cancellation_class means so the model reads the
@@ -115,6 +117,14 @@ SYSTEM_PROMPT = (
     "φθηναίνουν με θέσεις διαθέσιμες. Είναι δευτερεύον σήμα: μπορεί να μετακινήσει την τιμή μέσα στο "
     "εύρος της αγοράς (προς το p75 όταν high, προς το p25 όταν low), ποτέ έξω "
     "από αυτό· όταν το χρησιμοποιείς, ανέφερέ το στα key_factors. "
+    # v10: flights follow the same rule; two signals agreeing weigh more.
+    "Όταν υπάρχει το market_context.demand_signals.flights, δείχνει τις "
+    "προγραμματισμένες αφίξεις πτήσεων στο αεροδρόμιο του νησιού κοντά στην "
+    "άφιξη (travel_dates): level=high σημαίνει ότι οι αεροπορικές πρόσθεσαν "
+    "πτήσεις από μια προηγούμενη ματιά (compared_with, flights_added), "
+    "level=low ότι αφαίρεσαν. Ισχύει ο ίδιος κανόνας με τα πλοία: δευτερεύον "
+    "σήμα μέσα στο εύρος της αγοράς· όταν πλοία και πτήσεις δείχνουν το ίδιο, "
+    "στάθμισέ το περισσότερο, όταν διαφωνούν, μείνε κοντά στη διάμεσο. "
     "Απάντησε αποκλειστικά στα ελληνικά: γράψε το reasoning και τα key_factors "
     "στα ελληνικά, με ποσά σε ευρώ (π.χ. «120 €»)."
 )

@@ -641,9 +641,10 @@ def test_llm_system_prompt_demands_greek_answers():
     agent.recommend(_stats(), ADVISOR_CONTEXT)
 
     assert "Απάντησε αποκλειστικά στα ελληνικά" in fake_client.messages.parse_kwargs["system"]
-    # A changed prompt is a new prompt version in the audit trail; v9 = the
-    # ferry signal read as pickup, so a cached v8 answer cannot serve.
-    assert PRICE_RECOMMENDATION_PROMPT_VERSION == "2026-10-12.v9"
+    # A changed prompt is a new prompt version in the audit trail; v10 = the
+    # flight signal next to the ferries, so a cached v9 answer cannot serve.
+    assert PRICE_RECOMMENDATION_PROMPT_VERSION == "2026-10-12.v10"
+    assert "market_context.demand_signals.flights" in fake_client.messages.parse_kwargs["system"]
 
 
 def test_llm_system_prompt_weighs_same_cancellation_class_prices():

@@ -86,8 +86,31 @@ export type FerryDemandSignal = {
   summary: string;
 };
 
+/** Scheduled arrivals at the island's airport around the check-in. */
+export type FlightDemandSignal = {
+  level: DemandLevel;
+  check_in: string;
+  airport_iata: string;
+  island: string;
+  // The collected days read: the check-in, or the nearest collected days.
+  travel_dates: string[];
+  arrivals: number;
+  airlines: number;
+  // Pickup: the same days against an earlier look (compared_with).
+  arrivals_before: number | null;
+  flights_added: number | null;
+  arrivals_change_pct: number | null;
+  compared_with: string | null;
+  top_origins: string[];
+  observed_on: string | null;
+  // One Greek sentence for the owner.
+  summary: string;
+};
+
 export type DemandSignals = {
   ferries: FerryDemandSignal | null;
+  // Absent from answers cached before flights were collected.
+  flights?: FlightDemandSignal | null;
 };
 
 export type PriceRecommendationResponse = {
@@ -106,7 +129,7 @@ export type PriceRecommendationResponse = {
   // sample price.
   own_price_source: OwnPriceSource | null;
   // Outside demand the advisor saw; null when the destination has none
-  // (mainland, or no ferry data yet). Older cached answers omit it.
+  // (mainland, or no ferry or flight data yet). Older cached answers omit it.
   demand_signals?: DemandSignals | null;
 };
 

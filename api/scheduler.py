@@ -46,8 +46,10 @@ SCHEDULER_TICK_LOCK_KEY = 815_372_001
 # Ferry demand jobs: one process looks up ports / collects sailings at a time.
 FERRY_PROFILE_LOCK_KEY = 815_372_002
 FERRY_COLLECTION_LOCK_KEY = 815_372_003
+# Flight demand collection: one process spends the AeroDataBox units at a time.
+FLIGHT_COLLECTION_LOCK_KEY = 815_372_004
 
-# Observations of travel dates further back than this are dropped.
+# Ferry and flight observations of travel dates further back than this are dropped.
 FERRY_OBSERVATION_RETENTION_DAYS = 400
 
 # scout_cache rows older than this are useless (stage-1 reuse window is 12h).
@@ -398,6 +400,56 @@ def run_ferry_demand_collection(service: Any = None, engine: Any = None, today: 
     return report.saved
 
 
+def run_flight_demand_collection(
+    service: Any = None, engine: Any = None, today: Any = None, max_calls: int | None = None
+) -> int:
+    """Read the due island-airport arrivals within today's share of the units. Never raises.
+
+    Off without AERODATABOX_API_KEY. ``max_calls`` replaces the day's share
+    (scripts/run_flight_demand.py --calls), never the month's budget.
+    Returns the observations saved.
+    """
+    if not settings.flight_demand_active:
+        return 0
+    try:
+        if service is None:
+            from api.dependencies import get_flight_demand_service
+
+            service = get_flight_demand_service()
+        collection_day = today if today is not None else datetime.now(timezone.utc).date()
+        report = _run_with_advisory_lock(
+            FLIGHT_COLLECTION_LOCK_KEY,
+            lambda: service.collect(collection_day, max_calls=max_calls),
+            engine if engine is not None else get_engine(role="api"),
+            "Flight demand collection",
+        )
+    except Exception:
+        logger.exception("Flight demand collection crashed")
+        return 0
+    if report is None:
+        return 0
+    logger.info(
+        "Flight demand collection: airports %s, %s due, %s call(s) of %s allowed, %s saved, %s failed, "
+        "units left %s%s",
+        ",".join(report.airports) or "none",
+        report.due,
+        report.calls,
+        report.allowance,
+        report.saved,
+        report.failed,
+        report.units_remaining if report.units_remaining is not None else "?",
+        " (stopped early)" if report.aborted or report.out_of_units else "",
+    )
+    try:
+        service.repository.prune(
+            raw_payload_days=settings.flight_raw_payload_retention_days,
+            observation_days=FERRY_OBSERVATION_RETENTION_DAYS,
+        )
+    except Exception:
+        logger.exception("Flight observation pruning crashed")
+    return report.saved
+
+
 def purge_old_scrape_csvs(directory: Path, older_than_days: int, now: datetime | None = None) -> int:
     """Delete ``*.csv`` files and leftover job checkpoints older than ``older_than_days``.
 
@@ -563,6 +615,14 @@ def create_scheduler(
         minute=10,
         id="ferry_demand_collection",
         name="Read the next days' ferry sailings into island destinations",
+    )
+    scheduler.add_job(
+        run_flight_demand_collection,
+        trigger="cron",
+        hour=5,
+        minute=30,
+        id="flight_demand_collection",
+        name="Read scheduled arrivals at island airports",
     )
     scheduler.add_job(
         run_price_recommendation_audit_cleanup,
