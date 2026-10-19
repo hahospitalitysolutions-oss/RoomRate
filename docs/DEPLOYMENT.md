@@ -137,7 +137,7 @@ against the new schema; otherwise restore from a backup (§8).
 ### 5. Frontend image
 
 Separate from the three API containers: `frontend/Dockerfile` builds the
-Angular bundle with Node 20 and serves it from `nginxinc/nginx-unprivileged`
+Angular bundle with Node 22 and serves it from `nginxinc/nginx-unprivileged`
 on **port 8080** (uid 101, no root, no added capabilities). Nothing from the
 build stage — sources, `node_modules`, the Node runtime — reaches the final
 image.
