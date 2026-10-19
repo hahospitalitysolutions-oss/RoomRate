@@ -886,16 +886,18 @@ account in a destination.
    the Windows `schtasks` line). `--show` prints the calendar with the
    pickup columns; `--day YYYY-MM-DD` each stored sailing of a date.
 
-On `/pricing` the «Ζήτηση πλοίων» panel (frontend
-`pages/pricing/ferry-demand-panel.component.ts`, reading
-`GET /api/v1/demand/ferries`) shows the tracked routes and one cell per
-arrival day for three weeks, coloured by level, with the form's check-in
-outlined; before the first lookup, for a mainland destination and in the
-first days of collection it says which of these it is.
+Ferries (and flights) are data for the pricing agent, not a view: `/pricing`
+shows no ferry or flight details. The recommendation card carries one note
+(`demand-note`): «Η πρόταση λαμβάνει υπόψη και τη ζήτηση από τα πλοία και τις
+πτήσεις προς το νησί σας», naming only the kinds the agent could read; while
+both are still collecting their first days it says they will be weighed
+once enough days exist; off an island there is no note.
+`GET /api/v1/demand/ferries` (routes and days) stays for scripts and later
+views.
 
 The price-recommendation route attaches the signal to the LLM context
 (`market_context.demand_signals.ferries`, prompt v9: it may move the price
-inside the market band only) and returns it as `demand_signals` for the card.
+inside the market band only) and returns it as `demand_signals` for the note.
 The statistical baseline does not use it yet: the thresholds are rules, to be
 calibrated once a season of observations exists.
 
@@ -958,7 +960,7 @@ without it). Airport-level data in `roomrate_flight_observations`
 The price-recommendation route attaches it next to the ferries
 (`market_context.demand_signals.flights`, prompt v10: same rule, inside the
 market band; ferries and flights agreeing weigh more) and returns it as
-`demand_signals.flights`; the card shows a «Πτήσεις» line. Its level and
+`demand_signals.flights` (named in the card's note). Its level and
 day are part of the recommendation's request hash.
 
 `python scripts/run_flight_demand.py` runs today's share by hand (`--calls N`
