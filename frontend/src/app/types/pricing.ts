@@ -147,39 +147,3 @@ export type PriceHistorySeries = {
   check_out: string;
   points: PriceHistoryPoint[];
 };
-
-export type FerryRoute = {
-  id: string;
-  origin_port: string;
-  destination_port: string;
-  status: string;
-  sample_sailings: number | null;
-};
-
-/** Every collected route into the destination on one arrival day. */
-export type FerryDay = {
-  travel_date: string;
-  sailings: number;
-  availability_known: number;
-  sold_out: number;
-  min_price_eur: number | null;
-  accommodation_options: number | null;
-  options_change_pct: number | null;
-  price_change_pct: number | null;
-  level: DemandLevel;
-};
-
-/** GET /api/v1/demand/ferries: the island port, its inbound routes, the next days. */
-export type FerryDemandResponse = {
-  canonical_destination: string;
-  // false when the owner switched ferries off (Ρυθμίσεις → Ζήτηση νησιού).
-  enabled?: boolean;
-  // null until the worker's first port lookup.
-  status: "ferry" | "no_ferry" | "error" | null;
-  island_port: string | null;
-  port_distance_km: number | null;
-  resolved_at: string | null;
-  routes: FerryRoute[];
-  days: FerryDay[];
-  observed_on: string | null;
-};

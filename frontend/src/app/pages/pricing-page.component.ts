@@ -10,9 +10,8 @@ import { ApiClientService } from "../services/api-client.service";
 import { OnboardingService } from "../services/onboarding.service";
 import { WorkflowStorageService } from "../services/workflow-storage.service";
 import { MarketSummary, OwnedPropertyRoomType, ScrapeJobResponse } from "../types/market";
-import { FerryDemandResponse, PriceHistorySeries, PriceRecommendationResponse } from "../types/pricing";
+import { PriceHistorySeries, PriceRecommendationResponse } from "../types/pricing";
 import { defaultStayDates, isPastLocalDate } from "../utils/date-defaults";
-import { FerryDemandPanelComponent } from "./pricing/ferry-demand-panel.component";
 import { MarketStatisticsPanelComponent } from "./pricing/market-statistics-panel.component";
 import { PriceHistoryCardComponent } from "./pricing/price-history-card.component";
 import { buildHistoryChart, PriceHistoryChartView } from "./pricing/price-history-chart";
@@ -40,7 +39,6 @@ const DEFAULT_STAY = defaultStayDates();
   standalone: true,
   imports: [
     CommonModule,
-    FerryDemandPanelComponent,
     FormsModule,
     MarketStatisticsPanelComponent,
     AppHeaderComponent,
@@ -196,16 +194,6 @@ const DEFAULT_STAY = defaultStayDates();
             ></div>
             </ng-container>
 
-            <!-- Outside demand for the island (empty for a mainland property):
-                 independent of the recommendation, so it shows on arrival. -->
-            <div
-              appFerryDemandPanel
-              class="panel ferry-demand-panel"
-              [demand]="ferryDemand()"
-              [status]="ferryStatus()"
-              [checkIn]="filters().check_in"
-            ></div>
-
             <div
               appPriceHistoryCard
               class="panel history-card"
@@ -310,8 +298,6 @@ export class PricingPageComponent implements OnInit {
     return `Μικρό δείγμα: ${sample} — η θέση/σύσταση είναι ενδεικτική.`;
   });
 
-  readonly ferryStatus = signal<LoadingState>("idle");
-  readonly ferryDemand = signal<FerryDemandResponse | null>(null);
 
   readonly historyStatus = signal<LoadingState>("idle");
   readonly historyError = signal("");
@@ -349,7 +335,6 @@ export class PricingPageComponent implements OnInit {
       // prefillFromLatestSearch swallows its own lookup failure.
       arrivedFromSearch = await this.prefillFromLatestSearch();
       void this.loadHistory();
-      void this.loadFerryDemand();
     } catch (error) {
       this.contextError.set(
         error instanceof Error ? error.message : "Δεν ήταν δυνατή η φόρτωση των στοιχείων του λογαριασμού.",
@@ -527,19 +512,6 @@ export class PricingPageComponent implements OnInit {
       this.comparableCompetitors.set(summary.total_hotels);
     } catch {
       this.comparableCompetitors.set(null);
-    }
-  }
-
-  /** The ferries into the property's island; a failure only hides the panel's content. */
-  async loadFerryDemand(): Promise<void> {
-    this.ferryStatus.set("loading");
-    try {
-      const params = new URLSearchParams({ owned_property_id: this.ownedPropertyId() });
-      this.ferryDemand.set(await this.api.get<FerryDemandResponse>("/api/v1/demand/ferries", params));
-      this.ferryStatus.set("ready");
-    } catch {
-      this.ferryDemand.set(null);
-      this.ferryStatus.set("error");
     }
   }
 
