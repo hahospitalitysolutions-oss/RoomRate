@@ -6,7 +6,6 @@
  */
 export const environment = {
   apiBaseUrl: "http://127.0.0.1:8000",
-  supabaseUrl: "https://nycfqostjdjaynstaloo.supabase.co",
-  supabaseAnonKey: "sb_publishable_vbcKRKJ4VqdHK7RiwsajHA_lckicsTb",
+  neonAuthUrl: "https://ep-holy-fog-b2lft4e6.neonauth.c-6.eu-central-1.aws.neon.tech/neondb/auth",
   mapboxToken: "pk.eyJ1IjoiZWxpYXNsYXNwIiwiYSI6ImNtb2ZtYXhieDBsaXMyeHNiZDZ4emd3b3oifQ.8UsjzJMKLYp3mGjpsApz8w",
 };

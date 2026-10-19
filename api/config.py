@@ -3,8 +3,10 @@ from functools import lru_cache
 from uuid import UUID
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from api.services.flight_plan import FlightPlan, resolve_plan
 
 
 logger = logging.getLogger(__name__)
@@ -36,7 +38,14 @@ class Settings(BaseSettings):
     )
     database_url: str = Field(default="", alias="DATABASE_URL")
     internal_api_key: str = Field(default=DEV_INTERNAL_API_KEY, alias="INTERNAL_API_KEY")
-    cors_origins: str = Field(default="http://localhost:3000", alias="CORS_ORIGINS")
+    # The Angular dev server (`ng serve`, port 4200) calls the API at
+    # 127.0.0.1:8000 cross-origin. A default of localhost:3000 alone made every
+    # browser call of a .env without CORS_ORIGINS fail as «could not reach
+    # the API». Production sets its own origins (a localhost-only list warns).
+    cors_origins: str = Field(
+        default="http://localhost:4200,http://127.0.0.1:4200,http://localhost:3000",
+        alias="CORS_ORIGINS",
+    )
     # "text" (human-readable, default) or "json" (one JSON object per log
     # line, incl. structured extras + X-Request-ID; for log aggregators).
     log_format: Literal["text", "json"] = Field(default="text", alias="LOG_FORMAT")
@@ -53,6 +62,14 @@ class Settings(BaseSettings):
     supabase_jwt_secret: str = Field(default="", alias="SUPABASE_JWT_SECRET")
     supabase_jwks_url: str = Field(default="", alias="SUPABASE_JWKS_URL")
     supabase_jwt_audience: str = Field(default="authenticated", alias="SUPABASE_JWT_AUDIENCE")
+    # Neon Auth (Better Auth managed by Neon). When NEON_AUTH_URL is set, browser
+    # tokens are verified against <NEON_AUTH_URL>/.well-known/jwks.json instead
+    # of Supabase. Issuer/audience are checked only when set (Better Auth uses
+    # its base URL for both).
+    neon_auth_url: str = Field(default="", alias="NEON_AUTH_URL")
+    neon_auth_jwks_url: str = Field(default="", alias="NEON_AUTH_JWKS_URL")
+    neon_auth_jwt_issuer: str = Field(default="", alias="NEON_AUTH_JWT_ISSUER")
+    neon_auth_jwt_audience: str = Field(default="", alias="NEON_AUTH_JWT_AUDIENCE")
     roomrate_default_account_id: UUID = Field(
         default=UUID("00000000-0000-0000-0000-000000000001"),
         alias="ROOMRATE_DEFAULT_ACCOUNT_ID",
@@ -71,6 +88,10 @@ class Settings(BaseSettings):
     # than this many days; results live in PostgreSQL, the CSVs are debugging
     # artifacts. 0 disables the cleanup.
     scrape_csv_retention_days: int = Field(default=30, alias="SCRAPE_CSV_RETENTION_DAYS")
+    # roomrate_raw_ingestion_events keeps every scraped row's raw payload, a
+    # copy of the package's own package_payload that nothing reads: about a
+    # third of a scrape's storage. 0 keeps them forever.
+    raw_ingestion_retention_days: int = Field(default=30, alias="RAW_INGESTION_RETENTION_DAYS")
     max_concurrent_scrape_jobs_per_account: int = Field(default=2, alias="MAX_CONCURRENT_SCRAPE_JOBS_PER_ACCOUNT")
     max_daily_scrape_jobs_per_account: int = Field(default=20, alias="MAX_DAILY_SCRAPE_JOBS_PER_ACCOUNT")
     # GET /api/v1/onboarding/property-candidates (the setup wizard's «Δείξε
@@ -106,7 +127,10 @@ class Settings(BaseSettings):
     # depth is steered only via output_config.effort in the agent call.
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
     anthropic_model: str = Field(default="claude-opus-5-5", alias="ANTHROPIC_MODEL")
-    anthropic_timeout_seconds: float = Field(default=30.0, alias="ANTHROPIC_TIMEOUT_SECONDS")
+    # Thinking is always on for claude-opus-5-5: a medium-effort answer can
+    # take longer than 30 s, which timed out into the statistical fallback.
+    # With one SDK retry, 2 x 75 s stays inside the browser's 180 s budget.
+    anthropic_timeout_seconds: float = Field(default=75.0, alias="ANTHROPIC_TIMEOUT_SECONDS")
     # Room-matching agent (spec 2026-09-29 Μέρος Α). Shares the API key
     # above; the model is separate so matching can ride a different
     # (cheaper/newer) model than pricing without touching ANTHROPIC_MODEL.
@@ -150,6 +174,52 @@ class Settings(BaseSettings):
         le=100,
         alias="PRICE_RECOMMENDATION_MAX_CHANGE_PCT",
     )
+    # Ferry demand (api/services/ferry_demand_service.py): sailings into island
+    # destinations, read from Ferryhopper's public MCP server by the worker.
+    # Off = no lookups, no collection; the advisor then has no ferry signal.
+    ferry_demand_enabled: bool = Field(default=True, alias="FERRY_DEMAND_ENABLED")
+    ferryhopper_mcp_url: str = Field(
+        default="https://mcp.ferryhopper.com/mcp", alias="FERRYHOPPER_MCP_URL"
+    )
+    # Every day this far ahead, then Fridays and Saturdays up to the horizon.
+    ferry_demand_daily_days: int = Field(default=14, ge=0, le=60, alias="FERRY_DEMAND_DAILY_DAYS")
+    ferry_demand_horizon_days: int = Field(default=60, ge=1, le=180, alias="FERRY_DEMAND_HORIZON_DAYS")
+    # Tool calls per daily collection, shared by all destinations; the server
+    # is free and made for assistants, so it is used politely.
+    ferry_demand_max_calls_per_run: int = Field(
+        default=200, ge=1, le=2000, alias="FERRY_DEMAND_MAX_CALLS_PER_RUN"
+    )
+    ferry_demand_call_interval_seconds: float = Field(
+        default=1.0, ge=0.0, le=30.0, alias="FERRY_DEMAND_CALL_INTERVAL_SECONDS"
+    )
+    # The stored tool answers are for re-parsing only; the counts stay.
+    ferry_raw_payload_retention_days: int = Field(
+        default=7, ge=0, alias="FERRY_RAW_PAYLOAD_RETENTION_DAYS"
+    )
+    # Flight demand (api/services/flight_demand_service.py): scheduled arrivals
+    # at island airports, from AeroDataBox on RapidAPI. Nothing runs without
+    # AERODATABOX_API_KEY. FLIGHT_DEMAND_PLAN picks what is read (free: Fri/Sat
+    # 08–20 within 400 units a month; pro: every day, all day, within 5,000);
+    # the four overrides below change one part of the plan.
+    flight_demand_enabled: bool = Field(default=True, alias="FLIGHT_DEMAND_ENABLED")
+    aerodatabox_api_key: str = Field(default="", alias="AERODATABOX_API_KEY")
+    aerodatabox_host: str = Field(default="aerodatabox.p.rapidapi.com", alias="AERODATABOX_HOST")
+    flight_demand_plan: str = Field(default="free", alias="FLIGHT_DEMAND_PLAN")
+    flight_demand_monthly_units: int | None = Field(default=None, ge=0, alias="FLIGHT_DEMAND_MONTHLY_UNITS")
+    flight_demand_weekdays: str = Field(default="", alias="FLIGHT_DEMAND_WEEKDAYS")
+    flight_demand_windows: str = Field(default="", alias="FLIGHT_DEMAND_WINDOWS")
+    flight_demand_max_calls_per_run: int | None = Field(
+        default=None, ge=1, le=2000, alias="FLIGHT_DEMAND_MAX_CALLS_PER_RUN"
+    )
+    # Units one call costs (2 on the airport-arrivals endpoint, probe 2026-10-11).
+    flight_demand_units_per_call: int = Field(default=2, ge=1, le=20, alias="FLIGHT_DEMAND_UNITS_PER_CALL")
+    flight_demand_horizon_days: int = Field(default=56, ge=7, le=330, alias="FLIGHT_DEMAND_HORIZON_DAYS")
+    # Each travel date and window is read again after this many days.
+    flight_demand_refresh_days: int = Field(default=7, ge=1, le=30, alias="FLIGHT_DEMAND_REFRESH_DAYS")
+    flight_demand_call_interval_seconds: float = Field(
+        default=1.5, ge=0.0, le=30.0, alias="FLIGHT_DEMAND_CALL_INTERVAL_SECONDS"
+    )
+    flight_raw_payload_retention_days: int = Field(default=7, ge=0, alias="FLIGHT_RAW_PAYLOAD_RETENTION_DAYS")
     # Optional error-monitoring integration (Sentry, see api.main.init_sentry).
     # A blank DSN keeps it off entirely and sentry_sdk is never imported.
     # Performance tracing defaults to 0 (errors only); raise deliberately
@@ -159,6 +229,33 @@ class Settings(BaseSettings):
     sentry_traces_sample_rate: float = Field(
         default=0.0, ge=0.0, le=1.0, alias="SENTRY_TRACES_SAMPLE_RATE"
     )
+
+    @model_validator(mode="after")
+    def _check_flight_plan(self) -> "Settings":
+        # A typo in the plan or its overrides fails at startup, not at 05:30.
+        self.flight_plan
+        return self
+
+    @property
+    def flight_plan(self) -> FlightPlan:
+        """FLIGHT_DEMAND_PLAN with its overrides applied."""
+        return resolve_plan(
+            self.flight_demand_plan,
+            monthly_units=self.flight_demand_monthly_units,
+            weekdays=self.flight_demand_weekdays,
+            windows=self.flight_demand_windows,
+            max_calls_per_run=self.flight_demand_max_calls_per_run,
+        )
+
+    @property
+    def flight_demand_active(self) -> bool:
+        """On and keyed: the collection runs and the advisor reads flights."""
+        return self.flight_demand_enabled and bool(self.aerodatabox_api_key.strip())
+
+    @property
+    def flight_signal_max_age_days(self) -> int:
+        """How old the newest look may be: a refresh cycle plus slack for a tight budget."""
+        return self.flight_demand_refresh_days + 3
 
     @property
     def allowed_origins(self) -> list[str]:
@@ -206,12 +303,23 @@ def validate_production_settings(candidate: Settings) -> None:
         if len(candidate.internal_api_key) < 24:
             violations.append("INTERNAL_API_KEY must be at least 24 characters long")
         if not (
-            candidate.supabase_jwt_secret or candidate.supabase_jwks_url or candidate.supabase_url
+            candidate.neon_auth_url
+            or candidate.neon_auth_jwks_url
+            or candidate.supabase_jwt_secret
+            or candidate.supabase_jwks_url
+            or candidate.supabase_url
         ):
             violations.append(
-                "at least one of SUPABASE_JWT_SECRET / SUPABASE_JWKS_URL / SUPABASE_URL must be set "
-                "(browser access tokens cannot be verified otherwise)"
+                "NEON_AUTH_URL (or one of SUPABASE_JWT_SECRET / SUPABASE_JWKS_URL / SUPABASE_URL) "
+                "must be set (browser access tokens cannot be verified otherwise)"
             )
+    if candidate.roomrate_rate_source == "legacy":
+        # The legacy room_rates table has no account column: every account
+        # would read every other account's market data.
+        violations.append(
+            "ROOMRATE_RATE_SOURCE must be 'normalized' in production "
+            "(the legacy source is not scoped to an account)"
+        )
     if candidate.process_role == "worker" and not candidate.scheduler_enabled:
         violations.append("ROOMRATE_SCHEDULER_ENABLED must be true for the worker process")
     if candidate.scrape_job_max_attempts < 1 or candidate.scrape_job_max_attempts > 10:

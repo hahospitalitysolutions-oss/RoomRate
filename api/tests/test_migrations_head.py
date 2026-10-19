@@ -12,6 +12,12 @@ from alembic.script import ScriptDirectory
 
 from api.models.market import (
     RoomRateAgentLease,
+    RoomRateDemandRun,
+    RoomRateDemandSettings,
+    RoomRateFerryDestinationProfile,
+    RoomRateFerryObservation,
+    RoomRateFerryRoute,
+    RoomRateFlightObservation,
     RoomRateAgentRun,
     RoomRateRateLimitHit,
     RoomRateScheduleConfig,
@@ -29,6 +35,10 @@ COMPARABLE_REVISION = "20260930_0027"
 AGENT_LEASE_REVISION = "20260930_0028"
 RATE_LIMIT_REVISION = "20260930_0029"
 SCHEDULE_LOCAL_HOUR_REVISION = "20260930_0030"
+FERRY_DEMAND_REVISION = "20261011_0031"
+FERRY_OPTIONS_REVISION = "20261011_0032"
+FLIGHT_OBSERVATIONS_REVISION = "20261011_0033"
+DEMAND_SETTINGS_REVISION = "20261012_0034"
 
 
 def _script_directory() -> ScriptDirectory:
@@ -37,8 +47,79 @@ def _script_directory() -> ScriptDirectory:
     return ScriptDirectory.from_config(config)
 
 
-def test_schedule_local_hour_migration_is_the_single_alembic_head():
-    assert _script_directory().get_heads() == [SCHEDULE_LOCAL_HOUR_REVISION]
+def test_demand_settings_migration_is_the_single_alembic_head():
+    assert _script_directory().get_heads() == [DEMAND_SETTINGS_REVISION]
+
+
+def test_demand_settings_migration_revises_the_flight_observations_migration():
+    assert _script_directory().get_revision(DEMAND_SETTINGS_REVISION).down_revision == FLIGHT_OBSERVATIONS_REVISION
+
+
+def test_orm_declares_the_demand_settings_and_run_tables():
+    """Per owned property (deleted with it); one run per kind, scope and Greek day."""
+    settings_table = RoomRateDemandSettings.__table__
+    runs = RoomRateDemandRun.__table__
+
+    assert [column.name for column in settings_table.primary_key] == ["owned_property_id"]
+    foreign = {fk.target_fullname: fk.ondelete for fk in settings_table.foreign_keys}
+    assert foreign == {"roomrate_owned_properties.id": "CASCADE", "roomrate_accounts.id": "CASCADE"}
+    assert settings_table.columns["hour_local"].server_default.arg == "8"
+    assert "ck_roomrate_demand_settings_hour_local" in {c.name for c in settings_table.constraints}
+    assert [column.name for column in runs.primary_key] == ["kind", "scope", "run_on"]
+    assert "ck_roomrate_demand_runs_kind" in {c.name for c in runs.constraints}
+
+
+def test_flight_observations_migration_revises_the_ferry_options_migration():
+    revision = _script_directory().get_revision(FLIGHT_OBSERVATIONS_REVISION)
+
+    assert revision.down_revision == FERRY_OPTIONS_REVISION
+
+
+def test_orm_declares_the_flight_observations_table():
+    """One look per airport, travel date, window and day; calls counted for the unit budget."""
+    table = RoomRateFlightObservation.__table__
+
+    assert table.name == "roomrate_flight_observations"
+    assert table.columns["airport_iata"].type.length == 3
+    assert table.columns["calls"].server_default.arg == "1"
+    assert table.columns["units_remaining"].nullable is True
+    constraints = {constraint.name for constraint in table.constraints}
+    assert {
+        "uq_roomrate_flight_observations_window_day",
+        "ck_roomrate_flight_observations_window",
+    } <= constraints
+    assert {index.name for index in table.indexes} == {"ix_roomrate_flight_observations_observed_at"}
+
+
+def test_ferry_options_migration_revises_the_ferry_demand_migration():
+    revision = _script_directory().get_revision(FERRY_OPTIONS_REVISION)
+
+    assert revision.down_revision == FERRY_DEMAND_REVISION
+    assert RoomRateFerryObservation.__table__.columns["accommodation_options"].nullable is True
+
+
+def test_ferry_demand_migration_revises_the_schedule_local_hour_migration():
+    revision = _script_directory().get_revision(FERRY_DEMAND_REVISION)
+
+    assert revision.down_revision == SCHEDULE_LOCAL_HOUR_REVISION
+
+
+def test_orm_declares_the_ferry_demand_tables():
+    """Destination-level profile, its inbound routes, one observation per route-day."""
+    profile = RoomRateFerryDestinationProfile.__table__
+    route = RoomRateFerryRoute.__table__
+    observation = RoomRateFerryObservation.__table__
+
+    assert [column.name for column in profile.primary_key] == ["canonical_destination"]
+    assert {constraint.name for constraint in route.constraints} >= {
+        "uq_roomrate_ferry_routes_destination_ports",
+        "ck_roomrate_ferry_routes_status",
+    }
+    assert route.columns["status"].server_default.arg == "auto"
+    foreign = {fk.target_fullname: fk.ondelete for fk in observation.foreign_keys}
+    assert foreign == {"roomrate_ferry_routes.id": "CASCADE"}
+    assert "uq_roomrate_ferry_observations_route_day" in {c.name for c in observation.constraints}
+    assert {index.name for index in observation.indexes} == {"ix_roomrate_ferry_observations_observed_on"}
 
 
 def test_schedule_local_hour_migration_revises_the_rate_limit_migration():

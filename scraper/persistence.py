@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from api.repositories.normalized_market_writer import write_normalized_rates
+from api.repositories.scrape_jobs_repository import clean_owned_room_type_name
 from api.services.destination_aliases import canonical_destination
 from api.services.room_rates_normalizer import (
     RoomRateNormalizationError,
@@ -47,6 +48,29 @@ def _drop_undersized_rooms(frame: pd.DataFrame, persons_per_room: int) -> pd.Dat
     return frame[~((capacity > 0) & (capacity < persons_per_room))].copy()
 
 
+def _drop_undersized_rates_of_rooms_that_fit(frame: pd.DataFrame, persons_per_room: int) -> pd.DataFrame:
+    """Room discovery: keep every room, but price it for the searched party.
+
+    Booking lists one rate per occupancy («1 άτομο» 80 €, «2 άτομα» 100 €)
+    under the same room. Discovery keeps the owner's whole catalog, so it did
+    not run the capacity filter, and the cheapest rate, the 1-person one,
+    became the room's price for a 2-adult stay. Within one room, rates whose
+    KNOWN capacity is below the per-room party go when the room has a rate that
+    fits (or one of unknown capacity). A room with no such rate, e.g. a single
+    room, keeps its rates so it stays in the catalog.
+    """
+    if "max_persons" not in frame.columns or "room_type" not in frame.columns:
+        return frame
+    capacity = pd.to_numeric(frame["max_persons"], errors="coerce").fillna(0).astype(int)
+    undersized = (capacity > 0) & (capacity < persons_per_room)
+    # The room is its cleaned name: «X 1/11» and «X 2/11» are one room.
+    keys = [frame["room_type"].map(lambda name: clean_owned_room_type_name(name).casefold())]
+    if "hotel_url" in frame.columns:
+        keys.append(frame["hotel_url"].fillna("").astype(str))
+    room_has_fitting_rate = (~undersized).groupby(keys).transform("any").astype(bool)
+    return frame[~(undersized & room_has_fitting_rate)].copy()
+
+
 def persist_results(df: pd.DataFrame, config: ScraperConfig) -> PersistResult:
     """Persist flattened scrape results to CSV, legacy table and normalized tables."""
     result_summary = empty_result_summary(rows_seen=len(df))
@@ -83,6 +107,14 @@ def persist_results(df: pd.DataFrame, config: ScraperConfig) -> PersistResult:
             "Καμία εγγραφή δεν χωρά %s άτομα ανά δωμάτιο",
             str(persons_per_room),
             lambda frame: _drop_undersized_rooms(frame, persons_per_room),
+        ),
+        (
+            "room_capacity",
+            config.job_type == "owned_property_room_discovery",
+            "Τιμές για >= %s άτομα ανά δωμάτιο: %d -> %d εγγραφές",
+            "Καμία εγγραφή μετά το φίλτρο τιμών για %s άτομα ανά δωμάτιο",
+            str(persons_per_room),
+            lambda frame: _drop_undersized_rates_of_rooms_that_fit(frame, persons_per_room),
         ),
         (
             "room_name",

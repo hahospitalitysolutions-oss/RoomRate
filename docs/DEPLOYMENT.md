@@ -154,8 +154,7 @@ unchanged, and only the container's environment differs:
 
 ```text
 ROOMRATE_API_BASE_URL=https://api.example.gr
-ROOMRATE_SUPABASE_URL=https://<project>.supabase.co
-ROOMRATE_SUPABASE_ANON_KEY=
+ROOMRATE_NEON_AUTH_URL=https://ep-<endpoint>.neonauth.<region>.aws.neon.tech/neondb/auth
 ROOMRATE_MAPBOX_TOKEN=
 ROOMRATE_CSP_API_ORIGINS=https://api.example.gr wss://api.example.gr
 ```
@@ -320,7 +319,7 @@ These are implemented, not aspirational — see `.env.example` for the knobs.
   round-trip to Supabase.
 - **No secrets in the image or the browser.** `.env` is excluded from the
   build context; the browser only ever receives `frontend/public/runtime-config.js`
-  values (`apiBaseUrl`, `supabaseUrl`, `supabaseAnonKey`, `mapboxToken`).
+  values (`apiBaseUrl`, `neonAuthUrl`, `mapboxToken`).
 
 ---
 

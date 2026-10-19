@@ -36,6 +36,8 @@ type ReachSearchOptions = {
   authoritative?: { category: string; destination: string; rawDestination: string };
   preparationFailures?: number;
   waitForReady?: boolean;
+  // GET /demand/settings answer; PUTs echo their body over it.
+  demand?: Record<string, unknown>;
 };
 
 async function reachSearchStep(
@@ -103,6 +105,14 @@ async function reachSearchStep(
     recordCall(calls, route);
     return route.fulfill({ json: { id: JOB_ID, status: "completed" } });
   });
+  if (options.demand) {
+    const demand = options.demand;
+    await page.route(`${API}/api/v1/demand/settings**`, (route) => {
+      recordCall(calls, route);
+      const body = route.request().method() === "PUT" ? route.request().postDataJSON() : {};
+      return route.fulfill({ json: { ...demand, ...body } });
+    });
+  }
   await page.route(`${API}/api/v1/onboarding/owned-property/${OWNED_PROPERTY_ID}/room-types`, (route) => {
     recordCall(calls, route);
     return route.fulfill({
@@ -568,4 +578,39 @@ test("destroy during a poll delay prevents another read or late navigation", asy
   await page.clock.fastForward(10_000);
   expect(calls.filter((call) => call.path === JOB_PATH)).toHaveLength(1);
   await expect(page).toHaveURL(/\/auth/);
+});
+
+
+const ISLAND_DEMAND = {
+  owned_property_id: OWNED_PROPERTY_ID, ferries_enabled: true, flights_enabled: true, hour_local: 8,
+  timezone: "Europe/Athens", island: "Ρόδος", airport_iata: "RHO", ferries_available: true,
+  flights_available: true, collect_requested_at: null, collection_pending: false,
+  ferries_last_run: null, flights_last_run: null, next_collection_at: "2026-10-13T08:00:00+03:00",
+};
+
+test("island demand: one click switches ferries and flights on and asks for the first collection now", async ({ page }) => {
+  const calls: RecordedCall[] = [];
+  await reachSearchStep(page, calls, { demand: ISLAND_DEMAND });
+
+  const card = page.getByTestId("demand-onboarding");
+  await expect(card).toContainText("τα πλοία προς το νησί σας (Ρόδος) και τις πτήσεις στο αεροδρόμιο RHO");
+  await card.getByTestId("demand-activate").click();
+
+  await expect(card.getByTestId("demand-activated")).toContainText("Η πρώτη συλλογή ξεκινά μέσα σε λίγα λεπτά");
+  const puts = calls.filter((call) => call.path === "/api/v1/demand/settings" && call.method === "PUT");
+  expect(puts.map((call) => call.body)).toEqual([
+    { ferries_enabled: true, flights_enabled: true, hour_local: 8, collect_now: true },
+  ]);
+  // The paid search is a separate decision: nothing was started.
+  expect(collectionCalls(calls, "POST")).toHaveLength(0);
+});
+
+test("island demand: nothing is offered off an island", async ({ page }) => {
+  const calls: RecordedCall[] = [];
+  await reachSearchStep(page, calls, {
+    demand: { ...ISLAND_DEMAND, island: null, airport_iata: null, ferries_available: false, flights_available: false },
+  });
+
+  await expect(page.getByRole("button", { name: "Ξεκίνα την αναζήτηση" })).toBeVisible();
+  await expect(page.getByTestId("demand-onboarding")).toHaveCount(0);
 });

@@ -46,6 +46,7 @@ MAX_NEARBY_LIMIT = 20
 MAX_DEEP_CRAWL_HOTELS = 120
 MAX_DEEP_CRAWL_ITEMS = 320
 DEEP_CRAWL_BATCH_SIZE = 8
+MANUAL_SCOUT_CACHE_HOURS = 2
 RADIUS_SKIPPED_WARNING = "radius_skipped_no_coordinates"
 
 
@@ -229,10 +230,12 @@ class BookingScrapeJobRunner:
             minimum=result_limit,
             maximum=MAX_DEEP_CRAWL_ITEMS,
         )
-        # Scheduled jobs may reuse a recent stage-1 scout (12h) to cut Booking
-        # traffic across recurring runs; manual jobs force a fresh scout so
-        # users always see live results.
-        scout_cache_hours = "12" if command.scheduled else "0"
+        # The scout cache holds only the area's hotel LIST (names, links,
+        # coordinates), never prices: every job deep-crawls live prices. So a
+        # manual search may reuse a list up to 2 hours old for the same stay
+        # and party (a re-run after changing filters, a second account member)
+        # and skip a paid scout run; scheduled runs reuse it for 12 hours.
+        scout_cache_hours = "12" if command.scheduled else str(MANUAL_SCOUT_CACHE_HOURS)
         args = [
             "--account-id",
             str(command.account_id),

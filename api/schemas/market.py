@@ -193,3 +193,6 @@ class SmartAdvisorContext(BaseModel):
     pricing_signals: SmartAdvisorSignals
     time_context: dict[str, Any]
     competitors: list[AdvisorCompetitor]
+    # Outside demand around the check-in ({"ferries": FerryDemandSignal}),
+    # attached by the price-recommendation route; None elsewhere.
+    demand_signals: dict[str, Any] | None = None

@@ -10,6 +10,7 @@ from datetime import datetime
 
 from api.services.room_rates_normalizer import normalize_room_type_category_key
 
+from .checkpoint import JobCheckpoint
 from .clients import build_client, build_engine, log_dotenv_resolution
 from .config import ScraperConfig
 from .logging_config import configure_logging, log
@@ -223,6 +224,8 @@ def main(argv: list[str] | None = None) -> None:
     progress = ProgressReporter(engine, config.scrape_job_id)
     # Non-fatal problems the API should surface (nearby_scout_failed:<area>).
     warnings: list[str] = []
+    # A retried job reuses its scout and successful batches (scraper/checkpoint.py).
+    checkpoint = JobCheckpoint.for_config(config)
 
     try:
         if config.target_urls:
@@ -243,14 +246,24 @@ def main(argv: list[str] | None = None) -> None:
             ]
             log.info("[ΣΤΑΔΙΟ 1] Direct URL mode -> %d target URLs", len(hotels))
         else:
-            # Κύριος προορισμός + γειτονικές περιοχές, ακτίνα και όριο (§3.3).
-            hotels = fetch_hotel_lists(client, config, engine, progress=progress, warnings=warnings)
+            cached_scout = checkpoint.load("scout")
+            if isinstance(cached_scout, dict) and cached_scout.get("hotels"):
+                hotels = cached_scout["hotels"]
+                warnings.extend(cached_scout.get("warnings") or [])
+                log.info("[ΣΤΑΔΙΟ 1] %d καταλύματα από προηγούμενη προσπάθεια του job.", len(hotels))
+                progress.update("scout", done=1, total=1, hotels_found=len(hotels), hotels_in_radius=len(hotels))
+            else:
+                # Κύριος προορισμός + γειτονικές περιοχές, ακτίνα και όριο (§3.3).
+                hotels = fetch_hotel_lists(client, config, engine, progress=progress, warnings=warnings)
+                if hotels:
+                    checkpoint.save("scout", {"hotels": hotels, "warnings": warnings})
         if not hotels:
             log.error("Δεν βρέθηκαν καταλύματα. Τερματισμός.")
             _emit_result_summary(empty_result_summary(), warnings)
+            checkpoint.clear()
             return
 
-        raw_data = fetch_deep_room_data(client, hotels, config, progress=progress)
+        raw_data = fetch_deep_room_data(client, hotels, config, progress=progress, checkpoint=checkpoint)
     except ActorRunError as exc:
         # Ολική αποτυχία actor ≠ κενή αγορά: μη-μηδενικό exit code ώστε το
         # API (BookingScrapeJobRunner) να μαρκάρει το job failed, όχι completed.
@@ -259,11 +272,14 @@ def main(argv: list[str] | None = None) -> None:
     if not raw_data:
         log.error("Κανένα δεδομένο από Deep Crawl. Τερματισμός.")
         _emit_result_summary(empty_result_summary(), warnings)
+        checkpoint.clear()
         return
 
     df = process_and_flatten_data(raw_data, hotels, config)
     progress.update("persist")
     result = persist_results(df, config)
+    # Saved: nothing is left for a retry to reuse.
+    checkpoint.clear()
     _emit_result_summary(result.result_summary, warnings)
 
     if not df.empty:

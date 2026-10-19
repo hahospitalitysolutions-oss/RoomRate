@@ -4,6 +4,9 @@
  * collapsed into «από … έως …» with a «Πλάνα τιμών» toggle (spec §5), and
  * the agent's reasoning under a package's chip (spec Α.4).
  *
+ * Like a result card it carries the tracking checkbox and (on the page's
+ * host) the map ↔ list linking: hover, focus, click and the highlight.
+ *
  * The host is the page's `<article class="matched-card">` (attribute
  * selector). Which lists are open stays with the page (it clears them when a
  * new match load lands), so the card only reads `expandedPlanKeys` and asks
@@ -29,6 +32,14 @@ import type { RoomPlanGroup } from "./map-page.constants";
   standalone: true,
   imports: [CommonModule],
   template: `
+    <input
+      *ngIf="selectable()"
+      type="checkbox"
+      aria-label="Παρακολούθηση ανταγωνιστή"
+      [checked]="selected()"
+      (change)="selectionToggle.emit()"
+    >
+    <span class="matched-body">
     <span class="card-row">
       <strong>{{ hotel().hotel_name }}</strong>
       <span class="match-chip" [ngClass]="matchChipClass(hotel().best_match_score)">
@@ -91,6 +102,7 @@ import type { RoomPlanGroup } from "./map-page.constants";
         </ng-container>
       </ng-container>
     </span>
+    </span>
     <!-- One plan's price + chips, rendered identically wherever a plan shows
          (the opened list and a room's only plan) so the two cannot drift. -->
     <ng-template #planStrip let-pkg>
@@ -118,7 +130,12 @@ export class MatchedCompetitorCardComponent {
   /** The card's place in the list: with the room, the key of an open «Πλάνα τιμών» list. */
   readonly hotelIndex = input.required<number>();
   readonly expandedPlanKeys = input.required<ReadonlySet<string>>();
+  /** The hotel has result rows to tick (a matched hotel without one has nothing to track). */
+  readonly selectable = input(false);
+  /** Any of the hotel's result rows is ticked for tracking. */
+  readonly selected = input(false);
   readonly plansToggle = output<RoomPlanGroup>();
+  readonly selectionToggle = output<void>();
 
   readonly matchChipClass = matchChipClass;
   readonly formatScore = formatScore;

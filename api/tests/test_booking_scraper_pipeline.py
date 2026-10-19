@@ -11,6 +11,7 @@ from api.services.room_rates_normalizer import normalize_room_rate_row
 from scraper.utils import _append_error_log
 from scraper import (
     ActorRunError,
+    PersistResult,
     ScraperConfig,
     build_config_from_args,
     fetch_deep_room_data,
@@ -272,6 +273,46 @@ def test_flattening_null_option_price_falls_back_to_base_price():
     row = df.iloc[0].to_dict()
     assert row["price_total_eur"] == 400  # property-level base price
     assert row["price_per_night_eur"] > 0
+
+
+def test_a_sold_out_option_never_takes_another_rooms_price():
+    """The property's «from» price (400) belongs to the cheapest room, not to this one."""
+    raw = _raw_property()
+    raw[0]["rooms"].append(
+        {"roomType": "Suite", "options": [{"id": "suite-1", "persons": 2, "price": None}]}
+    )
+
+    config = ScraperConfig(
+        destination="Faliraki",
+        check_in=datetime(2026, 6, 15),
+        check_out=datetime(2026, 6, 20),
+    )
+    df = process_and_flatten_data(raw, _hotel_meta(), config)
+
+    assert df["room_type"].tolist() == ["Double Room"]
+
+
+@pytest.mark.parametrize(
+    ("choices", "meals"),
+    [
+        (["Breakfast included"], "Breakfast included"),
+        (["Πολύ καλό πρωινό συμπεριλαμβάνεται"], "Πολύ καλό πρωινό συμπεριλαμβάνεται"),
+        (["Πρωινό 12 € (προαιρετικό)"], "Δεν περιλαμβάνεται"),
+        (["Breakfast €12 (optional)"], "Δεν περιλαμβάνεται"),
+        (["Δεν περιλαμβάνεται γεύμα"], "Δεν περιλαμβάνεται"),
+        ([], "Δεν περιλαμβάνεται"),
+    ],
+)
+def test_flattening_keeps_only_the_meal_the_rate_includes(choices, meals):
+    raw = _raw_property()
+    # The property serves breakfast; that alone does not put it in the rate.
+    raw[0]["breakfast"] = "Continental, Buffet"
+    raw[0]["rooms"][0]["options"][0]["yourChoices"] = choices
+
+    config = ScraperConfig(destination="Faliraki", check_in=datetime(2026, 6, 15), check_out=datetime(2026, 6, 20))
+    df = process_and_flatten_data(raw, _hotel_meta(), config)
+
+    assert df.iloc[0]["meals"] == meals
 
 
 def test_flattening_skips_zero_price_options_instead_of_persisting_them():
@@ -921,8 +962,51 @@ def test_persist_results_round6_filters_are_skipped_for_room_discovery():
 
     result = persist_results(df, config)
 
+    # The owner's single room stays in the catalog: it has no rate for 2.
     assert result.rows_seen == 1
-    assert result.result_summary["filter_counts"] == {}
+    assert result.result_summary["filter_counts"] == {"room_capacity": {"before": 1, "after": 1}}
+
+
+def test_room_discovery_prices_each_room_for_the_searched_party(monkeypatch):
+    """Booking's 1-person rate (80 €) is not the 2-adult price (100 €) of the room."""
+    config = ScraperConfig(job_type="owned_property_room_discovery", adults=2, output_csv="/dev/null")
+    written: list = []
+    monkeypatch.setattr("scraper.persistence.write_normalized_rates", lambda rates, **_: written.extend(rates) or len(rates))
+    monkeypatch.setattr("scraper.persistence.normalize_room_rate_row", lambda row, provider: row)
+    url = "https://www.booking.com/hotel/gr/sabbal.html"
+    df = pd.DataFrame(
+        [
+            {"hotel_url": url, "room_type": "Διαμέρισμα 1/3", "max_persons": 1, "price_per_night_eur": 80.0},
+            {"hotel_url": url, "room_type": "Διαμέρισμα 2/3", "max_persons": 2, "price_per_night_eur": 100.0},
+            {"hotel_url": url, "room_type": "Studio", "max_persons": 1, "price_per_night_eur": 100.0},
+            {"hotel_url": url, "room_type": "Studio", "max_persons": 0, "price_per_night_eur": 110.0},
+            {"hotel_url": url, "room_type": "Μονόκλινο", "max_persons": 1, "price_per_night_eur": 50.0},
+        ]
+    )
+
+    result = persist_results(df, config)
+
+    kept = sorted((row["room_type"], row["price_per_night_eur"]) for row in written)
+    assert kept == [("Studio", 110.0), ("Διαμέρισμα 2/3", 100.0), ("Μονόκλινο", 50.0)]
+    assert result.result_summary["filter_counts"] == {"room_capacity": {"before": 5, "after": 3}}
+
+
+@pytest.mark.parametrize(("adults", "rooms", "kept"), [(1, 1, 3), (2, 1, 2), (4, 2, 2), (3, 1, 1)])
+def test_room_discovery_compares_rates_with_the_party_per_room(adults, rooms, kept):
+    config = ScraperConfig(dry_run=True, job_type="owned_property_room_discovery", adults=adults, rooms=rooms)
+    df = pd.DataFrame(
+        [
+            {"room_type": "Διαμέρισμα", "max_persons": 1},
+            {"room_type": "Διαμέρισμα", "max_persons": 2},
+            {"room_type": "Διαμέρισμα", "max_persons": 0},  # unknown capacity always stays
+        ]
+    )
+
+    result = persist_results(df, config)
+
+    # (3, 1): no rate is known to fit 3, but the unknown one might, so the
+    # known 1- and 2-person rates go.
+    assert result.result_summary["filter_counts"]["room_capacity"] == {"before": 3, "after": kept}
 
 
 def test_persist_results_records_the_filter_that_emptied_the_pipeline():
@@ -1296,7 +1380,7 @@ def test_main_dry_run_skips_database_cache_and_uses_config_output(monkeypatch):
         calls["fetch_engine"] = engine
         return _hotel_meta()
 
-    def fake_fetch_deep_room_data(client, hotels, config, progress=None):
+    def fake_fetch_deep_room_data(client, hotels, config, progress=None, checkpoint=None):
         return _raw_property()
 
     monkeypatch.setattr("scraper.cli.build_client", fake_build_client)
@@ -1869,3 +1953,161 @@ def test_build_config_from_args_round6_defaults():
 def test_scraper_config_rejects_half_an_origin_and_non_positive_round6_limits(overrides):
     with pytest.raises(ValueError):
         ScraperConfig(**overrides)
+
+
+class _FakeApify:
+    """An ApifyClient whose runs end in the given statuses, one per call()."""
+
+    def __init__(self, statuses):
+        self.statuses = list(statuses)
+        self.calls: list[dict] = []
+        self.aborted: list[str] = []
+
+    def actor(self, actor_id):
+        fake = self
+
+        class _Actor:
+            def call(self, **kwargs):
+                fake.calls.append(kwargs)
+                number = len(fake.calls)
+                return {"id": f"run-{number}", "status": fake.statuses.pop(0), "defaultDatasetId": f"ds-{number}"}
+
+        return _Actor()
+
+    def dataset(self, dataset_id):
+        class _Dataset:
+            def iterate_items(self):
+                return iter([{"name": f"hotel from {dataset_id}"}])
+
+        return _Dataset()
+
+    def run(self, run_id):
+        fake = self
+
+        class _Run:
+            def abort(self):
+                fake.aborted.append(run_id)
+
+        return _Run()
+
+
+def test_a_failed_apify_run_is_retried_instead_of_read_as_a_result(monkeypatch):
+    """call() returns FAILED/TIMED-OUT runs without raising; their dataset is partial."""
+    from scraper.actor import ACTOR_RUN_TIMEOUT_SECS, _run_actor
+
+    monkeypatch.setattr("scraper.actor.time.sleep", lambda seconds: None)
+    client = _FakeApify(["FAILED", "TIMED-OUT", "SUCCEEDED"])
+
+    items = _run_actor(client, {"search": "Σαλαμίνα"}, max_retries=3, retry_delay=1)
+
+    assert items == [{"name": "hotel from ds-3"}]
+    assert client.calls[0]["timeout_secs"] == ACTOR_RUN_TIMEOUT_SECS
+    assert client.calls[0]["wait_secs"] > ACTOR_RUN_TIMEOUT_SECS
+
+
+def test_runs_that_never_succeed_fail_the_stage_and_a_run_past_the_wait_is_aborted(monkeypatch):
+    from scraper.actor import _run_actor
+
+    monkeypatch.setattr("scraper.actor.time.sleep", lambda seconds: None)
+    client = _FakeApify(["ABORTED", "RUNNING"])
+
+    with pytest.raises(ActorRunError):
+        _run_actor(client, {"search": "Σαλαμίνα"}, max_retries=2, retry_delay=1)
+
+    assert client.aborted == ["run-2"]  # still running after the wait: stopped, not left billing
+
+
+
+# ----------------------------------------------------------------------------
+# Job checkpoints: a retry runs only what the earlier attempt did not finish
+# ----------------------------------------------------------------------------
+
+
+def _checkpoint_config(tmp_path, **overrides):
+    return ScraperConfig(
+        destination="Σαλαμίνα",
+        scrape_job_id=UUID("00000000-0000-0000-0000-0000000000cc"),
+        output_csv=str(tmp_path / "scrape_job_cc.csv"),
+        deep_crawl_batch_size=2,
+        deep_crawl_workers=1,
+        **overrides,
+    )
+
+
+def test_a_checkpoint_round_trips_and_is_off_for_dry_runs_and_jobless_runs(tmp_path):
+    from scraper.checkpoint import JobCheckpoint
+
+    checkpoint = JobCheckpoint.for_config(_checkpoint_config(tmp_path))
+    checkpoint.save("scout", {"hotels": [{"name": "Ξενοδοχείο"}]})
+
+    assert checkpoint.load("scout") == {"hotels": [{"name": "Ξενοδοχείο"}]}
+    (checkpoint.directory / "broken.json").write_text("{not json", encoding="utf-8")
+    assert checkpoint.load("broken") is None  # unreadable: re-scraped, not fatal
+    checkpoint.clear()
+    assert not checkpoint.directory.exists()
+    assert not JobCheckpoint.for_config(_checkpoint_config(tmp_path, dry_run=True)).enabled
+    assert not JobCheckpoint.for_config(ScraperConfig(output_csv=str(tmp_path / "x.csv"))).enabled
+
+
+def test_a_retried_deep_crawl_runs_only_the_batch_that_failed(monkeypatch, tmp_path):
+    from scraper.checkpoint import JobCheckpoint
+
+    config = _checkpoint_config(tmp_path)
+    checkpoint = JobCheckpoint.for_config(config)
+    hotels = [{"url": f"https://www.booking.com/hotel/gr/h{i}.html"} for i in range(4)]
+    actor_calls: list[list[str]] = []
+    failing = {"https://www.booking.com/hotel/gr/h2.html"}
+
+    def fake_run_actor(client, actor_input, max_retries, retry_delay, label=""):
+        urls = [start["url"] for start in actor_input["startUrls"]]
+        actor_calls.append(urls)
+        if failing & set(urls):
+            raise ActorRunError("batch failed on every retry")
+        return [{"url": url, "name": url} for url in urls]
+
+    monkeypatch.setattr("scraper.deep_crawl._run_actor", fake_run_actor)
+
+    with pytest.raises(ActorRunError):
+        fetch_deep_room_data(object(), hotels, config, checkpoint=checkpoint)
+    assert len(actor_calls) == 2
+
+    failing.clear()
+    actor_calls.clear()
+    items = fetch_deep_room_data(object(), hotels, config, checkpoint=checkpoint)
+
+    # Only the failed batch ran again; the saved one came from the checkpoint.
+    assert actor_calls == [["https://www.booking.com/hotel/gr/h2.html", "https://www.booking.com/hotel/gr/h3.html"]]
+    assert sorted(item["url"] for item in items) == sorted(hotel["url"] for hotel in hotels)
+
+
+def test_a_retried_job_reuses_its_scout_and_clears_the_checkpoint_once_saved(monkeypatch, tmp_path):
+    attempts = {"scout": 0, "deep": 0}
+
+    def fake_fetch_hotel_lists(client, config, engine=None, progress=None, warnings=None):
+        attempts["scout"] += 1
+        warnings.append("nearby_scout_failed:Αμπελάκια")
+        return _hotel_meta()
+
+    def fake_fetch_deep_room_data(client, hotels, config, progress=None, checkpoint=None):
+        attempts["deep"] += 1
+        if attempts["deep"] == 1:
+            raise ActorRunError("one batch failed")
+        return _raw_property()
+
+    monkeypatch.setattr("scraper.cli.build_client", lambda: object())
+    monkeypatch.setattr("scraper.cli.build_engine", lambda: None)
+    monkeypatch.setattr("scraper.cli.fetch_hotel_lists", fake_fetch_hotel_lists)
+    monkeypatch.setattr("scraper.cli.fetch_deep_room_data", fake_fetch_deep_room_data)
+    monkeypatch.setattr("scraper.cli.persist_results", lambda df, config: PersistResult(result_summary={}))
+    output_csv = tmp_path / "scrape_job_cc.csv"
+    argv = [
+        "--destination", "Σαλαμίνα", "--check-in", "2026-11-06", "--check-out", "2026-11-09",
+        "--scrape-job-id", "00000000-0000-0000-0000-0000000000cc", "--output-csv", str(output_csv),
+    ]
+
+    with pytest.raises(SystemExit):
+        main(argv)
+    main(argv)
+
+    assert attempts == {"scout": 1, "deep": 2}  # the retry paid for no second scout
+    assert not (tmp_path / "checkpoint_00000000-0000-0000-0000-0000000000cc").exists()

@@ -92,7 +92,7 @@ export class MiniMapComponent implements AfterViewInit, OnChanges, OnDestroy {
     this.removeMarkers();
     this.markers.set(currentCandidates.map((candidate) =>
       new mapboxModule.Marker({
-        color: candidate.candidate_key === this.selectedKey ? "#0f766e" : "#64748b",
+        color: candidate.candidate_key === this.selectedKey ? "#b4532a" : "#0b5d7a",
       })
         .setLngLat([candidate.longitude!, candidate.latitude!])
         .addTo(currentMap),

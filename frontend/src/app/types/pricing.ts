@@ -62,6 +62,57 @@ export type PriceRecommendation = {
   source: "agent" | "statistical";
 };
 
+export type DemandLevel = "high" | "normal" | "low" | "unknown";
+
+/** Ferries into the destination the day before and on the check-in day. */
+export type FerryDemandSignal = {
+  level: DemandLevel;
+  check_in: string;
+  window: string[];
+  sailings: number;
+  availability_known: number;
+  sold_out: number;
+  sold_out_share_pct: number | null;
+  min_price_eur: number | null;
+  // Pickup: the same sailings against an earlier look (compared_with).
+  options_change_pct?: number | null;
+  price_change_pct?: number | null;
+  compared_with?: string | null;
+  // Sailings against the same routes on the same weekday.
+  sailings_vs_usual_pct: number | null;
+  routes: string[];
+  observed_on: string | null;
+  // One Greek sentence for the owner.
+  summary: string;
+};
+
+/** Scheduled arrivals at the island's airport around the check-in. */
+export type FlightDemandSignal = {
+  level: DemandLevel;
+  check_in: string;
+  airport_iata: string;
+  island: string;
+  // The collected days read: the check-in, or the nearest collected days.
+  travel_dates: string[];
+  arrivals: number;
+  airlines: number;
+  // Pickup: the same days against an earlier look (compared_with).
+  arrivals_before: number | null;
+  flights_added: number | null;
+  arrivals_change_pct: number | null;
+  compared_with: string | null;
+  top_origins: string[];
+  observed_on: string | null;
+  // One Greek sentence for the owner.
+  summary: string;
+};
+
+export type DemandSignals = {
+  ferries: FerryDemandSignal | null;
+  // Absent from answers cached before flights were collected.
+  flights?: FlightDemandSignal | null;
+};
+
 export type PriceRecommendationResponse = {
   statistics: PriceStatistics;
   // null (with recommendation_available=false) when the market history and
@@ -77,6 +128,9 @@ export type PriceRecommendationResponse = {
   // Always sent; null when the property has neither a live Booking row nor a
   // sample price.
   own_price_source: OwnPriceSource | null;
+  // Outside demand the advisor saw; null when the destination has none
+  // (mainland, or no ferry or flight data yet). Older cached answers omit it.
+  demand_signals?: DemandSignals | null;
 };
 
 export type PriceHistoryPoint = {
@@ -92,4 +146,40 @@ export type PriceHistorySeries = {
   check_in: string;
   check_out: string;
   points: PriceHistoryPoint[];
+};
+
+export type FerryRoute = {
+  id: string;
+  origin_port: string;
+  destination_port: string;
+  status: string;
+  sample_sailings: number | null;
+};
+
+/** Every collected route into the destination on one arrival day. */
+export type FerryDay = {
+  travel_date: string;
+  sailings: number;
+  availability_known: number;
+  sold_out: number;
+  min_price_eur: number | null;
+  accommodation_options: number | null;
+  options_change_pct: number | null;
+  price_change_pct: number | null;
+  level: DemandLevel;
+};
+
+/** GET /api/v1/demand/ferries: the island port, its inbound routes, the next days. */
+export type FerryDemandResponse = {
+  canonical_destination: string;
+  // false when the owner switched ferries off (Ρυθμίσεις → Ζήτηση νησιού).
+  enabled?: boolean;
+  // null until the worker's first port lookup.
+  status: "ferry" | "no_ferry" | "error" | null;
+  island_port: string | null;
+  port_distance_km: number | null;
+  resolved_at: string | null;
+  routes: FerryRoute[];
+  days: FerryDay[];
+  observed_on: string | null;
 };

@@ -1,16 +1,18 @@
 import { CommonModule } from "@angular/common";
 import { Component, computed, OnInit, signal } from "@angular/core";
 import { FormsModule } from "@angular/forms";
-import { ActivatedRoute, RouterLink } from "@angular/router";
+import { ActivatedRoute } from "@angular/router";
 
-import { NotificationBellComponent } from "../components/notification-bell.component";
+import { AppHeaderComponent } from "../components/app-header.component";
+import { SelectMenuComponent, SelectMenuOption } from "../components/select-menu.component";
 import { NotificationToastsComponent } from "../components/notification-toasts.component";
 import { ApiClientService } from "../services/api-client.service";
 import { OnboardingService } from "../services/onboarding.service";
 import { WorkflowStorageService } from "../services/workflow-storage.service";
 import { MarketSummary, OwnedPropertyRoomType, ScrapeJobResponse } from "../types/market";
-import { PriceHistorySeries, PriceRecommendationResponse } from "../types/pricing";
+import { FerryDemandResponse, PriceHistorySeries, PriceRecommendationResponse } from "../types/pricing";
 import { defaultStayDates, isPastLocalDate } from "../utils/date-defaults";
+import { FerryDemandPanelComponent } from "./pricing/ferry-demand-panel.component";
 import { MarketStatisticsPanelComponent } from "./pricing/market-statistics-panel.component";
 import { PriceHistoryCardComponent } from "./pricing/price-history-card.component";
 import { buildHistoryChart, PriceHistoryChartView } from "./pricing/price-history-chart";
@@ -38,27 +40,22 @@ const DEFAULT_STAY = defaultStayDates();
   standalone: true,
   imports: [
     CommonModule,
+    FerryDemandPanelComponent,
     FormsModule,
-    RouterLink,
     MarketStatisticsPanelComponent,
-    NotificationBellComponent,
+    AppHeaderComponent,
     NotificationToastsComponent,
     PriceHistoryCardComponent,
     RecommendationCardComponent,
+    SelectMenuComponent,
   ],
   template: `
     <main class="page-shell">
-      <header class="map-header">
-        <div>
-          <p class="eyebrow">RoomRate — Τιμολόγηση</p>
-          <h1>{{ propertyName() || destination() || "Ανάλυση τιμών" }}</h1>
-        </div>
-        <div class="header-actions">
-          <a routerLink="/map">Χάρτης</a>
-          <a routerLink="/settings">Ρυθμίσεις</a>
-          <app-notification-bell />
-        </div>
-      </header>
+      <app-header>
+        <p class="eyebrow">Τιμολόγηση</p>
+        <h1>{{ propertyName() || destination() || "Ανάλυση τιμών" }}</h1>
+        <p class="app-band-subtitle">Τι τιμή να βάλεις, με βάση τα συγκρίσιμα δωμάτια της γειτονιάς σου.</p>
+      </app-header>
 
       <section class="page-body">
         <div *ngIf="contextError()" class="alert alert-error">{{ contextError() }}</div>
@@ -71,17 +68,14 @@ const DEFAULT_STAY = defaultStayDates();
              must stay two options. -->
         <div class="panel comparison-bar">
           <label class="comparison-bar-label" for="pricing-comparison-room">Σύγκριση για</label>
-          <select
-            id="pricing-comparison-room"
-            class="roomrate-input comparison-bar-select"
-            [ngModel]="selectedRoomId()"
-            (ngModelChange)="setRoom($event)"
-          >
-            <option value="">Το επιλεγμένο δωμάτιο αναφοράς</option>
-            <option *ngFor="let room of roomTypes()" [value]="room.id">
-              {{ room.room_type }} ({{ room.room_type_category }})
-            </option>
-          </select>
+          <app-select-menu
+            class="comparison-bar-select"
+            selectId="pricing-comparison-room"
+            [emphasis]="true"
+            [options]="roomSelectOptions()"
+            [value]="selectedRoomId()"
+            (valueChange)="setRoom($event)"
+          ></app-select-menu>
         </div>
 
         <div class="pricing-grid">
@@ -202,6 +196,16 @@ const DEFAULT_STAY = defaultStayDates();
             ></div>
             </ng-container>
 
+            <!-- Outside demand for the island (empty for a mainland property):
+                 independent of the recommendation, so it shows on arrival. -->
+            <div
+              appFerryDemandPanel
+              class="panel ferry-demand-panel"
+              [demand]="ferryDemand()"
+              [status]="ferryStatus()"
+              [checkIn]="filters().check_in"
+            ></div>
+
             <div
               appPriceHistoryCard
               class="panel history-card"
@@ -228,6 +232,16 @@ export class PricingPageComponent implements OnInit {
   // `owned_room_type_id`, and its category is derived from the same row.
   // "" = «Το επιλεγμένο δωμάτιο αναφοράς» (the server's persisted room).
   readonly selectedRoomId = signal("");
+  // "" is a real choice here (the server's persisted room), so it is an option, not a placeholder.
+  readonly roomSelectOptions = computed<SelectMenuOption[]>(() => [
+    { value: "", label: "Το επιλεγμένο δωμάτιο αναφοράς" },
+    ...this.roomTypes().map((room) => ({
+      value: room.id,
+      label: `${room.room_type} (${room.room_type_category})`,
+      display: room.room_type,
+      hint: room.room_type_category,
+    })),
+  ]);
   readonly selectedRoom = computed(() =>
     this.roomTypes().find((room) => room.id === this.selectedRoomId()) ?? null);
   readonly selectedCategory = computed(() => this.selectedRoom()?.room_type_category ?? "");
@@ -296,6 +310,9 @@ export class PricingPageComponent implements OnInit {
     return `Μικρό δείγμα: ${sample} — η θέση/σύσταση είναι ενδεικτική.`;
   });
 
+  readonly ferryStatus = signal<LoadingState>("idle");
+  readonly ferryDemand = signal<FerryDemandResponse | null>(null);
+
   readonly historyStatus = signal<LoadingState>("idle");
   readonly historyError = signal("");
   readonly history = signal<PriceHistoryChartView | null>(null);
@@ -332,6 +349,7 @@ export class PricingPageComponent implements OnInit {
       // prefillFromLatestSearch swallows its own lookup failure.
       arrivedFromSearch = await this.prefillFromLatestSearch();
       void this.loadHistory();
+      void this.loadFerryDemand();
     } catch (error) {
       this.contextError.set(
         error instanceof Error ? error.message : "Δεν ήταν δυνατή η φόρτωση των στοιχείων του λογαριασμού.",
@@ -509,6 +527,19 @@ export class PricingPageComponent implements OnInit {
       this.comparableCompetitors.set(summary.total_hotels);
     } catch {
       this.comparableCompetitors.set(null);
+    }
+  }
+
+  /** The ferries into the property's island; a failure only hides the panel's content. */
+  async loadFerryDemand(): Promise<void> {
+    this.ferryStatus.set("loading");
+    try {
+      const params = new URLSearchParams({ owned_property_id: this.ownedPropertyId() });
+      this.ferryDemand.set(await this.api.get<FerryDemandResponse>("/api/v1/demand/ferries", params));
+      this.ferryStatus.set("ready");
+    } catch {
+      this.ferryDemand.set(null);
+      this.ferryStatus.set("error");
     }
   }
 

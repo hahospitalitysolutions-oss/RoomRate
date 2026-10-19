@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from .actor import ActorRunError, _run_actor
+from .checkpoint import JobCheckpoint, batch_name
 from .config import ScraperConfig
 from .logging_config import log
 from .utils import _append_error_log, _chunked, _normalize_url
@@ -47,6 +48,7 @@ def fetch_deep_room_data(
     hotel_list: list[dict],
     config: ScraperConfig,
     progress: Any | None = None,
+    checkpoint: JobCheckpoint | None = None,
 ) -> list[dict]:
     """
     Stage 2 — Parallel Deep Crawl.
@@ -78,8 +80,23 @@ def fetch_deep_room_data(
 
     all_items: list[dict] = []
     batch_errors: list[dict[str, object]] = []
-    # Η πρόοδος αλλάζει στάδιο αμέσως: το πρώτο batch μπορεί να κρατήσει λεπτά.
+    checkpoint = checkpoint or JobCheckpoint(None)
+    # Batches an earlier attempt of this job already paid for: reused, not re-run.
     hotels_done = 0
+    pending: list[int] = []
+    for i, batch in enumerate(batches):
+        cached = checkpoint.load(batch_name(batch))
+        if isinstance(cached, list):
+            all_items.extend(cached)
+            hotels_done += len(batch)
+        else:
+            pending.append(i)
+    if hotels_done:
+        log.info(
+            "[ΣΤΑΔΙΟ 2] %d/%d batches από προηγούμενη προσπάθεια — τρέχουν μόνο τα %d που λείπουν.",
+            total - len(pending), total, len(pending),
+        )
+    # Η πρόοδος αλλάζει στάδιο αμέσως: το πρώτο batch μπορεί να κρατήσει λεπτά.
     if progress is not None:
         progress.update("deep_crawl", done=hotels_done, total=len(urls))
 
@@ -88,12 +105,12 @@ def fetch_deep_room_data(
             pool.submit(
                 _deep_crawl_batch,
                 client,
-                batch,
+                batches[i],
                 config,
                 f"batch {i + 1}/{total}",
                 max_items_per_batch,
             ): i
-            for i, batch in enumerate(batches)
+            for i in pending
         }
 
         failed_batches = 0
@@ -102,6 +119,7 @@ def fetch_deep_room_data(
             try:
                 items = future.result()
                 all_items.extend(items)
+                checkpoint.save(batch_name(batches[batch_idx]), items)
                 log.info(
                     "[ΣΤΑΔΙΟ 2] batch %d/%d ολοκληρώθηκε → %d items (σύνολο: %d)",
                     batch_idx + 1, total, len(items), len(all_items),

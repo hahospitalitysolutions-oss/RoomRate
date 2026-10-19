@@ -65,6 +65,12 @@ def test_production_with_good_settings_passes():
     validate_production_settings(make_settings())  # must not raise
 
 
+def test_production_rejects_the_unscoped_legacy_rate_source():
+    """room_rates has no account column: every account would read every market."""
+    with pytest.raises(RuntimeError, match="ROOMRATE_RATE_SOURCE"):
+        validate_production_settings(make_settings(ROOMRATE_RATE_SOURCE="legacy"))
+
+
 def test_production_rejects_combined_api_and_worker_role():
     with pytest.raises(RuntimeError, match="ROOMRATE_PROCESS_ROLE"):
         validate_production_settings(make_settings(ROOMRATE_PROCESS_ROLE="all"))
@@ -164,3 +170,11 @@ def test_settings_read_a_dotenv_saved_with_a_utf8_bom(tmp_path, monkeypatch):
 
 def test_settings_declare_the_bom_tolerant_env_file_encoding():
     assert Settings.model_config["env_file_encoding"] == "utf-8-sig"
+
+
+def test_the_default_cors_origins_let_the_angular_dev_server_call_the_api():
+    """Without CORS_ORIGINS in .env the browser at :4200 was blocked on every call."""
+    from api.config import Settings
+
+    default = Settings.model_fields["cors_origins"].default
+    assert {"http://localhost:4200", "http://127.0.0.1:4200"} <= set(default.split(","))

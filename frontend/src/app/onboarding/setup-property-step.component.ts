@@ -147,11 +147,11 @@ type FirstPropertyCreateAttempt = {
   `,
   styles: [`
     .setup-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: stretch; }
-    .setup-mini-map { min-height: 260px; border-radius: 0.5rem; background: #e2e8f0; }
+    .setup-mini-map { min-height: 260px; border-radius: 0.5rem; background: var(--line); }
     .candidate-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; max-height: 320px; overflow-y: auto; }
-    .candidate-option { width: 100%; text-align: left; padding: 0.6rem 0.8rem; border: 1px solid #cbd5e1; border-radius: 0.5rem; background: #fff; display: flex; flex-direction: column; gap: 0.15rem; cursor: pointer; }
+    .candidate-option { width: 100%; text-align: left; padding: 0.6rem 0.8rem; border: 1px solid var(--line-strong); border-radius: 0.5rem; background: var(--panel); display: flex; flex-direction: column; gap: 0.15rem; cursor: pointer; }
     .candidate-option:disabled { cursor: not-allowed; opacity: 0.65; }
-    .candidate-selected { border-color: #0f766e; box-shadow: 0 0 0 1px #0f766e; }
+    .candidate-selected { border-color: var(--sea); box-shadow: 0 0 0 1px var(--sea); }
     .setup-actions { display: flex; gap: 0.75rem; margin-top: 1rem; }
     .setup-refine { display: flex; gap: 0.75rem; align-items: end; margin-top: 1rem; flex-wrap: wrap; }
     @media (max-width: 760px) { .setup-columns { grid-template-columns: 1fr; } }

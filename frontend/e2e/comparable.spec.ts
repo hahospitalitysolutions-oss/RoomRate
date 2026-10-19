@@ -156,15 +156,16 @@ const readsOf = (reads: Array<{ path: string; query: URLSearchParams }>, suffix:
   reads.filter((read) => read.path.endsWith(suffix)).map((read) => read.query);
 const roomMatchPosts = (calls: RecordedCall[]) =>
   calls.filter((call) => call.method === "POST" && call.path === "/api/v1/agents/room-matches");
-// The primary control at the top of the results column, never inside the collapsed «Φίλτρα» form.
+// The primary control at the top of the results column, never inside the «Φίλτρα» column.
 const roomSelect = (page: Page) => page.locator(".results-sidebar").getByLabel("Σύγκριση για");
 const cardFor = (page: Page, hotel: string) => page.locator(".competitor-card", { hasText: hotel });
 
 async function openMap(page: Page): Promise<void> {
   await page.goto("/map");
   await expect(page.locator(".header-actions").getByText("1 ανταγωνιστής")).toBeVisible();
-  // A restored search keeps the filters collapsed: the room switch must not need them.
-  await expect(page.locator(".filters-sidebar")).toHaveCount(0);
+  // The room switch heads the results column, apart from the permanent «Φίλτρα» column.
+  await expect(roomSelect(page)).toBeVisible();
+  await expect(page.locator(".filters-sidebar select")).toHaveCount(0);
 }
 
 test("«Μόνο συγκρίσιμα» is on by default and off shows every room, the non-comparable ones chipped", async ({ page }) => {

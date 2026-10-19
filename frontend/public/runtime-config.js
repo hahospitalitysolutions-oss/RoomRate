@@ -7,7 +7,6 @@
  */
 window.__ROOMRATE_CONFIG__ = {
   apiBaseUrl: "",
-  supabaseUrl: "",
-  supabaseAnonKey: "",
+  neonAuthUrl: "",
   mapboxToken: "",
 };

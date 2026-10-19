@@ -78,3 +78,41 @@ def test_route_set_headers_are_not_clobbered():
     assert response.headers["X-Frame-Options"] == "SAMEORIGIN"
     # Untouched headers are still added.
     assert response.headers["X-Content-Type-Options"] == "nosniff"
+
+
+# ----------------------------------------------------------------------------
+# Unhandled errors still reach the browser as a readable 500
+# ----------------------------------------------------------------------------
+
+
+def test_an_unhandled_error_is_a_json_500_that_carries_cors_headers():
+    """Without it the 500 had no CORS header and the app reported a network failure."""
+    from fastapi.middleware.cors import CORSMiddleware
+
+    from api.middleware import UnhandledErrorMiddleware
+
+    broken = FastAPI()
+
+    @broken.get("/boom")
+    def boom():
+        raise OSError("APIFY_TOKEN missing")
+
+    broken.add_middleware(UnhandledErrorMiddleware)
+    broken.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:4200"], allow_credentials=True)
+    client = TestClient(broken, raise_server_exceptions=False)
+
+    response = client.get("/boom", headers={"Origin": "http://127.0.0.1:4200"})
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Internal Server Error"}
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:4200"
+
+
+def test_the_real_app_installs_the_unhandled_error_middleware_inside_cors():
+    from fastapi.middleware.cors import CORSMiddleware
+
+    from api.middleware import UnhandledErrorMiddleware
+
+    order = [entry.cls for entry in app.user_middleware]
+    # user_middleware lists the OUTERMOST first.
+    assert order.index(CORSMiddleware) < order.index(UnhandledErrorMiddleware)

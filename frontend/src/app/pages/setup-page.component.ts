@@ -1,4 +1,6 @@
 import { Component, OnInit, signal } from "@angular/core";
+import { AppHeaderComponent } from "../components/app-header.component";
+import { DemandSettingsComponent } from "../components/demand-settings.component";
 import { CommonModule } from "@angular/common";
 import { ActivatedRoute, Router } from "@angular/router";
 
@@ -14,16 +16,21 @@ export type WizardStep = 1 | 2 | 3;
 @Component({
   selector: "app-setup-page",
   standalone: true,
-  imports: [CommonModule, SetupPropertyStepComponent, SetupRoomStepComponent, SetupSearchStepComponent],
+  imports: [
+    CommonModule,
+    AppHeaderComponent,
+    DemandSettingsComponent,
+    SetupPropertyStepComponent,
+    SetupRoomStepComponent,
+    SetupSearchStepComponent,
+  ],
   template: `
     <main class="page-shell setup-page">
-      <header class="map-header">
-        <div>
-          <p class="eyebrow">RoomRate</p>
-          <h1 data-testid="setup-step-title">Βήμα {{ step() }} από 3 — {{ stepTitle() }}</h1>
-          <p class="muted">{{ stepSubtitle() }}</p>
-        </div>
-      </header>
+      <app-header [showNav]="false">
+        <p class="eyebrow">Ρύθμιση λογαριασμού</p>
+        <h1 data-testid="setup-step-title">Βήμα {{ step() }} από 3 — {{ stepTitle() }}</h1>
+        <p class="app-band-subtitle">{{ stepSubtitle() }}</p>
+      </app-header>
 
       <section class="page-body">
         <div *ngIf="status() === 'loading'" class="progress-panel">
@@ -55,6 +62,12 @@ export type WizardStep = 1 | 2 | 3;
             (finished)="goToMap()"
             (postponed)="goToMap()"
           ></app-setup-search-step>
+          <!-- Ferries and flights into the island: free, one click, shown only on an island. -->
+          <app-demand-settings
+            *ngIf="step() === 3 && ownedPropertyId()"
+            mode="onboarding"
+            [ownedPropertyId]="ownedPropertyId()"
+          ></app-demand-settings>
         </ng-container>
       </section>
     </main>
