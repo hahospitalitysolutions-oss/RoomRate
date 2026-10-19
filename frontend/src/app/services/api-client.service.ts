@@ -37,6 +37,33 @@ export class ApiClientService {
     await this.request<unknown>(path, { method: "DELETE" }, 60_000);
   }
 
+  /** multipart/form-data (a file upload): the browser sets the content type with its boundary. */
+  async postForm<T>(path: string, form: FormData, timeoutMs = 120_000): Promise<T> {
+    return this.request<T>(path, { method: "POST", body: form }, timeoutMs);
+  }
+
+  /** A file the API serves (e.g. the Excel template), fetched with the session's token. */
+  async getBlob(path: string, timeoutMs = 60_000): Promise<Blob> {
+    const token = await this.authService.getAccessToken();
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(new URL(path, environment.apiBaseUrl), {
+        signal: controller.signal,
+        headers: { "Authorization": `Bearer ${token}` },
+      });
+      if (!response.ok) {
+        throw new ApiClientError("Το αρχείο δεν ήταν διαθέσιμο από το RoomRate API.", "http", response.status);
+      }
+      return await response.blob();
+    } catch (error) {
+      if (error instanceof ApiClientError) throw error;
+      throw new ApiClientError(`Δεν ήταν δυνατή η επικοινωνία με το RoomRate API στο ${environment.apiBaseUrl}.`, "transport");
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  }
+
   private async request<T>(path: string, init: RequestInit, timeoutMs: number): Promise<T> {
     const token = await this.authService.getAccessToken();
     const controller = new AbortController();
@@ -47,7 +74,7 @@ export class ApiClientService {
         ...init,
         signal: controller.signal,
         headers: {
-          "Content-Type": "application/json",
+          ...(init.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
           "Authorization": `Bearer ${token}`,
           ...(init.headers || {}),
         },

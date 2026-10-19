@@ -1,0 +1,46 @@
+{
+  "season": 2027,
+  "as_of": "2026-10-19",
+  "months": [
+    {
+      "month": "2027-05",
+      "otb_occupancy_pct": 12.0,
+      "otb_room_nights": 45,
+      "last_year_same_day_pct": 9.0
+    },
+    {
+      "month": "2027-06",
+      "otb_occupancy_pct": 18.0,
+      "otb_room_nights": 65,
+      "last_year_same_day_pct": 14.0
+    },
+    {
+      "month": "2027-07",
+      "otb_occupancy_pct": 27.0,
+      "otb_room_nights": 100,
+      "last_year_same_day_pct": 25.0
+    },
+    {
+      "month": "2027-08",
+      "otb_occupancy_pct": 31.0,
+      "otb_room_nights": 115,
+      "last_year_same_day_pct": 33.0
+    },
+    {
+      "month": "2027-09",
+      "otb_occupancy_pct": 15.0,
+      "otb_room_nights": 54,
+      "last_year_same_day_pct": 11.0
+    },
+    {
+      "month": "2027-10",
+      "otb_occupancy_pct": 6.0,
+      "otb_room_nights": 22,
+      "last_year_same_day_pct": 5.0
+    }
+  ],
+  "pickup_7d": {
+    "bookings": 9,
+    "room_nights": 38
+  }
+}

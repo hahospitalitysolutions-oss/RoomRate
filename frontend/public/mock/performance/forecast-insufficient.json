@@ -1,0 +1,11 @@
+{
+  "status": "insufficient_history",
+  "history_months": 6,
+  "history_months_needed": 12,
+  "target": "revenue",
+  "horizon_months": 12,
+  "amounts": "gross",
+  "accuracy_sentence": null,
+  "accuracy": null,
+  "points": []
+}

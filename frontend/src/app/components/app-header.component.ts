@@ -39,6 +39,7 @@ import { NotificationBellComponent } from "./notification-bell.component";
           <nav *ngIf="showNav" class="header-nav" aria-label="Πλοήγηση">
             <a class="header-nav-link" routerLink="/map" routerLinkActive="is-active" ariaCurrentWhenActive="page">Χάρτης</a>
             <a class="header-nav-link" routerLink="/pricing" routerLinkActive="is-active" ariaCurrentWhenActive="page">Τιμολόγηση</a>
+            <a class="header-nav-link" routerLink="/performance" routerLinkActive="is-active" ariaCurrentWhenActive="page">Απόδοση</a>
             <a class="header-nav-link" routerLink="/settings" routerLinkActive="is-active" ariaCurrentWhenActive="page">Ρυθμίσεις</a>
           </nav>
           <app-notification-bell *ngIf="showNav" />

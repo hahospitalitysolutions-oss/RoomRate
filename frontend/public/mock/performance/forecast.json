@@ -1,0 +1,143 @@
+{
+  "status": "ready",
+  "history_months": 12,
+  "history_months_needed": 12,
+  "target": "revenue",
+  "horizon_months": 12,
+  "amounts": "gross",
+  "accuracy_sentence": "Τους τελευταίους 6 μήνες οι προβλέψεις απείχαν κατά μέσο όρο 8% από τα πραγματικά έσοδα.",
+  "accuracy": {
+    "smape_pct": 8.1,
+    "mae": 4210.0,
+    "bias": -950.0,
+    "model": "SARIMA"
+  },
+  "points": [
+    {
+      "month": "2025-05",
+      "actual": 15225.0,
+      "forecast": null,
+      "low": null,
+      "high": null
+    },
+    {
+      "month": "2025-06",
+      "actual": 24276.0,
+      "forecast": null,
+      "low": null,
+      "high": null
+    },
+    {
+      "month": "2025-07",
+      "actual": 38688.0,
+      "forecast": null,
+      "low": null,
+      "high": null
+    },
+    {
+      "month": "2025-08",
+      "actual": 44555.0,
+      "forecast": null,
+      "low": null,
+      "high": null
+    },
+    {
+      "month": "2025-09",
+      "actual": 28667.0,
+      "forecast": null,
+      "low": null,
+      "high": null
+    },
+    {
+      "month": "2025-10",
+      "actual": 17563.0,
+      "forecast": null,
+      "low": null,
+      "high": null
+    },
+    {
+      "month": "2026-05",
+      "actual": 17756.0,
+      "forecast": null,
+      "low": null,
+      "high": null
+    },
+    {
+      "month": "2026-06",
+      "actual": 27648.0,
+      "forecast": null,
+      "low": null,
+      "high": null
+    },
+    {
+      "month": "2026-07",
+      "actual": 43164.0,
+      "forecast": null,
+      "low": null,
+      "high": null
+    },
+    {
+      "month": "2026-08",
+      "actual": 49350.0,
+      "forecast": null,
+      "low": null,
+      "high": null
+    },
+    {
+      "month": "2026-09",
+      "actual": 32660.0,
+      "forecast": null,
+      "low": null,
+      "high": null
+    },
+    {
+      "month": "2026-10",
+      "actual": 20736.0,
+      "forecast": null,
+      "low": null,
+      "high": null
+    },
+    {
+      "month": "2027-05",
+      "actual": null,
+      "forecast": 18643.8,
+      "low": 16406.54,
+      "high": 20881.06
+    },
+    {
+      "month": "2027-06",
+      "actual": null,
+      "forecast": 29306.88,
+      "low": 25790.05,
+      "high": 32823.71
+    },
+    {
+      "month": "2027-07",
+      "actual": null,
+      "forecast": 45322.2,
+      "low": 39883.54,
+      "high": 50760.86
+    },
+    {
+      "month": "2027-08",
+      "actual": null,
+      "forecast": 51324.0,
+      "low": 45165.12,
+      "high": 57482.88
+    },
+    {
+      "month": "2027-09",
+      "actual": null,
+      "forecast": 34619.6,
+      "low": 30465.25,
+      "high": 38773.95
+    },
+    {
+      "month": "2027-10",
+      "actual": null,
+      "forecast": 21772.8,
+      "low": 19160.06,
+      "high": 24385.54
+    }
+  ]
+}

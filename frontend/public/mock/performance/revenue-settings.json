@@ -1,0 +1,5 @@
+{
+  "vat_pct": 13.0,
+  "resilience_fee_eur": 1.5,
+  "fee_included_in_price": true
+}
