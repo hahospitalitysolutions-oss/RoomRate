@@ -1,0 +1,46 @@
+{
+  "imported": 371,
+  "updated": 38,
+  "skipped": 3,
+  "status": {
+    "has_data": true,
+    "bookings": 766,
+    "first_stay_date": "2025-05-01",
+    "last_stay_date": "2027-07-14",
+    "last_import": {
+      "id": "22222222-2222-4222-8222-000000000001",
+      "format": "booking",
+      "filename": "bookings_export_2026.xlsx",
+      "committed_at": "2026-10-19T06:42:10Z",
+      "bookings_imported": 409
+    },
+    "inventory_complete": true,
+    "room_types": [
+      {
+        "id": "11111111-1111-4111-8111-000000000001",
+        "label": "Δίκλινο με θέα θάλασσα",
+        "rooms": 5
+      },
+      {
+        "id": "11111111-1111-4111-8111-000000000002",
+        "label": "Δίκλινο standard",
+        "rooms": 4
+      },
+      {
+        "id": "11111111-1111-4111-8111-000000000003",
+        "label": "Οικογενειακό",
+        "rooms": 2
+      },
+      {
+        "id": "11111111-1111-4111-8111-000000000004",
+        "label": "Σουίτα",
+        "rooms": 1
+      }
+    ],
+    "seasons": [
+      2027,
+      2026,
+      2025
+    ]
+  }
+}

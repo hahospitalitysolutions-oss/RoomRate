@@ -1,0 +1,40 @@
+{
+  "period": {
+    "date_from": "2026-05-01",
+    "date_to": "2026-10-31"
+  },
+  "amounts": "gross",
+  "kpis": {
+    "occupancy_pct": 73.6,
+    "adr_eur": 117.66,
+    "revpar_eur": 86.65,
+    "revenue_eur": 191314.0,
+    "room_nights_sold": 1626,
+    "room_nights_available": 2208,
+    "bookings": 387,
+    "cancellations_pct": 8.4,
+    "avg_length_of_stay": 4.2,
+    "avg_lead_time_days": 46.0,
+    "commission_eur": 21446.3
+  },
+  "last_year": {
+    "occupancy_pct": 68.7,
+    "adr_eur": 111.46,
+    "revpar_eur": 76.53,
+    "revenue_eur": 168974.0,
+    "room_nights_sold": 1516,
+    "room_nights_available": 2208,
+    "bookings": 379,
+    "cancellations_pct": 9.1,
+    "avg_length_of_stay": 4.0,
+    "avg_lead_time_days": 41.0,
+    "commission_eur": 18941.99
+  },
+  "delta": {
+    "occupancy_pts": 4.9,
+    "adr_pct": 5.6,
+    "revpar_pct": 13.2,
+    "revenue_pct": 13.2
+  },
+  "market_median_eur": 125.0
+}
