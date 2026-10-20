@@ -159,6 +159,8 @@ class RoomRatePerformanceImport(TimestampMixin, Base):
     rows_total: Mapped[int] = mapped_column(nullable=False, server_default="0")
     # [{"row": <Excel row>, "booking_ref": ..., "message": <Greek>}]
     errors: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    # A template's «Δωμάτια» and «Κλειστές περίοδοι» until commit (migration 20261021_0036).
+    extras: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     bookings_imported: Mapped[int | None] = mapped_column()
