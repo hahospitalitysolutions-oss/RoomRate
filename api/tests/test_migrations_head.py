@@ -26,6 +26,13 @@ from api.models.market import (
     RoomRateRoomPackage,
     RoomRateScrapeJob,
 )
+from api.models.performance import (
+    RoomRatePerformanceBooking,
+    RoomRatePerformanceBookingNight,
+    RoomRatePerformanceImportRow,
+    RoomRatePerformanceLabelMapping,
+    RoomRatePerformanceRevenueSettings,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROUND6_REVISION = "20260915_0024"
@@ -39,6 +46,7 @@ FERRY_DEMAND_REVISION = "20261011_0031"
 FERRY_OPTIONS_REVISION = "20261011_0032"
 FLIGHT_OBSERVATIONS_REVISION = "20261011_0033"
 DEMAND_SETTINGS_REVISION = "20261012_0034"
+PERFORMANCE_REVISION = "20261020_0035"
 
 
 def _script_directory() -> ScriptDirectory:
@@ -47,8 +55,36 @@ def _script_directory() -> ScriptDirectory:
     return ScriptDirectory.from_config(config)
 
 
-def test_demand_settings_migration_is_the_single_alembic_head():
-    assert _script_directory().get_heads() == [DEMAND_SETTINGS_REVISION]
+def test_performance_migration_is_the_single_alembic_head():
+    assert _script_directory().get_heads() == [PERFORMANCE_REVISION]
+
+
+def test_performance_migration_revises_the_demand_settings_migration():
+    assert _script_directory().get_revision(PERFORMANCE_REVISION).down_revision == DEMAND_SETTINGS_REVISION
+
+
+def test_orm_declares_the_performance_tables():
+    """One booking per reference and property, its nights, labels remembered, deleted with the property."""
+    bookings = RoomRatePerformanceBooking.__table__
+    nights = RoomRatePerformanceBookingNight.__table__
+    mappings = RoomRatePerformanceLabelMapping.__table__
+
+    assert "uq_roomrate_performance_bookings_ref" in {c.name for c in bookings.constraints}
+    foreign = {fk.target_fullname: fk.ondelete for fk in bookings.foreign_keys}
+    assert foreign == {
+        "roomrate_accounts.id": "CASCADE",
+        "roomrate_owned_properties.id": "CASCADE",
+        "roomrate_performance_imports.id": "SET NULL",
+        "roomrate_owned_property_room_types.id": "SET NULL",
+    }
+    # No guest's name, email, phone or address can be stored.
+    assert not {"guest_name", "email", "phone", "address"} & set(bookings.columns.keys())
+    assert [column.name for column in nights.primary_key] == ["booking_id", "stay_date"]
+    assert {index.name for index in nights.indexes} == {"ix_roomrate_performance_booking_nights_property_date"}
+    assert [column.name for column in mappings.primary_key] == ["owned_property_id", "label"]
+    assert "ck_roomrate_performance_label_mappings_target" in {c.name for c in mappings.constraints}
+    assert [column.name for column in RoomRatePerformanceImportRow.__table__.primary_key] == ["import_id", "row_number"]
+    assert RoomRatePerformanceRevenueSettings.__table__.columns["vat_pct"].server_default.arg == "13"
 
 
 def test_demand_settings_migration_revises_the_flight_observations_migration():
