@@ -67,9 +67,11 @@ types, this file and the mock files together, approved by both sides.
    checks every row and keeps the result for 24 hours. Guests' names, emails,
    phones and addresses are never read. `errors[]` lists rows that will be
    skipped, with the Excel row number. `mapping[]` lists each room label of
-   the file; labels seen in an earlier import come mapped already.
+   the file; labels seen in an earlier import come mapped (or ignored)
+   already, others map to the room type of the same name when there is one.
+   `ignored: true` marks a label the owner left out (`room_type_id` null).
 2. `PUT /imports/{id}/mapping` maps (or ignores) labels; `ready` turns true
-   when none is left unmapped.
+   when none with bookings is left unmapped.
 3. `POST /imports/{id}/commit` stores the bookings: a `booking_ref` already
    stored for the property is replaced (re-uploading never duplicates).
    `skip_errors: false` with errors present → 400.

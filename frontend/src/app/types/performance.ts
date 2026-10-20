@@ -288,8 +288,12 @@ export type ImportPreview = {
   updated: number;
   cancelled: number;
   errors: { row: number; booking_ref: string | null; message: string }[];
-  /** Every room label of the file with RoomRate's room type it maps to (null = not mapped yet). */
-  mapping: { label: string; bookings: number; room_type_id: string | null }[];
+  /**
+   * Every room label of the file with RoomRate's room type it maps to.
+   * room_type_id null: not mapped yet, or `ignored` (the owner left this
+   * label's bookings out; it does not hold `ready` back).
+   */
+  mapping: { label: string; bookings: number; room_type_id: string | null; ignored: boolean }[];
   /** First rows as read, guests' personal data never included. */
   sample: ImportedBookingRow[];
   /** true when every label is mapped (or ignored) and the file can be committed. */
