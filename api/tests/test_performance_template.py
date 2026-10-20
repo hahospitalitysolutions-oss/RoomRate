@@ -166,7 +166,7 @@ def test_template_endpoint_hides_another_account_property(client):
 def test_calls_not_built_yet_answer_fastapi_not_found_for_the_page_samples(client):
     """The page falls back to public/mock/performance only on FastAPI's own 404 «Not Found»."""
     http, _ = client
-    response = http.get("/api/v1/performance/summary", params={"owned_property_id": str(PROPERTY_ID)})
+    response = http.get("/api/v1/performance/not-built-yet", params={"owned_property_id": str(PROPERTY_ID)})
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Not Found"}

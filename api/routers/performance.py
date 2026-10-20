@@ -6,10 +6,11 @@ any other is 404 «Owned property not found». The page answers from
 frontend/public/mock/performance/ for each call not built here yet.
 """
 
+from datetime import date
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from starlette.concurrency import run_in_threadpool
 
 from api.dependencies import (
@@ -17,18 +18,25 @@ from api.dependencies import (
     get_account_context,
     get_onboarding_repository,
     get_performance_import_service,
+    get_performance_kpi_service,
     get_performance_repository,
 )
 from api.repositories.onboarding_repository import OnboardingRepository
 from api.repositories.performance_repository import PerformanceRepository
 from api.schemas.performance import (
+    AmountBasis,
+    Compare,
     ImportCommitIn,
     ImportCommitOut,
     ImportFormat,
     ImportMappingUpdateIn,
     ImportPreviewOut,
     ImportSummaryOut,
+    PerformanceChannelsOut,
+    PerformanceCountriesOut,
+    PerformanceMonthlyOut,
     PerformanceStatusOut,
+    PerformanceSummaryOut,
     PropertyClosuresIn,
     PropertyClosuresOut,
     RevenueSettingsIn,
@@ -44,6 +52,7 @@ from api.services.performance_import_service import (
     ImportRejected,
     PerformanceImportService,
 )
+from api.services.performance_kpis import Filters, KpiRejected, PerformanceKpiService
 from api.services.performance_template import TEMPLATE_FILENAME, XLSX_MEDIA_TYPE, build_template
 
 router = APIRouter()
@@ -110,6 +119,80 @@ def bookings_template(
         media_type=XLSX_MEDIA_TYPE,
         headers={"Content-Disposition": f'attachment; filename="{TEMPLATE_FILENAME}"'},
     )
+
+
+# ---------------------------------------------------------------------------
+# KPIs (filters: stay dates, room type, gross/net, last year)
+# ---------------------------------------------------------------------------
+
+
+def _filters(
+    date_from: date = Query(..., description="First stay date (a night belongs to the date it starts)"),
+    date_to: date = Query(..., description="Last stay date, inclusive"),
+    room_type_id: UUID | None = Query(None, description="An owned room type; omitted = the whole property"),
+    amounts: AmountBasis = Query("gross"),
+    compare: Compare = Query("last_year"),
+) -> Filters:
+    return Filters(date_from, date_to, room_type_id, amounts, compare)
+
+
+def _kpi_call(call):
+    try:
+        return call()
+    except KpiRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/summary", response_model=PerformanceSummaryOut)
+def performance_summary(
+    owned_property_id: UUID,
+    filters: Filters = Depends(_filters),
+    account: AccountContext = Depends(get_account_context),
+    onboarding_repository: OnboardingRepository = Depends(get_onboarding_repository),
+    service: PerformanceKpiService = Depends(get_performance_kpi_service),
+) -> dict[str, Any]:
+    """Occupancy, ADR, RevPAR, revenue and booking habits of the period, against last year and the market."""
+    owned_property = _owned_property(account, owned_property_id, onboarding_repository)
+    return _kpi_call(lambda: service.summary(account.account_id, owned_property, filters))
+
+
+@router.get("/monthly", response_model=PerformanceMonthlyOut)
+def performance_monthly(
+    owned_property_id: UUID,
+    filters: Filters = Depends(_filters),
+    account: AccountContext = Depends(get_account_context),
+    onboarding_repository: OnboardingRepository = Depends(get_onboarding_repository),
+    service: PerformanceKpiService = Depends(get_performance_kpi_service),
+) -> dict[str, Any]:
+    """The same figures month by month, with the unsold and closed nights."""
+    owned_property = _owned_property(account, owned_property_id, onboarding_repository)
+    return _kpi_call(lambda: service.monthly(account.account_id, owned_property, filters))
+
+
+@router.get("/channels", response_model=PerformanceChannelsOut)
+def performance_channels(
+    owned_property_id: UUID,
+    filters: Filters = Depends(_filters),
+    account: AccountContext = Depends(get_account_context),
+    onboarding_repository: OnboardingRepository = Depends(get_onboarding_repository),
+    service: PerformanceKpiService = Depends(get_performance_kpi_service),
+) -> dict[str, Any]:
+    """Revenue, nights and commission per channel, and per channel per month."""
+    owned_property = _owned_property(account, owned_property_id, onboarding_repository)
+    return _kpi_call(lambda: service.channels(account.account_id, owned_property, filters))
+
+
+@router.get("/countries", response_model=PerformanceCountriesOut)
+def performance_countries(
+    owned_property_id: UUID,
+    filters: Filters = Depends(_filters),
+    account: AccountContext = Depends(get_account_context),
+    onboarding_repository: OnboardingRepository = Depends(get_onboarding_repository),
+    service: PerformanceKpiService = Depends(get_performance_kpi_service),
+) -> dict[str, Any]:
+    """The ten booker countries with most bookings, then «Λοιπές»."""
+    owned_property = _owned_property(account, owned_property_id, onboarding_repository)
+    return _kpi_call(lambda: service.countries(account.account_id, owned_property, filters))
 
 
 # ---------------------------------------------------------------------------

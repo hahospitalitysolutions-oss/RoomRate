@@ -13,6 +13,7 @@ from api.dependencies import (
     get_account_context,
     get_onboarding_repository,
     get_performance_import_service,
+    get_performance_kpi_service,
     get_performance_repository,
 )
 from api.main import app
@@ -21,13 +22,18 @@ from api.schemas.performance import (
     ImportCommitOut,
     ImportPreviewOut,
     ImportSummaryOut,
+    PerformanceChannelsOut,
+    PerformanceCountriesOut,
+    PerformanceMonthlyOut,
     PerformanceStatusOut,
+    PerformanceSummaryOut,
     PropertyClosuresOut,
     RevenueSettingsOut,
     RoomInventoryOut,
 )
 from api.services.performance_import import ImportFileError
 from api.services.performance_import_service import ImportAlreadyCommitted, ImportNotFound, ImportRejected
+from api.services.performance_kpis import KpiRejected
 
 ACCOUNT_ID = UUID("00000000-0000-0000-0000-000000000001")
 PROPERTY_ID = UUID("00000000-0000-0000-0000-000000000456")
@@ -56,6 +62,10 @@ def mock(name):
         ("inventory", RoomInventoryOut),
         ("closures", PropertyClosuresOut),
         ("revenue-settings", RevenueSettingsOut),
+        ("summary", PerformanceSummaryOut),
+        ("monthly", PerformanceMonthlyOut),
+        ("channels", PerformanceChannelsOut),
+        ("countries", PerformanceCountriesOut),
     ],
 )
 def test_the_page_samples_are_exactly_the_backend_answers(name, schema):
@@ -267,3 +277,73 @@ def test_another_account_property_is_not_found(client, method, path):
 
     assert response.status_code == 404 and response.json() == {"detail": "Owned property not found"}
     assert "deleted" not in repository.saved
+
+
+# ---------------------------------------------------------------------------
+# KPIs
+# ---------------------------------------------------------------------------
+
+
+class FakeKpis:
+    def __init__(self):
+        self.calls = []
+        self.error = None
+
+    def _answer(self, name, owned_property, filters):
+        self.calls.append((name, owned_property["id"], filters))
+        if self.error:
+            raise self.error
+        return mock(name)
+
+    def summary(self, account_id, owned_property, filters):
+        return self._answer("summary", owned_property, filters)
+
+    def monthly(self, account_id, owned_property, filters):
+        return self._answer("monthly", owned_property, filters)
+
+    def channels(self, account_id, owned_property, filters):
+        return self._answer("channels", owned_property, filters)
+
+    def countries(self, account_id, owned_property, filters):
+        return self._answer("countries", owned_property, filters)
+
+
+@pytest.fixture
+def kpi_client(client):
+    http, _, _ = client
+    kpis = FakeKpis()
+    app.dependency_overrides[get_performance_kpi_service] = lambda: kpis
+    return http, kpis
+
+
+@pytest.mark.parametrize("name", ["summary", "monthly", "channels", "countries"])
+def test_kpi_calls_pass_the_filters(kpi_client, name):
+    http, kpis = kpi_client
+    response = http.get(f"/api/v1/performance/{name}", params={
+        **QUERY, "date_from": "2026-05-01", "date_to": "2026-10-31", "room_type_id": str(DOUBLE), "amounts": "net",
+    })
+
+    assert response.status_code == 200 and response.json() == mock(name)
+    (called, property_id, filters), = kpis.calls
+    assert (called, property_id) == (name, PROPERTY_ID)
+    assert (filters.date_from.isoformat(), filters.room_type_id, filters.amounts, filters.compare) == (
+        "2026-05-01", DOUBLE, "net", "last_year"
+    )
+
+
+def test_kpi_calls_need_the_period_and_known_values(kpi_client):
+    http, kpis = kpi_client
+
+    assert http.get("/api/v1/performance/summary", params=QUERY).status_code == 422
+    assert http.get("/api/v1/performance/summary", params={
+        **QUERY, "date_from": "2026-05-01", "date_to": "2026-10-31", "amounts": "both",
+    }).status_code == 422
+    assert kpis.calls == []
+
+
+def test_kpi_refusal_is_a_greek_400(kpi_client):
+    http, kpis = kpi_client
+    kpis.error = KpiRejected("Η περίοδος τελειώνει πριν αρχίσει.")
+    response = http.get("/api/v1/performance/monthly", params={**QUERY, "date_from": "2026-10-31", "date_to": "2026-05-01"})
+
+    assert response.status_code == 400 and response.json() == {"detail": "Η περίοδος τελειώνει πριν αρχίσει."}

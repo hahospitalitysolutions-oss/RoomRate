@@ -190,3 +190,105 @@ class RevenueSettingsOut(BaseModel):
     vat_pct: float
     resilience_fee_eur: float
     fee_included_in_price: bool
+
+
+# ---------------------------------------------------------------------------
+# GET /summary, /monthly, /channels, /countries   (filters)
+# ---------------------------------------------------------------------------
+
+AmountBasis = Literal["gross", "net"]
+Compare = Literal["last_year", "none"]
+
+
+class PerformanceKpisOut(BaseModel):
+    occupancy_pct: float | None
+    adr_eur: float | None
+    revpar_eur: float | None
+    revenue_eur: float
+    room_nights_sold: int
+    room_nights_available: int | None
+    bookings: int
+    cancellations_pct: float | None
+    avg_length_of_stay: float | None
+    avg_lead_time_days: float | None
+    commission_eur: float
+
+
+class PeriodOut(BaseModel):
+    date_from: date
+    date_to: date
+
+
+class KpiDeltaOut(BaseModel):
+    occupancy_pts: float | None
+    adr_pct: float | None
+    revpar_pct: float | None
+    revenue_pct: float | None
+
+
+class PerformanceSummaryOut(BaseModel):
+    period: PeriodOut
+    amounts: AmountBasis
+    kpis: PerformanceKpisOut
+    last_year: PerformanceKpisOut | None
+    delta: KpiDeltaOut | None
+    market_median_eur: float | None
+
+
+class MonthLastYearOut(BaseModel):
+    occupancy_pct: float | None
+    adr_eur: float | None
+    revpar_eur: float | None
+    revenue_eur: float
+
+
+class MonthKpisOut(BaseModel):
+    month: str
+    occupancy_pct: float | None
+    adr_eur: float | None
+    revpar_eur: float | None
+    revenue_eur: float
+    bookings: int
+    room_nights_sold: int
+    room_nights_available: int | None
+    room_nights_unsold: int | None
+    closed_days: int
+    market_median_eur: float | None
+    last_year: MonthLastYearOut | None
+
+
+class PerformanceMonthlyOut(BaseModel):
+    amounts: AmountBasis
+    months: list[MonthKpisOut]
+
+
+class ChannelTotalOut(BaseModel):
+    channel: str
+    bookings: int
+    room_nights: int
+    revenue_eur: float
+    commission_eur: float
+    share_pct: float
+
+
+class ChannelMonthOut(BaseModel):
+    month: str
+    revenue_by_channel: dict[str, float]
+
+
+class PerformanceChannelsOut(BaseModel):
+    amounts: AmountBasis
+    totals: list[ChannelTotalOut]
+    monthly: list[ChannelMonthOut]
+
+
+class CountryTotalOut(BaseModel):
+    country: str
+    bookings: int
+    revenue_eur: float
+    share_pct: float
+
+
+class PerformanceCountriesOut(BaseModel):
+    amounts: AmountBasis
+    countries: list[CountryTotalOut]
