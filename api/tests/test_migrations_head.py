@@ -29,6 +29,7 @@ from api.models.market import (
 from api.models.performance import (
     RoomRatePerformanceBooking,
     RoomRatePerformanceBookingNight,
+    RoomRatePerformanceImport,
     RoomRatePerformanceImportRow,
     RoomRatePerformanceLabelMapping,
     RoomRatePerformanceRevenueSettings,
@@ -47,6 +48,7 @@ FERRY_OPTIONS_REVISION = "20261011_0032"
 FLIGHT_OBSERVATIONS_REVISION = "20261011_0033"
 DEMAND_SETTINGS_REVISION = "20261012_0034"
 PERFORMANCE_REVISION = "20261020_0035"
+IMPORT_EXTRAS_REVISION = "20261021_0036"
 
 
 def _script_directory() -> ScriptDirectory:
@@ -55,8 +57,13 @@ def _script_directory() -> ScriptDirectory:
     return ScriptDirectory.from_config(config)
 
 
-def test_performance_migration_is_the_single_alembic_head():
-    assert _script_directory().get_heads() == [PERFORMANCE_REVISION]
+def test_import_extras_migration_is_the_single_alembic_head():
+    assert _script_directory().get_heads() == [IMPORT_EXTRAS_REVISION]
+
+
+def test_import_extras_migration_revises_the_performance_migration():
+    assert _script_directory().get_revision(IMPORT_EXTRAS_REVISION).down_revision == PERFORMANCE_REVISION
+    assert RoomRatePerformanceImport.__table__.columns["extras"].nullable is False
 
 
 def test_performance_migration_revises_the_demand_settings_migration():

@@ -140,7 +140,7 @@ _STATUS_WORDS = {
 }
 
 
-def _plain(value: object) -> str:
+def plain_text(value: object) -> str:
     """Lower case, no accents, single spaces, no trailing «*»: how headers and words are compared."""
     text = unicodedata.normalize("NFD", str(value)).strip().rstrip("*").strip()
     text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
@@ -149,12 +149,12 @@ def _plain(value: object) -> str:
 
 def _lookup(headers: Sequence[object], fields: dict[str, tuple[str, ...]]) -> dict[str, int]:
     """Field → column index of the first header that names it."""
-    plain = [_plain(header) if header is not None else "" for header in headers]
+    plain = [plain_text(header) if header is not None else "" for header in headers]
     found: dict[str, int] = {}
     for key, names in fields.items():
         for name in names:
-            if _plain(name) in plain:
-                found[key] = plain.index(_plain(name))
+            if plain_text(name) in plain:
+                found[key] = plain.index(plain_text(name))
                 break
     return found
 
@@ -266,9 +266,9 @@ def parse_status(value: object) -> str:
     """confirmed / cancelled / no_show from the template's Greek words or the export's codes."""
     if _empty(value):
         return "confirmed"
-    word = _plain(value)
+    word = plain_text(value)
     for label, code in _STATUS_WORDS.items():
-        if _plain(label) == word:
+        if plain_text(label) == word:
             return code
     if word.startswith("cancel") or word.startswith("ακυρ"):
         return "cancelled"  # cancelled_by_guest, cancelled_by_hotel, …
@@ -414,7 +414,7 @@ def _read_bookings(rows: Sequence[tuple], header_index: int, columns: dict[str, 
     seen: dict[str, ParsedRow] = {}
     for number, row in relevant:
         reference = parse_reference(_cell(row, columns, "booking_ref"))
-        if fmt == "template" and reference and _plain(reference).startswith(_plain(EXAMPLE_PREFIX)):
+        if fmt == "template" and reference and plain_text(reference).startswith(plain_text(EXAMPLE_PREFIX)):
             continue
         for parsed in _booking_rows(number, row, columns, fmt, reference):
             if parsed.booking is not None and parsed.booking_ref in seen:

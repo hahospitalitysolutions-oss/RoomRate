@@ -38,6 +38,7 @@ from api.services.auth_service import (
 )
 from api.services.notification_broadcaster import NotificationBroadcaster
 from api.services.onboarding_service import OnboardingService
+from api.services.performance_import_service import PerformanceImportService
 from api.services.price_alert_service import PriceAlertService
 from api.services.schedule_service import ScheduleService
 from api.services.scrape_job_service import BookingScrapeJobRunner, ScrapeJobService
@@ -222,6 +223,11 @@ def get_demand_settings_repository() -> DemandSettingsRepository:
 def get_performance_repository() -> PerformanceRepository:
     """Build the repository of the owners' bookings, rooms, closures and net-amount settings («Απόδοση»)."""
     return PerformanceRepository()
+
+
+def get_performance_import_service() -> PerformanceImportService:
+    """Build the «Απόδοση» upload service: check a bookings file, map its rooms, store it."""
+    return PerformanceImportService(PerformanceRepository())
 
 
 def get_flight_repository() -> FlightRepository:
