@@ -162,7 +162,12 @@ class PerformanceImportService:
             "cancelled": sum(1 for booking in kept if booking["status"] == "cancelled"),
             "errors": upload["errors"],
             "mapping": [
-                {"label": label, "bookings": count, "room_type_id": state["mapped"].get(label)}
+                {
+                    "label": label,
+                    "bookings": count,
+                    "room_type_id": state["mapped"].get(label),
+                    "ignored": bool(state["ignored"].get(label)),
+                }
                 for label, count in state["labels"].items()
             ],
             "sample": [self._sample(row, state, settings) for row in state["rows"][:SAMPLE_ROWS]],

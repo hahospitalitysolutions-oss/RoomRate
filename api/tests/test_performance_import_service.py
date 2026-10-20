@@ -152,8 +152,8 @@ def test_preview_counts_maps_and_samples_without_storing_bookings(service, repo)
     assert (preview["new"], preview["updated"], preview["cancelled"]) == (1, 1, 1)
     assert preview["errors"] == [{"row": 4, "booking_ref": "3", "message": "Λείπει η ημερομηνία αναχώρησης."}]
     assert preview["mapping"] == [
-        {"label": "Double Room", "bookings": 1, "room_type_id": DOUBLE},
-        {"label": "Junior Suite", "bookings": 1, "room_type_id": SUITE},
+        {"label": "Double Room", "bookings": 1, "room_type_id": DOUBLE, "ignored": False},
+        {"label": "Junior Suite", "bookings": 1, "room_type_id": SUITE, "ignored": False},
     ]
     assert preview["ready"] is True
     first = preview["sample"][0]
@@ -186,7 +186,12 @@ def test_an_ignored_label_leaves_its_bookings_out(service, repo):
         "1,2026-07-01,2026-07-04,,ok,1,2,300,0,gr,Double Room",
         "2,2026-07-01,2026-07-04,,ok,1,2,300,0,gr,Parking",
     ))
-    service.update_mapping(ACCOUNT_ID, PROPERTY_ID, preview["id"], [{"label": "Parking", "room_type_id": None, "ignore": True}])
+    mapped = service.update_mapping(
+        ACCOUNT_ID, PROPERTY_ID, preview["id"], [{"label": "Parking", "room_type_id": None, "ignore": True}]
+    )
+    # An ignored label is told apart from one still to map.
+    assert {"label": "Parking", "bookings": 1, "room_type_id": None, "ignored": True} in mapped["mapping"]
+    assert mapped["ready"] is True
     result = service.commit(ACCOUNT_ID, PROPERTY_ID, preview["id"], skip_errors=False)
 
     assert (result["imported"], result["skipped"]) == (1, 1)
@@ -235,7 +240,7 @@ def test_a_template_brings_its_rooms_and_closed_periods(service, repo):
     preview = upload(service, content, "RoomRate_kratiseis.xlsx", "template")
 
     # «Loft» has no booking: listed to map, never holding the upload back.
-    assert {"label": "Loft", "bookings": 0, "room_type_id": None} in preview["mapping"]
+    assert {"label": "Loft", "bookings": 0, "room_type_id": None, "ignored": False} in preview["mapping"]
     assert preview["ready"] is True
     service.commit(ACCOUNT_ID, PROPERTY_ID, preview["id"], skip_errors=False)
 

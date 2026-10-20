@@ -27,27 +27,32 @@
     {
       "label": "Double Room with Sea View",
       "bookings": 168,
-      "room_type_id": "11111111-1111-4111-8111-000000000001"
+      "room_type_id": "11111111-1111-4111-8111-000000000001",
+      "ignored": false
     },
     {
       "label": "Standard Double Room",
       "bookings": 131,
-      "room_type_id": "11111111-1111-4111-8111-000000000002"
+      "room_type_id": "11111111-1111-4111-8111-000000000002",
+      "ignored": false
     },
     {
       "label": "Family Room",
       "bookings": 61,
-      "room_type_id": "11111111-1111-4111-8111-000000000003"
+      "room_type_id": "11111111-1111-4111-8111-000000000003",
+      "ignored": false
     },
     {
       "label": "Junior Suite",
       "bookings": 33,
-      "room_type_id": "11111111-1111-4111-8111-000000000004"
+      "room_type_id": "11111111-1111-4111-8111-000000000004",
+      "ignored": false
     },
     {
       "label": "Double or Twin Room",
       "bookings": 19,
-      "room_type_id": null
+      "room_type_id": null,
+      "ignored": false
     }
   ],
   "sample": [

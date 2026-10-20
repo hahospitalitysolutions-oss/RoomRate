@@ -78,6 +78,8 @@ class ImportMappingOut(BaseModel):
     label: str
     bookings: int
     room_type_id: UUID | None
+    # The owner left this label's bookings out (room_type_id is then None).
+    ignored: bool
 
 
 class ImportPreviewOut(BaseModel):
