@@ -13,6 +13,7 @@ from api.repositories.alerts_repository import AlertsRepository
 from api.repositories.demand_settings_repository import DemandSettingsRepository
 from api.repositories.ferry_repository import FerryRepository
 from api.repositories.flight_repository import FlightRepository
+from api.repositories.performance_repository import PerformanceRepository
 from api.repositories.price_history_repository import PriceHistoryRepository
 from api.repositories.price_recommendation_audit_repository import (
     PriceRecommendationAuditRepository,
@@ -216,6 +217,11 @@ def get_ferry_demand_service() -> FerryDemandService:
 def get_demand_settings_repository() -> DemandSettingsRepository:
     """Build the repository of the owners' demand collection settings and the run log."""
     return DemandSettingsRepository()
+
+
+def get_performance_repository() -> PerformanceRepository:
+    """Build the repository of the owners' bookings, rooms, closures and net-amount settings («Απόδοση»)."""
+    return PerformanceRepository()
 
 
 def get_flight_repository() -> FlightRepository:

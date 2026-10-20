@@ -11,6 +11,8 @@ pandas==2.2.2
 # emit the 'generic unit' DeprecationWarning our statistics test treats as an
 # error. Moving to numpy 2 is a deliberate upgrade, not a drift.
 numpy==1.26.4
+# «Απόδοση»: the bookings template and the owners' Excel uploads.
+openpyxl==3.1.5
 Pillow==12.2.0
 pydantic==2.9.2
 pydantic-settings==2.5.2
