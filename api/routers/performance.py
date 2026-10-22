@@ -35,7 +35,10 @@ from api.schemas.performance import (
     PerformanceChannelsOut,
     PerformanceCountriesOut,
     PerformanceMonthlyOut,
+    PerformancePaceOut,
+    PerformanceRoomTypesOut,
     PerformanceStatusOut,
+    PerformanceStayPatternsOut,
     PerformanceSummaryOut,
     PropertyClosuresIn,
     PropertyClosuresOut,
@@ -44,6 +47,7 @@ from api.schemas.performance import (
     RoomInventoryIn,
     RoomInventoryOut,
 )
+from api.services.demand_schedule import greek_now
 from api.services.performance_import import ImportFileError
 from api.services.performance_import_service import (
     MAX_UPLOAD_BYTES,
@@ -193,6 +197,46 @@ def performance_countries(
     """The ten booker countries with most bookings, then «Λοιπές»."""
     owned_property = _owned_property(account, owned_property_id, onboarding_repository)
     return _kpi_call(lambda: service.countries(account.account_id, owned_property, filters))
+
+
+@router.get("/room-types", response_model=PerformanceRoomTypesOut)
+def performance_room_types(
+    owned_property_id: UUID,
+    filters: Filters = Depends(_filters),
+    account: AccountContext = Depends(get_account_context),
+    onboarding_repository: OnboardingRepository = Depends(get_onboarding_repository),
+    service: PerformanceKpiService = Depends(get_performance_kpi_service),
+) -> dict[str, Any]:
+    """Each room type over the period, against the market for its category; room_type_id does not apply."""
+    owned_property = _owned_property(account, owned_property_id, onboarding_repository)
+    return _kpi_call(lambda: service.room_types(account.account_id, owned_property, filters))
+
+
+@router.get("/stay-patterns", response_model=PerformanceStayPatternsOut)
+def performance_stay_patterns(
+    owned_property_id: UUID,
+    filters: Filters = Depends(_filters),
+    account: AccountContext = Depends(get_account_context),
+    onboarding_repository: OnboardingRepository = Depends(get_onboarding_repository),
+    service: PerformanceKpiService = Depends(get_performance_kpi_service),
+) -> dict[str, Any]:
+    """How long guests stay and how early they book, for the bookings arriving in the period."""
+    owned_property = _owned_property(account, owned_property_id, onboarding_repository)
+    return _kpi_call(lambda: service.stay_patterns(account.account_id, owned_property, filters))
+
+
+@router.get("/pace", response_model=PerformancePaceOut)
+def performance_pace(
+    owned_property_id: UUID,
+    season: int = Query(..., ge=2000, le=2100, description="The season (year) to look at"),
+    account: AccountContext = Depends(get_account_context),
+    onboarding_repository: OnboardingRepository = Depends(get_onboarding_repository),
+    service: PerformanceKpiService = Depends(get_performance_kpi_service),
+) -> dict[str, Any]:
+    """The season's occupancy on the books today (Greek date), against last season on the same day."""
+    owned_property = _owned_property(account, owned_property_id, onboarding_repository)
+    today = greek_now().date()
+    return _kpi_call(lambda: service.pace(account.account_id, owned_property, season, today))
 
 
 # ---------------------------------------------------------------------------

@@ -25,7 +25,10 @@ from api.schemas.performance import (
     PerformanceChannelsOut,
     PerformanceCountriesOut,
     PerformanceMonthlyOut,
+    PerformancePaceOut,
+    PerformanceRoomTypesOut,
     PerformanceStatusOut,
+    PerformanceStayPatternsOut,
     PerformanceSummaryOut,
     PropertyClosuresOut,
     RevenueSettingsOut,
@@ -66,6 +69,9 @@ def mock(name):
         ("monthly", PerformanceMonthlyOut),
         ("channels", PerformanceChannelsOut),
         ("countries", PerformanceCountriesOut),
+        ("room-types", PerformanceRoomTypesOut),
+        ("stay-patterns", PerformanceStayPatternsOut),
+        ("pace", PerformancePaceOut),
     ],
 )
 def test_the_page_samples_are_exactly_the_backend_answers(name, schema):
@@ -307,6 +313,15 @@ class FakeKpis:
     def countries(self, account_id, owned_property, filters):
         return self._answer("countries", owned_property, filters)
 
+    def room_types(self, account_id, owned_property, filters):
+        return self._answer("room-types", owned_property, filters)
+
+    def stay_patterns(self, account_id, owned_property, filters):
+        return self._answer("stay-patterns", owned_property, filters)
+
+    def pace(self, account_id, owned_property, season, today):
+        return self._answer("pace", owned_property, (season, today))
+
 
 @pytest.fixture
 def kpi_client(client):
@@ -316,7 +331,7 @@ def kpi_client(client):
     return http, kpis
 
 
-@pytest.mark.parametrize("name", ["summary", "monthly", "channels", "countries"])
+@pytest.mark.parametrize("name", ["summary", "monthly", "channels", "countries", "room-types", "stay-patterns"])
 def test_kpi_calls_pass_the_filters(kpi_client, name):
     http, kpis = kpi_client
     response = http.get(f"/api/v1/performance/{name}", params={
@@ -347,3 +362,24 @@ def test_kpi_refusal_is_a_greek_400(kpi_client):
     response = http.get("/api/v1/performance/monthly", params={**QUERY, "date_from": "2026-10-31", "date_to": "2026-05-01"})
 
     assert response.status_code == 400 and response.json() == {"detail": "Η περίοδος τελειώνει πριν αρχίσει."}
+
+
+def test_pace_takes_the_season_and_today_in_greece(kpi_client, monkeypatch):
+    from datetime import datetime, timezone
+
+    http, kpis = kpi_client
+    # 23:30 UTC on 21 October is already 22 October in Greece.
+    monkeypatch.setattr(performance_router, "greek_now", lambda: datetime(2026, 10, 22, 2, 30, tzinfo=timezone.utc))
+    response = http.get("/api/v1/performance/pace", params={**QUERY, "season": 2027})
+
+    assert response.status_code == 200 and response.json() == mock("pace")
+    (_, _, (season, today)), = kpis.calls
+    assert (season, today.isoformat()) == (2027, "2026-10-22")
+
+
+@pytest.mark.parametrize("params", [{}, {"season": 1999}, {"season": "next"}])
+def test_pace_needs_a_season(kpi_client, params):
+    http, kpis = kpi_client
+
+    assert http.get("/api/v1/performance/pace", params={**QUERY, **params}).status_code == 422
+    assert kpis.calls == []

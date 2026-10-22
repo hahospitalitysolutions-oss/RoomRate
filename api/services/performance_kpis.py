@@ -276,6 +276,105 @@ def country_totals(nights: Sequence[dict[str, Any]], amounts: str, settings) -> 
 
 
 # ---------------------------------------------------------------------------
+# How long guests stay and how early they book
+# ---------------------------------------------------------------------------
+
+# (bucket, from, to): nights stayed; days between booking and arrival.
+LENGTH_BUCKETS: tuple[tuple[str, int, int | None], ...] = (
+    ("1", 1, 1), ("2-3", 2, 3), ("4-5", 4, 5), ("6-9", 6, 9), ("10+", 10, None),
+)
+LEAD_BUCKETS: tuple[tuple[str, int, int | None], ...] = (
+    ("0-7", 0, 7), ("8-30", 8, 30), ("31-60", 31, 60), ("61+", 61, None),
+)
+
+
+def bucket(value: int, buckets: Sequence[tuple[str, int, int | None]]) -> str:
+    for name, low, high in buckets:
+        if value >= low and (high is None or value <= high):
+            return name
+    return buckets[0][0]
+
+
+def _shares(counts: dict[str, int], buckets: Sequence[tuple[str, int, int | None]]) -> list[dict[str, Any]]:
+    total = sum(counts.values())
+    return [
+        {
+            "bucket": name,
+            "bookings": counts.get(name, 0),
+            "share_pct": round(100 * counts.get(name, 0) / total, 1) if total else 0.0,
+        }
+        for name, _, _ in buckets
+    ]
+
+
+def stay_patterns(bookings: Sequence[dict[str, Any]], date_from: date, date_to: date) -> dict[str, Any]:
+    """PerformanceStayPatterns of the confirmed bookings arriving in the period.
+
+    Lead time and the length × lead matrix count only the bookings whose
+    booking date is known.
+    """
+    confirmed = [booking for booking in bookings if booking["status"] == "confirmed"]
+    nights = {id(booking): (booking["departure"] - booking["arrival"]).days for booking in confirmed}
+    dated = [booking for booking in confirmed if booking.get("booked_on")]
+    leads = {id(booking): (booking["arrival"] - booking["booked_on"]).days for booking in dated}
+
+    lengths: dict[str, int] = defaultdict(int)
+    for booking in confirmed:
+        lengths[bucket(nights[id(booking)], LENGTH_BUCKETS)] += 1
+    lead_counts: dict[str, int] = defaultdict(int)
+    pairs: dict[tuple[str, str], int] = defaultdict(int)
+    for booking in dated:
+        lead_name = bucket(leads[id(booking)], LEAD_BUCKETS)
+        lead_counts[lead_name] += 1
+        pairs[(bucket(nights[id(booking)], LENGTH_BUCKETS), lead_name)] += 1
+
+    monthly = []
+    for month, first, last in months(date_from, date_to):
+        values = [leads[id(booking)] for booking in dated if first <= booking["arrival"] <= last]
+        monthly.append({"month": month, "avg_lead_time_days": _round(statistics.fmean(values), 1) if values else None})
+    guests = [
+        booking["adults"] + (booking.get("children") or 0) for booking in confirmed if booking.get("adults") is not None
+    ]
+    return {
+        "length_of_stay": _shares(lengths, LENGTH_BUCKETS),
+        "lead_time": _shares(lead_counts, LEAD_BUCKETS),
+        "matrix": [
+            {"length_bucket": length, "lead_bucket": lead, "bookings": pairs.get((length, lead), 0)}
+            for length, _, _ in LENGTH_BUCKETS
+            for lead, _, _ in LEAD_BUCKETS
+        ],
+        "monthly_lead_time": monthly,
+        "avg_length_of_stay": _round(statistics.fmean(nights.values()), 1) if nights else None,
+        "avg_lead_time_days": _round(statistics.fmean(leads.values()), 1) if leads else None,
+        "avg_guests": _round(statistics.fmean(guests), 1) if guests else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# On the books: what is booked for a season, now and on the same day last year
+# ---------------------------------------------------------------------------
+
+
+def on_the_books(night: dict[str, Any], as_of: date, *, booking_date_known: bool) -> bool:
+    """Whether the night was held on ``as_of``: booked by then and not cancelled by then.
+
+    A booking without a booking date counts as held today (``booking_date_known``
+    False) but never on a past day: nobody knows since when it was.
+    """
+    booked_on = night.get("booked_on")
+    if booked_on is None:
+        if booking_date_known:
+            return False
+        return night["status"] != "cancelled"
+    if booked_on > as_of:
+        return False
+    if night["status"] == "cancelled":
+        cancelled_on = night.get("cancelled_on")
+        return cancelled_on is not None and cancelled_on > as_of
+    return True
+
+
+# ---------------------------------------------------------------------------
 # The calls
 # ---------------------------------------------------------------------------
 
@@ -325,7 +424,10 @@ class PerformanceKpiService:
         before = window(last) if last else None
         if before and not before["nights"] and not before["bookings"]:
             before = None  # no data a year earlier
-        return {"now": now, "before": before, "settings": settings, "room_types": room_types}
+        return {
+            "now": now, "before": before, "settings": settings, "room_types": room_types,
+            "inventory": inventory, "closures": closures,
+        }
 
     def _market(
         self,
@@ -334,14 +436,24 @@ class PerformanceKpiService:
         filters: Filters,
         room_types: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        destination = owned_property.get("canonical_destination")
-        if not destination:
-            return []
         category = owned_property.get("selected_room_type_category")
         if filters.room_type_id:
             category = next(
                 (room.get("category") for room in room_types if room["id"] == filters.room_type_id), category
             )
+        return self._market_for(account_id, owned_property, filters, category)
+
+    def _market_for(
+        self,
+        account_id: uuid.UUID,
+        owned_property: dict[str, Any],
+        filters: Filters,
+        category: str | None,
+    ) -> list[dict[str, Any]]:
+        """Competitors' prices for the period's check-ins, rooms comparable with ``category`` (None: every room)."""
+        destination = owned_property.get("canonical_destination")
+        if not destination:
+            return []
         return self.repository.market_prices(
             account_id,
             destination,
@@ -437,4 +549,113 @@ class PerformanceKpiService:
         return {
             "amounts": filters.amounts,
             "countries": country_totals(data["now"]["nights"], filters.amounts, data["settings"]),
+        }
+
+    def room_types(self, account_id: uuid.UUID, owned_property: dict[str, Any], filters: Filters) -> dict[str, Any]:
+        """Each room type over the period (the room type filter does not apply), highest revenue first."""
+        filters = replace(filters, room_type_id=None, compare="none")
+        data = self._load(account_id, owned_property, filters)
+        nights, arrivals, settings = data["now"]["nights"], data["now"]["bookings"], data["settings"]
+        period = days(filters.date_from, filters.date_to)
+        ids = [room["id"] for room in data["room_types"]]
+        markets: dict[tuple[str, ...], float | None] = {}
+        rows = []
+        for room in data["room_types"]:
+            own_nights = [night for night in nights if night["room_type_id"] == room["id"]]
+            open_rooms = availability(
+                period, ids, data["inventory"], data["closures"], room_type_id=room["id"]
+            ).total(period)
+            figures = kpis(
+                own_nights,
+                [booking for booking in arrivals if booking.get("room_type_id") == room["id"]],
+                open_rooms,
+                filters.amounts,
+                settings,
+            )
+            pool = comparable_room_type_categories(room.get("category"))
+            if pool not in markets:
+                market = self._market_for(account_id, owned_property, filters, room.get("category"))
+                markets[pool] = median(row["price_eur"] for row in market)
+            rows.append(
+                {
+                    "id": room["id"],
+                    "label": room["label"],
+                    "rooms": room["rooms"],
+                    "occupancy_pct": figures["occupancy_pct"],
+                    "adr_eur": figures["adr_eur"],
+                    "revpar_eur": figures["revpar_eur"],
+                    "revenue_eur": figures["revenue_eur"],
+                    "revenue_share_pct": 0.0,
+                    "bookings": figures["bookings"],
+                    "room_nights_sold": figures["room_nights_sold"],
+                    "cancellations_pct": figures["cancellations_pct"],
+                    "market_median_eur": markets[pool],
+                }
+            )
+        total = sum(row["revenue_eur"] for row in rows)
+        for row in rows:
+            row["revenue_share_pct"] = round(100 * row["revenue_eur"] / total, 1) if total else 0.0
+        rows.sort(key=lambda row: (-row["revenue_eur"], row["label"]))
+        return {"amounts": filters.amounts, "room_types": rows}
+
+    def stay_patterns(self, account_id: uuid.UUID, owned_property: dict[str, Any], filters: Filters) -> dict[str, Any]:
+        data = self._load(account_id, owned_property, replace(filters, compare="none"))
+        return stay_patterns(data["now"]["bookings"], filters.date_from, filters.date_to)
+
+    def pace(self, account_id: uuid.UUID, owned_property: dict[str, Any], season: int, today: date) -> dict[str, Any]:
+        """PerformancePace: the season's nights on the books today, against last season on the same day."""
+        if not 2000 <= season <= 2100:
+            raise KpiRejected("Μη έγκυρη σεζόν.")
+        owned_property_id = owned_property["id"]
+        first, last = date(season, 1, 1), date(season, 12, 31)
+        last_year_today = a_year_earlier(today)
+        held = self.repository.held_nights(
+            account_id, owned_property_id, [(first, last), (a_year_earlier(first), a_year_earlier(last))]
+        )
+        room_types = self.repository.room_types(account_id, owned_property_id)
+        inventory = self.repository.inventory(account_id, owned_property_id)
+        closures = self.repository.closures(account_id, owned_property_id)
+        ids = [room["id"] for room in room_types]
+
+        now = [night for night in held if first <= night["stay_date"] <= last
+               and on_the_books(night, today, booking_date_known=False)]
+        last_season = [night for night in held if night["stay_date"] < first]
+        before = [night for night in last_season if on_the_books(night, last_year_today, booking_date_known=True)]
+        # The season's months: what is booked now, or what last season sold in the end.
+        sold_months = {
+            f"{season:04d}-{night['stay_date'].month:02d}" for night in last_season if night["status"] == "confirmed"
+        }
+        sold_types = {night["room_type_id"] for night in now + before if night["room_type_id"]}
+        open_now = availability(days(first, last), ids, inventory, closures, sold_room_types=sold_types)
+        open_before = availability(
+            days(a_year_earlier(first), a_year_earlier(last)), ids, inventory, closures, sold_room_types=sold_types
+        )
+
+        result = []
+        for month, month_first, month_last in months(first, last):
+            period = days(month_first, month_last)
+            earlier = days(a_year_earlier(month_first), a_year_earlier(month_last))
+            held_now = sum(night["rooms"] for night in in_period(now, "stay_date", month_first, month_last))
+            held_before = sum(night["rooms"] for night in in_period(before, "stay_date", earlier[0], earlier[-1]))
+            rooms_now, rooms_before = open_now.total(period), open_before.total(earlier)
+            if not (held_now or held_before or month in sold_months):
+                continue  # nothing booked now or then, nothing sold last season: not part of the season
+            result.append(
+                {
+                    "month": month,
+                    "otb_occupancy_pct": _round(100 * held_now / rooms_now, 1) if rooms_now else None,
+                    "otb_room_nights": held_now,
+                    "last_year_same_day_pct": _round(100 * held_before / rooms_before, 1) if rooms_before else None,
+                }
+            )
+        week_ago = today - timedelta(days=7)
+        picked = [night for night in now if night.get("booked_on") and week_ago < night["booked_on"] <= today]
+        return {
+            "season": season,
+            "as_of": today,
+            "months": result,
+            "pickup_7d": {
+                "bookings": len({night["booking_id"] for night in picked}),
+                "room_nights": sum(night["rooms"] for night in picked),
+            },
         }

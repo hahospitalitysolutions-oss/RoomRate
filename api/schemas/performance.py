@@ -294,3 +294,83 @@ class CountryTotalOut(BaseModel):
 class PerformanceCountriesOut(BaseModel):
     amounts: AmountBasis
     countries: list[CountryTotalOut]
+
+
+# ---------------------------------------------------------------------------
+# GET /room-types, /stay-patterns (filters), /pace?season=
+# ---------------------------------------------------------------------------
+
+LengthOfStayBucket = Literal["1", "2-3", "4-5", "6-9", "10+"]
+LeadTimeBucket = Literal["0-7", "8-30", "31-60", "61+"]
+
+
+class RoomTypePerformanceOut(BaseModel):
+    id: UUID
+    label: str
+    rooms: int | None
+    occupancy_pct: float | None
+    adr_eur: float | None
+    revpar_eur: float | None
+    revenue_eur: float
+    revenue_share_pct: float
+    bookings: int
+    room_nights_sold: int
+    cancellations_pct: float | None
+    market_median_eur: float | None
+
+
+class PerformanceRoomTypesOut(BaseModel):
+    amounts: AmountBasis
+    room_types: list[RoomTypePerformanceOut]
+
+
+class LengthShareOut(BaseModel):
+    bucket: LengthOfStayBucket
+    bookings: int
+    share_pct: float
+
+
+class LeadShareOut(BaseModel):
+    bucket: LeadTimeBucket
+    bookings: int
+    share_pct: float
+
+
+class StayMatrixCellOut(BaseModel):
+    length_bucket: LengthOfStayBucket
+    lead_bucket: LeadTimeBucket
+    bookings: int
+
+
+class MonthLeadTimeOut(BaseModel):
+    month: str
+    avg_lead_time_days: float | None
+
+
+class PerformanceStayPatternsOut(BaseModel):
+    length_of_stay: list[LengthShareOut]
+    lead_time: list[LeadShareOut]
+    matrix: list[StayMatrixCellOut]
+    monthly_lead_time: list[MonthLeadTimeOut]
+    avg_length_of_stay: float | None
+    avg_lead_time_days: float | None
+    avg_guests: float | None
+
+
+class PaceMonthOut(BaseModel):
+    month: str
+    otb_occupancy_pct: float | None
+    otb_room_nights: int
+    last_year_same_day_pct: float | None
+
+
+class PickupOut(BaseModel):
+    bookings: int
+    room_nights: int
+
+
+class PerformancePaceOut(BaseModel):
+    season: int
+    as_of: date
+    months: list[PaceMonthOut]
+    pickup_7d: PickupOut

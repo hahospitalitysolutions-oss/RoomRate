@@ -6,16 +6,21 @@ from datetime import date, timedelta
 import pytest
 
 from api.services.performance_kpis import (
+    LEAD_BUCKETS,
+    LENGTH_BUCKETS,
     Filters,
     KpiRejected,
     PerformanceKpiService,
     a_year_earlier,
     availability,
+    bucket,
     channel_totals,
     country_totals,
     days,
     kpis,
     months,
+    on_the_books,
+    stay_patterns,
 )
 
 DOUBLE, SUITE, SPARE = uuid.UUID(int=11), uuid.UUID(int=12), uuid.UUID(int=13)
@@ -37,9 +42,10 @@ def night(day, gross=100.0, commission=0.0, rooms=1, kind=DOUBLE, channel="Booki
             "channel": channel, "country_code": country, "booking_id": booking}
 
 
-def booking(arrival, nights=3, status="confirmed", lead=30, kind=DOUBLE):
+def booking(arrival, nights=3, status="confirmed", lead=30, kind=DOUBLE, adults=2, children=0):
     return {"status": status, "arrival": arrival, "departure": arrival + timedelta(days=nights),
-            "booked_on": arrival - timedelta(days=lead) if lead is not None else None, "room_type_id": kind}
+            "booked_on": arrival - timedelta(days=lead) if lead is not None else None, "room_type_id": kind,
+            "adults": adults, "children": children}
 
 
 # ---------------------------------------------------------------------------
@@ -157,8 +163,9 @@ def test_ten_countries_then_the_rest_and_the_unknown():
 
 
 class Repository:
-    def __init__(self, nights=(), bookings=(), market=()):
+    def __init__(self, nights=(), bookings=(), market=(), held=()):
         self._nights, self._bookings, self._market = list(nights), list(bookings), list(market)
+        self._held = list(held)
         self.market_args = None
 
     def room_types(self, account_id, owned_property_id):
@@ -173,6 +180,9 @@ class Repository:
 
     def revenue_settings(self, account_id, owned_property_id):
         return {"vat_pct": 13.0, "resilience_fee_eur": 0.0, "fee_included_in_price": False}
+
+    def held_nights(self, account_id, owned_property_id, windows):
+        return [n for n in self._held if any(a <= n["stay_date"] <= b for a, b in windows)]
 
     def sold_nights(self, account_id, owned_property_id, windows, room_type_id=None):
         return [n for n in self._nights if any(a <= n["stay_date"] <= b for a, b in windows)
@@ -233,3 +243,113 @@ def test_a_room_type_filter_compares_with_its_own_category():
 def test_filters_the_call_cannot_answer(filters, message):
     with pytest.raises(KpiRejected, match=message):
         PerformanceKpiService(Repository()).summary(ACCOUNT_ID, PROPERTY, filters)
+
+
+# ---------------------------------------------------------------------------
+# Room types, stay patterns, pace
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value, buckets, expected",
+    [(1, LENGTH_BUCKETS, "1"), (3, LENGTH_BUCKETS, "2-3"), (9, LENGTH_BUCKETS, "6-9"), (10, LENGTH_BUCKETS, "10+"),
+     (0, LEAD_BUCKETS, "0-7"), (8, LEAD_BUCKETS, "8-30"), (60, LEAD_BUCKETS, "31-60"), (61, LEAD_BUCKETS, "61+")],
+)
+def test_buckets(value, buckets, expected):
+    assert bucket(value, buckets) == expected
+
+
+def test_stay_patterns_of_the_confirmed_arrivals():
+    arrivals = [
+        booking(date(2026, 7, 1), 1, lead=3, adults=2),
+        booking(date(2026, 7, 5), 4, lead=45, adults=2, children=2),
+        booking(date(2026, 8, 2), 4, lead=None),
+        booking(date(2026, 8, 9), 12, lead=90),
+        booking(date(2026, 8, 9), 5, status="cancelled"),
+    ]
+    patterns = stay_patterns(arrivals, date(2026, 7, 1), date(2026, 8, 31))
+
+    assert [row["bookings"] for row in patterns["length_of_stay"]] == [1, 0, 2, 0, 1]
+    assert patterns["length_of_stay"][2]["share_pct"] == 50.0
+    # Lead time: only the bookings with a known booking date.
+    assert [row["bookings"] for row in patterns["lead_time"]] == [1, 0, 1, 1]
+    assert len(patterns["matrix"]) == 20 and sum(cell["bookings"] for cell in patterns["matrix"]) == 3
+    assert {"length_bucket": "10+", "lead_bucket": "61+", "bookings": 1} in patterns["matrix"]
+    assert patterns["monthly_lead_time"] == [
+        {"month": "2026-07", "avg_lead_time_days": 24.0},
+        {"month": "2026-08", "avg_lead_time_days": 90.0},
+    ]
+    assert (patterns["avg_length_of_stay"], patterns["avg_lead_time_days"], patterns["avg_guests"]) == (5.2, 46.0, 2.5)
+
+
+def test_stay_patterns_of_nothing():
+    patterns = stay_patterns([], date(2026, 7, 1), date(2026, 7, 31))
+
+    assert all(row["share_pct"] == 0.0 for row in patterns["length_of_stay"] + patterns["lead_time"])
+    assert patterns["avg_guests"] is None and patterns["monthly_lead_time"] == [
+        {"month": "2026-07", "avg_lead_time_days": None}
+    ]
+
+
+def held(day, booked_on, status="confirmed", cancelled_on=None, rooms=1, booking_id="h1"):
+    return {"stay_date": day, "rooms": rooms, "room_type_id": DOUBLE, "booking_id": booking_id, "status": status,
+            "booked_on": booked_on, "cancelled_on": cancelled_on}
+
+
+def test_on_the_books_on_a_given_day():
+    day = date(2025, 10, 20)
+
+    assert on_the_books(held(date(2026, 7, 1), date(2025, 9, 1)), day, booking_date_known=True)
+    assert not on_the_books(held(date(2026, 7, 1), date(2025, 11, 1)), day, booking_date_known=True)
+    # Cancelled later: it was still held that day.
+    assert on_the_books(held(date(2026, 7, 1), date(2025, 9, 1), "cancelled", date(2026, 1, 5)), day,
+                        booking_date_known=True)
+    assert not on_the_books(held(date(2026, 7, 1), date(2025, 9, 1), "cancelled", date(2025, 10, 1)), day,
+                            booking_date_known=True)
+    # No booking date: held today, unknown on a past day.
+    assert on_the_books(held(date(2026, 7, 1), None), day, booking_date_known=False)
+    assert not on_the_books(held(date(2026, 7, 1), None), day, booking_date_known=True)
+
+
+def test_pace_against_last_season_on_the_same_day():
+    today = date(2026, 10, 20)
+    nights = [
+        held(date(2027, 7, 1), date(2026, 9, 1), rooms=2, booking_id="a"),
+        held(date(2027, 7, 2), date(2026, 10, 15), booking_id="b"),  # booked this week
+        held(date(2027, 7, 3), date(2026, 9, 1), "cancelled", date(2026, 10, 1), booking_id="c"),
+        held(date(2026, 7, 1), date(2025, 9, 1), booking_id="d"),  # on the books a year ago
+        held(date(2026, 7, 2), date(2026, 3, 1), booking_id="e"),  # booked later
+        held(date(2026, 9, 10), date(2026, 8, 1), booking_id="f"),  # September sold, later
+    ]
+    pace = PerformanceKpiService(Repository(held=nights)).pace(ACCOUNT_ID, PROPERTY, 2027, today)
+
+    assert pace["as_of"] == today and pace["season"] == 2027
+    july, september = pace["months"]
+    assert july == {"month": "2027-07", "otb_occupancy_pct": round(100 * 3 / (6 * 31), 1), "otb_room_nights": 3,
+                    "last_year_same_day_pct": round(100 * 1 / (6 * 31), 1)}
+    assert september == {"month": "2027-09", "otb_occupancy_pct": 0.0, "otb_room_nights": 0,
+                         "last_year_same_day_pct": 0.0}
+    assert pace["pickup_7d"] == {"bookings": 1, "room_nights": 1}
+
+
+def test_pace_refuses_a_season_out_of_range():
+    with pytest.raises(KpiRejected):
+        PerformanceKpiService(Repository()).pace(ACCOUNT_ID, PROPERTY, 1999, date(2026, 10, 20))
+
+
+def test_room_types_with_their_share_and_their_category_market():
+    repo = Repository(
+        nights=[night(date(2026, 7, 1), 300, kind=DOUBLE), night(date(2026, 7, 1), 100, kind=SUITE, booking="s")],
+        bookings=[booking(date(2026, 7, 1), 1, kind=DOUBLE), booking(date(2026, 7, 1), 1, kind=SUITE),
+                  booking(date(2026, 7, 3), 1, kind=SUITE, status="cancelled")],
+        market=[{"check_in": date(2026, 7, 1), "price_eur": 120.0}],
+    )
+    answer = PerformanceKpiService(repo).room_types(
+        ACCOUNT_ID, PROPERTY, Filters(date(2026, 7, 1), date(2026, 7, 31), room_type_id=SUITE)
+    )
+
+    double, suite = answer["room_types"]
+    assert (double["id"], double["revenue_share_pct"], double["rooms"]) == (DOUBLE, 75.0, 5)
+    assert (suite["id"], suite["revenue_share_pct"], suite["cancellations_pct"]) == (SUITE, 25.0, 50.0)
+    assert double["occupancy_pct"] == round(100 / (5 * 31), 1) and suite["occupancy_pct"] == round(100 / 31, 1)
+    assert double["market_median_eur"] == 120.0
