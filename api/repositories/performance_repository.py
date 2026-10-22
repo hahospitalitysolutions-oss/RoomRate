@@ -583,6 +583,32 @@ class PerformanceRepository:
             room_type_id,
         )
 
+    def held_nights(
+        self,
+        account_id: uuid.UUID,
+        owned_property_id: uuid.UUID,
+        windows: Sequence[tuple[date, date]],
+    ) -> list[dict[str, Any]]:
+        """Every night in the date windows, cancelled bookings' too, with when its booking was made and cancelled.
+
+        The pace reads from them which nights were on the books on a given day.
+        """
+        return self._in_windows(
+            """
+            SELECT n.stay_date, n.rooms, n.room_type_id, n.booking_id, b.status, b.booked_on, b.cancelled_on
+            FROM roomrate_performance_booking_nights n
+            JOIN roomrate_performance_bookings b ON b.id = n.booking_id AND b.account_id = :account_id
+            WHERE n.owned_property_id = :owned_property_id
+              AND ({windows})
+            ORDER BY n.stay_date
+            """,
+            "n.stay_date",
+            account_id,
+            owned_property_id,
+            windows,
+            None,
+        )
+
     def bookings_arriving(
         self,
         account_id: uuid.UUID,
