@@ -32,7 +32,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from openpyxl import Workbook  # noqa: E402
 
-from api.services.performance_demo import (  # noqa: E402
+from api.services.performance.demo import (  # noqa: E402
     BOOKING_EXPORT_COLUMNS,
     DEFAULT_ROOM_TYPES,
     DemoData,
@@ -40,7 +40,7 @@ from api.services.performance_demo import (  # noqa: E402
     generate_demo_bookings,
     template_rows,
 )
-from api.services.performance_template import build_template  # noqa: E402
+from api.services.performance.template import build_template  # noqa: E402
 
 TEMPLATE_FILE = "demo_template.xlsx"
 EXPORT_XLSX = "demo_booking_export.xlsx"

@@ -13,7 +13,7 @@ from api.repositories.alerts_repository import AlertsRepository
 from api.repositories.demand_settings_repository import DemandSettingsRepository
 from api.repositories.ferry_repository import FerryRepository
 from api.repositories.flight_repository import FlightRepository
-from api.repositories.performance_repository import PerformanceRepository
+from api.repositories.performance import PerformanceRepository
 from api.repositories.price_history_repository import PriceHistoryRepository
 from api.repositories.price_recommendation_audit_repository import (
     PriceRecommendationAuditRepository,
@@ -38,8 +38,8 @@ from api.services.auth_service import (
 )
 from api.services.notification_broadcaster import NotificationBroadcaster
 from api.services.onboarding_service import OnboardingService
-from api.services.performance_import_service import PerformanceImportService
-from api.services.performance_kpis import PerformanceKpiService
+from api.services.performance.importing.service import PerformanceImportService
+from api.services.performance.kpis import PerformanceKpiService
 from api.services.price_alert_service import PriceAlertService
 from api.services.schedule_service import ScheduleService
 from api.services.scrape_job_service import BookingScrapeJobRunner, ScrapeJobService

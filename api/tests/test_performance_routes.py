@@ -17,7 +17,9 @@ from api.dependencies import (
     get_performance_repository,
 )
 from api.main import app
-from api.routers import performance as performance_router
+from api.routers.performance_routes import common as routes_common
+from api.routers.performance_routes import figures as routes_figures
+from api.routers.performance_routes import uploads as routes_uploads
 from api.schemas.performance import (
     ImportCommitOut,
     ImportPreviewOut,
@@ -34,9 +36,9 @@ from api.schemas.performance import (
     RevenueSettingsOut,
     RoomInventoryOut,
 )
-from api.services.performance_import import ImportFileError
-from api.services.performance_import_service import ImportAlreadyCommitted, ImportNotFound, ImportRejected
-from api.services.performance_kpis import KpiRejected
+from api.services.performance.importing import ImportFileError
+from api.services.performance.importing.service import ImportAlreadyCommitted, ImportNotFound, ImportRejected
+from api.services.performance.kpis import KpiRejected
 
 ACCOUNT_ID = UUID("00000000-0000-0000-0000-000000000001")
 PROPERTY_ID = UUID("00000000-0000-0000-0000-000000000456")
@@ -186,7 +188,7 @@ def test_upload_passes_the_file_and_its_format(client):
 
 def test_upload_over_5_mb_is_refused_before_reading_it(client, monkeypatch):
     http, service, _ = client
-    monkeypatch.setattr(performance_router, "MAX_UPLOAD_BYTES", 10)
+    monkeypatch.setattr(routes_uploads, "MAX_UPLOAD_BYTES", 10)
     response = http.post(
         "/api/v1/performance/imports", params=QUERY, files={"file": ("big.csv", b"x" * 11)}, data={"format": "booking"},
     )
@@ -207,9 +209,9 @@ def test_upload_needs_a_known_format(client):
     [
         ("upload", ImportFileError("Το αρχείο είναι άδειο."), 400, "Το αρχείο είναι άδειο."),
         ("commit", ImportRejected("Αντιστοιχίστε πρώτα"), 400, "Αντιστοιχίστε πρώτα"),
-        ("commit", ImportNotFound(), 404, performance_router.UPLOAD_GONE),
-        ("commit", ImportAlreadyCommitted(), 409, performance_router.ALREADY_COMMITTED),
-        ("mapping", ImportAlreadyCommitted(), 409, performance_router.ALREADY_COMMITTED),
+        ("commit", ImportNotFound(), 404, routes_common.UPLOAD_GONE),
+        ("commit", ImportAlreadyCommitted(), 409, routes_common.ALREADY_COMMITTED),
+        ("mapping", ImportAlreadyCommitted(), 409, routes_common.ALREADY_COMMITTED),
     ],
 )
 def test_upload_refusals_are_greek_http_answers(client, step, error, status, detail):
@@ -239,7 +241,7 @@ def test_inventory_refuses_another_property_room_type_and_a_backwards_range(clie
     saved = http.put("/api/v1/performance/inventory", params=QUERY,
                      json={"room_types": [{"room_type_id": str(DOUBLE), "label": "Δίκλινο", "rooms": 5}]})
 
-    assert foreign.status_code == 400 and foreign.json()["detail"] == performance_router.FOREIGN_ROOM_TYPE
+    assert foreign.status_code == 400 and foreign.json()["detail"] == routes_common.FOREIGN_ROOM_TYPE
     assert backwards.status_code == 422
     assert saved.status_code == 200 and repository.saved["inventory"][0]["rooms"] == 5
 
@@ -369,7 +371,7 @@ def test_pace_takes_the_season_and_today_in_greece(kpi_client, monkeypatch):
 
     http, kpis = kpi_client
     # 23:30 UTC on 21 October is already 22 October in Greece.
-    monkeypatch.setattr(performance_router, "greek_now", lambda: datetime(2026, 10, 22, 2, 30, tzinfo=timezone.utc))
+    monkeypatch.setattr(routes_figures, "greek_now", lambda: datetime(2026, 10, 22, 2, 30, tzinfo=timezone.utc))
     response = http.get("/api/v1/performance/pace", params={**QUERY, "season": 2027})
 
     assert response.status_code == 200 and response.json() == mock("pace")

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
-from api.services.performance_countries import COUNTRIES
+from api.services.performance.countries import COUNTRIES
 
 
 @dataclass(frozen=True)

@@ -1,4 +1,4 @@
-"""«Απόδοση»: synthetic bookings (api/services/performance_demo.py) and the files written from them."""
+"""«Απόδοση»: synthetic bookings (api/services/performance/demo.py) and the files written from them."""
 
 import csv
 import importlib.util
@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 from openpyxl import load_workbook
 
-from api.services.performance_countries import COUNTRIES
-from api.services.performance_demo import (
+from api.services.performance.countries import COUNTRIES
+from api.services.performance.demo import (
     BOOKING_EXPORT_COLUMNS,
     CHANNELS,
     DEFAULT_ROOM_TYPES,
@@ -19,7 +19,7 @@ from api.services.performance_demo import (
     generate_demo_bookings,
     template_rows,
 )
-from api.services.performance_template import BOOKINGS_SHEET, CLOSURES_SHEET, ROOMS_SHEET
+from api.services.performance.template import BOOKINGS_SHEET, CLOSURES_SHEET, ROOMS_SHEET
 
 AS_OF = date(2026, 10, 20)
 SEASONS = (2025, 2026, 2027)
