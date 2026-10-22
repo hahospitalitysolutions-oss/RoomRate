@@ -135,6 +135,18 @@ python scripts/seed_demo_performance.py                   # --reset για κα�
 Το πρότυπο της σελίδας: `GET /api/v1/performance/template.xlsx`. Έχει
 ήδη συμπληρωμένους τους τύπους δωματίων του καταλύματος.
 
+## Πού είναι ο κώδικας του backend
+
+| Τι | Πού |
+|---|---|
+| Τα endpoints (ανά περιοχή) | `api/routers/performance_routes/`: `status`, `uploads`, `setup`, `figures`· το `api/routers/performance.py` τα μαζεύει |
+| Οι απαντήσεις (ίδιες με το `types/performance.ts`) | `api/schemas/performance/` |
+| Ανάγνωση αρχείου → κρατήσεις | `api/services/performance/importing/`: `values` (ένα κελί), `columns`, `sheets`, `rows` (μία γραμμή), `reader`, `labels`, `staging`, `service` |
+| Δείκτες | `api/services/performance/kpis/`: `periods`, `availability`, `figures`, `monthly`, `breakdowns`, `patterns`, `pace`, `service` |
+| Μικτά / καθαρά (ένας τύπος για όλα) | `api/services/performance/amounts.py` |
+| Πρότυπο Excel, χώρες, συνθετικά | `api/services/performance/`: `template`, `countries`, `demo` |
+| Βάση | `api/repositories/performance/`: `setup`, `labels`, `bookings`, `imports`, `analytics`, `writers` (μία κλάση `PerformanceRepository`) |
+
 ## Ολοκληρωμένο σημαίνει
 
 - Κάθε καρτέλα δουλεύει με τα συνθετικά δεδομένα από το πραγματικό API.

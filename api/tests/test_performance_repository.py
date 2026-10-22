@@ -8,7 +8,7 @@ second run updates instead of duplicating.
 from datetime import date
 from uuid import UUID
 
-from api.repositories.performance_repository import DEFAULT_REVENUE_SETTINGS, PerformanceRepository
+from api.repositories.performance import DEFAULT_REVENUE_SETTINGS, PerformanceRepository
 from api.tests._fakes import FakeConnection, FakeEngine, FakeResult
 
 ACCOUNT_ID = UUID("00000000-0000-0000-0000-000000000001")

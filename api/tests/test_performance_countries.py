@@ -2,7 +2,7 @@
 
 import pytest
 
-from api.services.performance_countries import UNKNOWN_COUNTRY, country_code, country_name
+from api.services.performance.countries import UNKNOWN_COUNTRY, country_code, country_name
 
 
 @pytest.mark.parametrize(

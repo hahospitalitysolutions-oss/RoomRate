@@ -9,18 +9,13 @@ from pathlib import Path
 import pytest
 from openpyxl import Workbook
 
-from api.services import performance_import
-from api.services.performance_demo import BOOKING_EXPORT_COLUMNS, generate_demo_bookings
-from api.services.performance_import import (
-    ImportFileError,
-    labels_of,
-    net_eur,
-    parse_amount,
-    parse_date,
-    parse_status,
-    read_bookings_file,
-)
-from api.services.performance_template import build_template
+from api.services.performance.importing import reader
+from api.services.performance.demo import generate_demo_bookings
+from api.services.performance.amounts import net_amount
+from api.services.performance.importing import ImportFileError, read_bookings_file
+from api.services.performance.importing.labels import label_counts
+from api.services.performance.importing.values import parse_amount, parse_date, parse_status
+from api.services.performance.template import build_template
 
 AS_OF = date(2026, 10, 20)
 FIELDS = (
@@ -126,7 +121,7 @@ def test_the_template_examples_are_skipped():
 
     assert parsed.bookings == [] and parsed.errors == []
     assert parsed.rooms == [{"room_label": "Double Room", "rooms": 3, "valid_from": None, "valid_to": None}]
-    assert labels_of(parsed) == {"Double Room": 0}
+    assert label_counts(parsed.bookings, [room["room_label"] for room in parsed.rooms]) == {"Double Room": 0}
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +263,7 @@ def test_a_file_without_the_columns_names_the_missing_ones():
 
 
 def test_too_many_rows(monkeypatch):
-    monkeypatch.setattr(performance_import, "MAX_ROWS", 2)
+    monkeypatch.setattr(reader, "MAX_ROWS", 2)
     rows = [EXPORT_HEADER] + [export_row(**{"Book number": str(n)}) for n in range(3)]
 
     with pytest.raises(ImportFileError, match="Το αρχείο έχει 3 κρατήσεις· το όριο είναι 2."):
@@ -334,6 +329,8 @@ def test_parse_status(value, expected):
 
 
 def test_net_takes_off_the_fee_when_in_the_price_then_vat_then_commission():
-    kept = net_eur(339.0, 51.0, rooms=1, nights=3, vat_pct=13, resilience_fee_eur=1.5, fee_included_in_price=True)
-    assert kept == round((339.0 - 4.5) / 1.13 - 51.0, 2)
-    assert net_eur(339.0, 0, rooms=1, nights=3, vat_pct=13, resilience_fee_eur=1.5, fee_included_in_price=False) == 300.0
+    included = {"vat_pct": 13, "resilience_fee_eur": 1.5, "fee_included_in_price": True}
+    kept = net_amount(339.0, 51.0, rooms=1, nights=3, settings=included)
+    assert round(kept, 2) == round((339.0 - 4.5) / 1.13 - 51.0, 2)
+    excluded = {**included, "fee_included_in_price": False}
+    assert round(net_amount(339.0, 0, rooms=1, nights=3, settings=excluded), 2) == 300.0

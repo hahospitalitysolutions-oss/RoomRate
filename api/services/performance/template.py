@@ -3,7 +3,7 @@
 Four sheets: «Κρατήσεις» (one row per booking), «Δωμάτια» (rooms per room
 type, prefilled with the property's room types), «Κλειστές περίοδοι» and
 «Οδηγίες». The column lists below are the one definition of the template:
-the builder writes them and the importer (task B3) reads them, by header.
+the builder writes them and api/services/performance/importing reads them, by header.
 
 Rows of «Κρατήσεις» whose booking number starts with «ΠΑΡΑΔΕΙΓΜΑ» are the
 grey examples: the importer skips them, so a template sent back with them

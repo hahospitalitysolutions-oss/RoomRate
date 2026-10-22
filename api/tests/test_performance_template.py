@@ -14,7 +14,7 @@ from api.dependencies import (
     get_performance_repository,
 )
 from api.main import app
-from api.services.performance_template import (
+from api.services.performance.template import (
     BOOKING_COLUMNS,
     BOOKINGS_SHEET,
     CLOSURES_SHEET,
