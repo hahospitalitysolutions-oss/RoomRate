@@ -4,6 +4,7 @@ import { FormsModule } from "@angular/forms";
 import { Router, RouterLink } from "@angular/router";
 
 import { AppHeaderComponent } from "../components/app-header.component";
+import { DemandSettingsComponent } from "../components/demand-settings.component";
 import { SelectMenuComponent, SelectMenuOption } from "../components/select-menu.component";
 import { NotificationToastsComponent } from "../components/notification-toasts.component";
 import { ApiClientService } from "../services/api-client.service";
@@ -90,7 +91,15 @@ function athensHourToUtc(hourAthens: number): number {
 @Component({
   selector: "app-settings-page",
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink, AppHeaderComponent, NotificationToastsComponent, SelectMenuComponent],
+  imports: [
+    CommonModule,
+    FormsModule,
+    RouterLink,
+    AppHeaderComponent,
+    DemandSettingsComponent,
+    NotificationToastsComponent,
+    SelectMenuComponent,
+  ],
   template: `
     <main class="page-shell">
       <app-header>
@@ -185,6 +194,8 @@ function athensHourToUtc(hourAthens: number): number {
             {{ saveMessage() }}
           </div>
         </form>
+
+        <app-demand-settings *ngIf="ownedPropertyId()" [ownedPropertyId]="ownedPropertyId()"></app-demand-settings>
 
         <section class="panel settings-form">
           <div class="section-title">
@@ -333,6 +344,8 @@ export class SettingsPageComponent implements OnInit {
   });
   readonly propertyStatus = signal<LoadingState>("loading");
   readonly propertyName = signal("");
+  /** The owned property, for «Ζήτηση νησιού»; empty until /me answers or without one. */
+  readonly ownedPropertyId = signal("");
   readonly propertyDestination = signal("");
   readonly deleteRequested = signal(false);
   readonly deleteConfirmText = signal("");
@@ -590,6 +603,7 @@ export class SettingsPageComponent implements OnInit {
       this.workflow.bindToSubject(me.auth_subject);
       this.propertyName.set(me.property_name || "");
       this.propertyDestination.set(me.raw_destination || me.destination || "");
+      this.ownedPropertyId.set(me.owned_property_id || "");
       this.propertyStatus.set("ready");
     } catch {
       this.propertyName.set("");

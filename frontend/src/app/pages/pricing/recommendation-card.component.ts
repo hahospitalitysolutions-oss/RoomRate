@@ -1,7 +1,7 @@
 /**
  * The recommendation card: the price headline, its range, how sure and from
- * where, one sentence of why, the key factors, the ferry and flight demand
- * around the check-in (island destinations), the full reasoning behind
+ * where, one sentence of why, the key factors, a note when the ferries and
+ * flights into the island were weighed (island destinations), the full reasoning behind
  * «Γιατί αυτή η τιμή;» and the audit footer.
  *
  * The host is the page's `<div class="panel recommendation-card">` itself
@@ -43,24 +43,7 @@ import { firstSentence, formatEuro, formatEuroCeil, formatEuroFloor } from "./pr
     <ul *ngIf="recommendation().key_factors.length" class="key-factors" aria-label="Βασικοί παράγοντες">
       <li *ngFor="let factor of recommendation().key_factors" class="factor-chip">{{ factor }}</li>
     </ul>
-    <p
-      *ngIf="ferrySignal() as ferry"
-      class="demand-signal"
-      [ngClass]="'demand-' + ferry.level"
-      data-testid="ferry-demand"
-    >
-      <span class="demand-signal-label">Πλοία</span>
-      {{ ferry.summary }}
-    </p>
-    <p
-      *ngIf="flightSignal() as flights"
-      class="demand-signal"
-      [ngClass]="'demand-' + flights.level"
-      data-testid="flight-demand"
-    >
-      <span class="demand-signal-label">Πτήσεις</span>
-      {{ flights.summary }}
-    </p>
+    <p *ngIf="demandNote() as note" class="demand-note" data-testid="demand-note">{{ note }}</p>
     <!-- A one-sentence reasoning IS its summary: a toggle would only
          repeat it, so it appears when there is more to read. -->
     <div *ngIf="hasMoreReasoning()" class="reasoning-disclosure">
@@ -92,10 +75,28 @@ export class RecommendationCardComponent {
   /** The small-sample warning, or "" when the sample is not small (or unknown). */
   readonly smallSampleNotice = input("");
 
-  /** Ferries into the destination around the check-in, when the destination has them. */
-  readonly ferrySignal = computed(() => this.response().demand_signals?.ferries ?? null);
-  /** Arrivals at the island's airport around the check-in, when the island has one. */
-  readonly flightSignal = computed(() => this.response().demand_signals?.flights ?? null);
+  /**
+   * One line saying the ferries and flights into the island were weighed:
+   * the signals themselves go to the pricing agent only, not on screen. A
+   * kind still collecting its first days («unknown») never reached the
+   * agent, so it is announced as coming, not as used. Empty off an island.
+   */
+  readonly demandNote = computed(() => {
+    const signals = this.response().demand_signals;
+    const kinds = [
+      { signal: signals?.ferries, used: "τα πλοία", named: "πλοία" },
+      { signal: signals?.flights, used: "τις πτήσεις", named: "πτήσεις" },
+    ].filter((kind) => kind.signal);
+    const used = kinds.filter((kind) => kind.signal?.level !== "unknown");
+    if (used.length) {
+      return `Η πρόταση λαμβάνει υπόψη και τη ζήτηση από ${used.map((kind) => kind.used).join(" και ")} προς το νησί σας.`;
+    }
+    if (kinds.length) {
+      return `Η ζήτηση από ${kinds.map((kind) => kind.named).join(" και ")} προς το νησί σας θα λαμβάνεται υπόψη `
+        + "μόλις συγκεντρωθούν αρκετές μέρες δεδομένων.";
+    }
+    return "";
+  });
 
   /** The card's one-line «why»: the reasoning's first sentence. */
   readonly reasoningSummary = computed(() => firstSentence(this.recommendation().reasoning ?? ""));

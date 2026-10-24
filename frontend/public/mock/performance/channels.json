@@ -1,0 +1,93 @@
+{
+  "amounts": "gross",
+  "totals": [
+    {
+      "channel": "Booking.com",
+      "bookings": 224,
+      "room_nights": 943,
+      "revenue_eur": 110962.12,
+      "commission_eur": 18863.56,
+      "share_pct": 58.0
+    },
+    {
+      "channel": "Απευθείας",
+      "bookings": 104,
+      "room_nights": 439,
+      "revenue_eur": 51654.78,
+      "commission_eur": 0.0,
+      "share_pct": 27.0
+    },
+    {
+      "channel": "Expedia",
+      "bookings": 35,
+      "room_nights": 146,
+      "revenue_eur": 17218.26,
+      "commission_eur": 2582.74,
+      "share_pct": 9.0
+    },
+    {
+      "channel": "Τηλέφωνο / email",
+      "bookings": 23,
+      "room_nights": 98,
+      "revenue_eur": 11478.84,
+      "commission_eur": 0.0,
+      "share_pct": 6.0
+    }
+  ],
+  "monthly": [
+    {
+      "month": "2026-05",
+      "revenue_by_channel": {
+        "Booking.com": 10298.48,
+        "Απευθείας": 4794.12,
+        "Expedia": 1598.04,
+        "Τηλέφωνο / email": 1065.36
+      }
+    },
+    {
+      "month": "2026-06",
+      "revenue_by_channel": {
+        "Booking.com": 16035.84,
+        "Απευθείας": 7464.96,
+        "Expedia": 2488.32,
+        "Τηλέφωνο / email": 1658.88
+      }
+    },
+    {
+      "month": "2026-07",
+      "revenue_by_channel": {
+        "Booking.com": 25035.12,
+        "Απευθείας": 11654.28,
+        "Expedia": 3884.76,
+        "Τηλέφωνο / email": 2589.84
+      }
+    },
+    {
+      "month": "2026-08",
+      "revenue_by_channel": {
+        "Booking.com": 28623.0,
+        "Απευθείας": 13324.5,
+        "Expedia": 4441.5,
+        "Τηλέφωνο / email": 2961.0
+      }
+    },
+    {
+      "month": "2026-09",
+      "revenue_by_channel": {
+        "Booking.com": 18942.8,
+        "Απευθείας": 8818.2,
+        "Expedia": 2939.4,
+        "Τηλέφωνο / email": 1959.6
+      }
+    },
+    {
+      "month": "2026-10",
+      "revenue_by_channel": {
+        "Booking.com": 12026.88,
+        "Απευθείας": 5598.72,
+        "Expedia": 1866.24,
+        "Τηλέφωνο / email": 1244.16
+      }
+    }
+  ]
+}

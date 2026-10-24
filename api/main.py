@@ -14,7 +14,20 @@ from api.logging_utils import JsonLogFormatter, RequestIdFilter
 from api.middleware import RequestIDMiddleware, SecurityHeadersMiddleware, UnhandledErrorMiddleware
 from api.rate_limit import RateLimitMiddleware
 from api.repositories.scrape_jobs_repository import QuotaExceededError
-from api.routers import agents, competitors, demand, maps, market, me, notifications, onboarding, schedule, scrape_jobs, tracking
+from api.routers import (
+    agents,
+    competitors,
+    demand,
+    maps,
+    market,
+    me,
+    notifications,
+    onboarding,
+    performance,
+    schedule,
+    scrape_jobs,
+    tracking,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -164,6 +177,7 @@ app.include_router(competitors.router, prefix="/api/v1/competitors", tags=["Comp
 app.include_router(maps.router, prefix="/api/v1/maps", tags=["Maps"])
 app.include_router(agents.router, prefix="/api/v1/agents", tags=["Agents"])
 app.include_router(demand.router, prefix="/api/v1/demand", tags=["Demand"])
+app.include_router(performance.router, prefix="/api/v1/performance", tags=["Performance"])
 app.include_router(onboarding.router, prefix="/api/v1/onboarding", tags=["Onboarding"])
 app.include_router(schedule.router, prefix="/api/v1/schedule", tags=["Schedule"])
 app.include_router(scrape_jobs.router, prefix="/api/v1/scrape-jobs", tags=["Scrape Jobs"])

@@ -103,7 +103,7 @@ jobs:
         run: python -m alembic check
 
   frontend:
-    name: Frontend (Node 20)
+    name: Frontend (Node 22)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -113,14 +113,13 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # Angular 20.3 needs Node ^20.19 (its "engines" range excludes
-          # 20.0-20.18). Pinned to the exact minor "20.19" rather than the
-          # floating "20": "20" would only land on >=20.19 by accident,
-          # depending on whichever 20.x build happens to be latest, whereas
-          # "20.19" states the real requirement and fails the job loudly if a
-          # matching build is ever unavailable — instead of silently
-          # building/testing on a Node too old for this Angular version.
-          node-version: "20.19"
+          # Node 22 LTS (Angular 20.3 accepts ^22.12; every 22.x build
+          # published now is past that). Not 20: it left support in April
+          # 2026, and its npm 10.8 crashes in `npm ci` on this lockfile
+          # ("Cannot read properties of null (reading 'edgesOut')") over a
+          # peer-dependency conflict inside @neondatabase/auth-ui, which the
+          # npm 10.9 of Node 22 installs (2026-10-19).
+          node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 

@@ -26,7 +26,9 @@
 # ---------------------------------------------------------------------------
 # Stage 1 — build
 # ---------------------------------------------------------------------------
-FROM node:20-alpine AS build
+# Node 22 LTS, as CI: Node 20's npm 10.8 crashes in `npm ci` on this
+# lockfile (a peer-dependency conflict inside @neondatabase/auth-ui).
+FROM node:22-alpine AS build
 
 WORKDIR /app
 

@@ -10,8 +10,10 @@ from api.config import settings
 from api.db import db_connection
 from api.repositories.accounts_repository import AccountsRepository
 from api.repositories.alerts_repository import AlertsRepository
+from api.repositories.demand_settings_repository import DemandSettingsRepository
 from api.repositories.ferry_repository import FerryRepository
 from api.repositories.flight_repository import FlightRepository
+from api.repositories.performance_repository import PerformanceRepository
 from api.repositories.price_history_repository import PriceHistoryRepository
 from api.repositories.price_recommendation_audit_repository import (
     PriceRecommendationAuditRepository,
@@ -36,6 +38,8 @@ from api.services.auth_service import (
 )
 from api.services.notification_broadcaster import NotificationBroadcaster
 from api.services.onboarding_service import OnboardingService
+from api.services.performance_import_service import PerformanceImportService
+from api.services.performance_kpis import PerformanceKpiService
 from api.services.price_alert_service import PriceAlertService
 from api.services.schedule_service import ScheduleService
 from api.services.scrape_job_service import BookingScrapeJobRunner, ScrapeJobService
@@ -210,6 +214,26 @@ def get_ferry_demand_service() -> FerryDemandService:
         max_calls_per_run=settings.ferry_demand_max_calls_per_run,
         tracked_check_in=tracked_check_in,
     )
+
+
+def get_demand_settings_repository() -> DemandSettingsRepository:
+    """Build the repository of the owners' demand collection settings and the run log."""
+    return DemandSettingsRepository()
+
+
+def get_performance_repository() -> PerformanceRepository:
+    """Build the repository of the owners' bookings, rooms, closures and net-amount settings («Απόδοση»)."""
+    return PerformanceRepository()
+
+
+def get_performance_import_service() -> PerformanceImportService:
+    """Build the «Απόδοση» upload service: check a bookings file, map its rooms, store it."""
+    return PerformanceImportService(PerformanceRepository())
+
+
+def get_performance_kpi_service() -> PerformanceKpiService:
+    """Build the «Απόδοση» KPI service: occupancy, ADR, RevPAR, revenue, channels, countries."""
+    return PerformanceKpiService(PerformanceRepository())
 
 
 def get_flight_repository() -> FlightRepository:

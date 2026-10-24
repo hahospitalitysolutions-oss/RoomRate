@@ -1,0 +1,31 @@
+{
+  "has_data": false,
+  "bookings": 0,
+  "first_stay_date": null,
+  "last_stay_date": null,
+  "last_import": null,
+  "inventory_complete": false,
+  "room_types": [
+    {
+      "id": "11111111-1111-4111-8111-000000000001",
+      "label": "Δίκλινο με θέα θάλασσα",
+      "rooms": null
+    },
+    {
+      "id": "11111111-1111-4111-8111-000000000002",
+      "label": "Δίκλινο standard",
+      "rooms": null
+    },
+    {
+      "id": "11111111-1111-4111-8111-000000000003",
+      "label": "Οικογενειακό",
+      "rooms": null
+    },
+    {
+      "id": "11111111-1111-4111-8111-000000000004",
+      "label": "Σουίτα",
+      "rooms": null
+    }
+  ],
+  "seasons": []
+}

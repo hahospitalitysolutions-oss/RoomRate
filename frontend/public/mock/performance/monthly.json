@@ -1,0 +1,119 @@
+{
+  "amounts": "gross",
+  "months": [
+    {
+      "month": "2026-05",
+      "occupancy_pct": 51.9,
+      "adr_eur": 92.0,
+      "revpar_eur": 47.73,
+      "revenue_eur": 17756.0,
+      "bookings": 46,
+      "room_nights_sold": 193,
+      "room_nights_available": 372,
+      "room_nights_unsold": 179,
+      "closed_days": 0,
+      "market_median_eur": 98.0,
+      "last_year": {
+        "occupancy_pct": 47.0,
+        "adr_eur": 87.0,
+        "revpar_eur": 40.93,
+        "revenue_eur": 15225.0
+      }
+    },
+    {
+      "month": "2026-06",
+      "occupancy_pct": 71.1,
+      "adr_eur": 108.0,
+      "revpar_eur": 76.8,
+      "revenue_eur": 27648.0,
+      "bookings": 61,
+      "room_nights_sold": 256,
+      "room_nights_available": 360,
+      "room_nights_unsold": 104,
+      "closed_days": 0,
+      "market_median_eur": 115.0,
+      "last_year": {
+        "occupancy_pct": 66.1,
+        "adr_eur": 102.0,
+        "revpar_eur": 67.43,
+        "revenue_eur": 24276.0
+      }
+    },
+    {
+      "month": "2026-07",
+      "occupancy_pct": 87.9,
+      "adr_eur": 132.0,
+      "revpar_eur": 116.03,
+      "revenue_eur": 43164.0,
+      "bookings": 78,
+      "room_nights_sold": 327,
+      "room_nights_available": 372,
+      "room_nights_unsold": 45,
+      "closed_days": 0,
+      "market_median_eur": 138.0,
+      "last_year": {
+        "occupancy_pct": 83.9,
+        "adr_eur": 124.0,
+        "revpar_eur": 104.0,
+        "revenue_eur": 38688.0
+      }
+    },
+    {
+      "month": "2026-08",
+      "occupancy_pct": 94.1,
+      "adr_eur": 141.0,
+      "revpar_eur": 132.66,
+      "revenue_eur": 49350.0,
+      "bookings": 83,
+      "room_nights_sold": 350,
+      "room_nights_available": 372,
+      "room_nights_unsold": 22,
+      "closed_days": 0,
+      "market_median_eur": 156.0,
+      "last_year": {
+        "occupancy_pct": 90.1,
+        "adr_eur": 133.0,
+        "revpar_eur": 119.77,
+        "revenue_eur": 44555.0
+      }
+    },
+    {
+      "month": "2026-09",
+      "occupancy_pct": 78.9,
+      "adr_eur": 115.0,
+      "revpar_eur": 90.72,
+      "revenue_eur": 32660.0,
+      "bookings": 68,
+      "room_nights_sold": 284,
+      "room_nights_available": 360,
+      "room_nights_unsold": 76,
+      "closed_days": 0,
+      "market_median_eur": 121.0,
+      "last_year": {
+        "occupancy_pct": 73.1,
+        "adr_eur": 109.0,
+        "revpar_eur": 79.63,
+        "revenue_eur": 28667.0
+      }
+    },
+    {
+      "month": "2026-10",
+      "occupancy_pct": 58.1,
+      "adr_eur": 96.0,
+      "revpar_eur": 55.74,
+      "revenue_eur": 20736.0,
+      "bookings": 51,
+      "room_nights_sold": 216,
+      "room_nights_available": 372,
+      "room_nights_unsold": 156,
+      "closed_days": 0,
+      "market_median_eur": 99.0,
+      "last_year": {
+        "occupancy_pct": 51.9,
+        "adr_eur": 91.0,
+        "revpar_eur": 47.21,
+        "revenue_eur": 17563.0
+      }
+    }
+  ]
+}

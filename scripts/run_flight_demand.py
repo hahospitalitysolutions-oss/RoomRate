@@ -1,7 +1,8 @@
 """Run the flight demand collection once, now, or print what was collected.
 
-The worker runs it by itself while the API is up (daily at 05:30 UTC =
-08:30 Greek time). It needs AERODATABOX_API_KEY in the project's .env; the
+The worker runs it by itself while the API is up, daily at the earliest hour
+the island owners chose (Ρυθμίσεις → Ζήτηση νησιού, 08:00 by default), or
+on «Συλλογή τώρα». It needs AERODATABOX_API_KEY in the project's .env; the
 key is never printed. From the project folder:
 
     python scripts/run_flight_demand.py               # today's share of the month's units
@@ -37,7 +38,7 @@ from sqlalchemy import text  # noqa: E402
 from api.config import settings  # noqa: E402
 from api.db import get_engine  # noqa: E402
 from api.repositories.flight_repository import FlightRepository  # noqa: E402
-from api.scheduler import run_flight_demand_collection  # noqa: E402
+from api.scheduler import run_demand_tick, run_flight_demand_collection  # noqa: E402
 from api.services.flight_demand_service import (  # noqa: E402
     WEEKDAYS,
     airport_for,
@@ -77,7 +78,11 @@ def main() -> int:
         f"μέρες {','.join(WEEKDAYS[day] for day in plan.weekdays)}, "
         f"ώρες {', '.join(f'{start:02d}-{end:02d}' for start, end in plan.windows)} =="
     )
-    saved = run_flight_demand_collection(today=today, max_calls=args.calls)
+    if args.calls is not None:
+        # A manual fill: up to --calls now, even after today's run.
+        saved = run_flight_demand_collection(today=today, max_calls=args.calls)
+    else:
+        saved = run_demand_tick(force=True, kinds=("flights",)).get("flights", 0)
     print(f"Αποθηκεύτηκαν {saved} παρατηρήσεις (αεροδρόμιο × ημερομηνία × παράθυρο).")
     print_budget(today)
     return 0

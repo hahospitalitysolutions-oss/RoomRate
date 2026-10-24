@@ -1,0 +1,71 @@
+{
+  "amounts": "gross",
+  "countries": [
+    {
+      "country": "Ελλάδα",
+      "bookings": 85,
+      "revenue_eur": 42089.08,
+      "share_pct": 22.0
+    },
+    {
+      "country": "Γερμανία",
+      "bookings": 62,
+      "revenue_eur": 30610.24,
+      "share_pct": 16.0
+    },
+    {
+      "country": "Ηνωμένο Βασίλειο",
+      "bookings": 54,
+      "revenue_eur": 26783.96,
+      "share_pct": 14.0
+    },
+    {
+      "country": "Ιταλία",
+      "bookings": 39,
+      "revenue_eur": 19131.4,
+      "share_pct": 10.0
+    },
+    {
+      "country": "Γαλλία",
+      "bookings": 35,
+      "revenue_eur": 17218.26,
+      "share_pct": 9.0
+    },
+    {
+      "country": "Η.Π.Α.",
+      "bookings": 27,
+      "revenue_eur": 16739.98,
+      "share_pct": 7.0
+    },
+    {
+      "country": "Ολλανδία",
+      "bookings": 19,
+      "revenue_eur": 9565.7,
+      "share_pct": 5.0
+    },
+    {
+      "country": "Πολωνία",
+      "bookings": 15,
+      "revenue_eur": 7652.56,
+      "share_pct": 4.0
+    },
+    {
+      "country": "Ισραήλ",
+      "bookings": 12,
+      "revenue_eur": 5739.42,
+      "share_pct": 3.0
+    },
+    {
+      "country": "Σουηδία",
+      "bookings": 12,
+      "revenue_eur": 5739.42,
+      "share_pct": 3.0
+    },
+    {
+      "country": "Λοιπές",
+      "bookings": 27,
+      "revenue_eur": 13391.98,
+      "share_pct": 7.0
+    }
+  ]
+}

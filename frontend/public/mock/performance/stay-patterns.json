@@ -1,0 +1,182 @@
+{
+  "length_of_stay": [
+    {
+      "bucket": "1",
+      "bookings": 27,
+      "share_pct": 7.0
+    },
+    {
+      "bucket": "2-3",
+      "bookings": 120,
+      "share_pct": 31.0
+    },
+    {
+      "bucket": "4-5",
+      "bookings": 128,
+      "share_pct": 33.0
+    },
+    {
+      "bucket": "6-9",
+      "bookings": 97,
+      "share_pct": 25.0
+    },
+    {
+      "bucket": "10+",
+      "bookings": 15,
+      "share_pct": 4.0
+    }
+  ],
+  "lead_time": [
+    {
+      "bucket": "0-7",
+      "bookings": 54,
+      "share_pct": 14.0
+    },
+    {
+      "bucket": "8-30",
+      "bookings": 93,
+      "share_pct": 24.0
+    },
+    {
+      "bucket": "31-60",
+      "bookings": 97,
+      "share_pct": 25.0
+    },
+    {
+      "bucket": "61+",
+      "bookings": 143,
+      "share_pct": 37.0
+    }
+  ],
+  "matrix": [
+    {
+      "length_bucket": "1",
+      "lead_bucket": "0-7",
+      "bookings": 10
+    },
+    {
+      "length_bucket": "1",
+      "lead_bucket": "8-30",
+      "bookings": 8
+    },
+    {
+      "length_bucket": "1",
+      "lead_bucket": "31-60",
+      "bookings": 4
+    },
+    {
+      "length_bucket": "1",
+      "lead_bucket": "61+",
+      "bookings": 4
+    },
+    {
+      "length_bucket": "2-3",
+      "lead_bucket": "0-7",
+      "bookings": 18
+    },
+    {
+      "length_bucket": "2-3",
+      "lead_bucket": "8-30",
+      "bookings": 36
+    },
+    {
+      "length_bucket": "2-3",
+      "lead_bucket": "31-60",
+      "bookings": 30
+    },
+    {
+      "length_bucket": "2-3",
+      "lead_bucket": "61+",
+      "bookings": 36
+    },
+    {
+      "length_bucket": "4-5",
+      "lead_bucket": "0-7",
+      "bookings": 8
+    },
+    {
+      "length_bucket": "4-5",
+      "lead_bucket": "8-30",
+      "bookings": 26
+    },
+    {
+      "length_bucket": "4-5",
+      "lead_bucket": "31-60",
+      "bookings": 38
+    },
+    {
+      "length_bucket": "4-5",
+      "lead_bucket": "61+",
+      "bookings": 56
+    },
+    {
+      "length_bucket": "6-9",
+      "lead_bucket": "0-7",
+      "bookings": 4
+    },
+    {
+      "length_bucket": "6-9",
+      "lead_bucket": "8-30",
+      "bookings": 15
+    },
+    {
+      "length_bucket": "6-9",
+      "lead_bucket": "31-60",
+      "bookings": 25
+    },
+    {
+      "length_bucket": "6-9",
+      "lead_bucket": "61+",
+      "bookings": 52
+    },
+    {
+      "length_bucket": "10+",
+      "lead_bucket": "0-7",
+      "bookings": 0
+    },
+    {
+      "length_bucket": "10+",
+      "lead_bucket": "8-30",
+      "bookings": 2
+    },
+    {
+      "length_bucket": "10+",
+      "lead_bucket": "31-60",
+      "bookings": 5
+    },
+    {
+      "length_bucket": "10+",
+      "lead_bucket": "61+",
+      "bookings": 9
+    }
+  ],
+  "monthly_lead_time": [
+    {
+      "month": "2026-05",
+      "avg_lead_time_days": 38.0
+    },
+    {
+      "month": "2026-06",
+      "avg_lead_time_days": 52.0
+    },
+    {
+      "month": "2026-07",
+      "avg_lead_time_days": 61.0
+    },
+    {
+      "month": "2026-08",
+      "avg_lead_time_days": 58.0
+    },
+    {
+      "month": "2026-09",
+      "avg_lead_time_days": 41.0
+    },
+    {
+      "month": "2026-10",
+      "avg_lead_time_days": 27.0
+    }
+  ],
+  "avg_length_of_stay": 4.2,
+  "avg_lead_time_days": 46.0,
+  "avg_guests": 2.3
+}

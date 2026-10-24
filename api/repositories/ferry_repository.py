@@ -33,7 +33,7 @@ class FerryRepository:
         return self._engine_factory(role) if self._engine_factory else get_engine(role=role)
 
     def destinations_to_profile(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Destinations of active owned properties without a current port lookup.
+        """Destinations of active owned properties (ferries on) without a current port lookup.
 
         Coordinates are the average over the destination's properties, which
         sit in one town; NULL when none has coordinates.
@@ -48,9 +48,11 @@ class FerryRepository:
                            avg(op.latitude)::float AS latitude,
                            avg(op.longitude)::float AS longitude
                     FROM roomrate_owned_properties op
+                    LEFT JOIN roomrate_demand_settings ds ON ds.owned_property_id = op.id
                     LEFT JOIN roomrate_ferry_destination_profiles p
                       ON p.canonical_destination = op.canonical_destination
                     WHERE op.is_active
+                      AND COALESCE(ds.ferries_enabled, true)
                       AND op.canonical_destination <> ''
                       AND (
                         p.canonical_destination IS NULL
@@ -169,8 +171,10 @@ class FerryRepository:
                     },
                 )
 
-    def routes_to_collect(self) -> list[dict[str, Any]]:
-        """Collected routes of destinations that still have an active owned property.
+    def routes_to_collect(self, destinations: Sequence[str] | None = None) -> list[dict[str, Any]]:
+        """Collected routes of destinations with an active owned property that has ferries on.
+
+        ``destinations`` narrows them (the worker's due destinations); None is all.
 
         A destination whose last refresh failed ("error") keeps collecting on
         the routes found before; a first lookup that failed has none.
@@ -187,11 +191,16 @@ class FerryRepository:
                       AND r.status IN ('auto', 'confirmed')
                       AND EXISTS (
                           SELECT 1 FROM roomrate_owned_properties op
+                          LEFT JOIN roomrate_demand_settings ds ON ds.owned_property_id = op.id
                           WHERE op.is_active AND op.canonical_destination = r.canonical_destination
+                            AND COALESCE(ds.ferries_enabled, true)
                       )
+                      AND (CAST(:destinations AS text[]) IS NULL
+                           OR r.canonical_destination = ANY(CAST(:destinations AS text[])))
                     ORDER BY r.canonical_destination, r.origin_port, r.destination_port
                     """
-                )
+                ),
+                {"destinations": list(destinations) if destinations is not None else None},
             ).mappings().all()
         return [dict(row) for row in rows]
 

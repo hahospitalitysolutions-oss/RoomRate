@@ -17,6 +17,16 @@ from api.models.market import (
     RoomRateTrackedCompetitor,
     RoomRateUserIdentity,
 )
+from api.models.performance import (
+    RoomRatePerformanceBooking,
+    RoomRatePerformanceBookingNight,
+    RoomRatePerformanceClosure,
+    RoomRatePerformanceImport,
+    RoomRatePerformanceImportRow,
+    RoomRatePerformanceLabelMapping,
+    RoomRatePerformanceRevenueSettings,
+    RoomRatePerformanceRoomInventory,
+)
 
 __all__ = [
     "Base",
@@ -27,6 +37,14 @@ __all__ = [
     "RoomRateNotification",
     "RoomRateOwnedProperty",
     "RoomRateOwnedPropertyRoomType",
+    "RoomRatePerformanceBooking",
+    "RoomRatePerformanceBookingNight",
+    "RoomRatePerformanceClosure",
+    "RoomRatePerformanceImport",
+    "RoomRatePerformanceImportRow",
+    "RoomRatePerformanceLabelMapping",
+    "RoomRatePerformanceRevenueSettings",
+    "RoomRatePerformanceRoomInventory",
     "RoomRateProperty",
     "RoomRatePropertyAmenity",
     "RoomRateRateObservation",

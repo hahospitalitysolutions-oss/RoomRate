@@ -738,10 +738,13 @@ class FerryDemandService:
         ranked.sort(key=lambda item: (not item[0], -item[1], item[2]))
         return [(origin, island, sailings) for _, sailings, origin in ranked[:MAX_ROUTES_PER_DESTINATION]]
 
-    def collect(self, today: date) -> CollectionReport:
-        """Read the next days' sailings of every collected route, within the call budget."""
+    def collect(self, today: date, destinations: Sequence[str] | None = None) -> CollectionReport:
+        """Read the next days' sailings of the collected routes, within the call budget.
+
+        ``destinations`` narrows the run to those (the ones due); None is all.
+        """
         report = CollectionReport()
-        routes = self.repository.routes_to_collect()
+        routes = self.repository.routes_to_collect(destinations)
         if not routes:
             return report
         report.routes = len(routes)

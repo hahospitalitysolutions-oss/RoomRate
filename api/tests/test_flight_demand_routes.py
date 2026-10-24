@@ -9,6 +9,7 @@ from api.config import settings
 from api.dependencies import (
     AccountContext,
     get_account_context,
+    get_demand_settings_repository,
     get_ferry_repository,
     get_flight_repository,
     get_market_service,
@@ -26,6 +27,7 @@ from api.tests.test_ferry_demand_routes import (
     TODAY,
     CapturingAgent,
     FakeAudit,
+    FakeDemandSettings,
     FakeFerryRepository,
     FakeHistory,
     FakeMarket,
@@ -72,9 +74,10 @@ def busy_flights():
     return [flight_row(CHECK_IN, WEEK_AGO, 40), flight_row(CHECK_IN, TODAY, 46)]
 
 
-def recommend(flight_repository, owned_property=ON_RHODES):
+def recommend(flight_repository, owned_property=ON_RHODES, demand_settings=None):
     agent = CapturingAgent()
     audit = FakeAudit()
+    app.dependency_overrides[get_demand_settings_repository] = lambda: demand_settings or FakeDemandSettings()
     app.dependency_overrides[get_account_context] = lambda: AccountContext(account_id=ACCOUNT_ID)
     app.dependency_overrides[get_price_recommendation_audit_repository] = lambda: audit
     app.dependency_overrides[get_price_history_repository] = lambda: FakeHistory()
@@ -131,8 +134,9 @@ def test_no_flight_signal_off_an_island_airport_without_a_key_or_on_failure(monk
     assert audit.inserts[0]["request_payload"]["flight_signal"] is None
 
 
-def get_flights(flight_repository, owned_property=ON_RHODES):
+def get_flights(flight_repository, owned_property=ON_RHODES, demand_settings=None):
     app.dependency_overrides[get_account_context] = lambda: AccountContext(account_id=ACCOUNT_ID)
+    app.dependency_overrides[get_demand_settings_repository] = lambda: demand_settings or FakeDemandSettings()
     app.dependency_overrides[get_onboarding_repository] = lambda: FakeOnboardingRepository(owned_property)
     app.dependency_overrides[get_flight_repository] = lambda: flight_repository
     return TestClient(app).get("/api/v1/demand/flights", params={"owned_property_id": str(OWNED_PROPERTY_ID)})
@@ -163,6 +167,18 @@ def test_flights_endpoint_without_an_airport_or_a_key(monkeypatch):
     monkeypatch.setattr(settings, "aerodatabox_api_key", "")
     off = get_flights(repository).json()
     assert (off["status"], off["airport_iata"], off["days"]) == ("off", "RHO", [])
+    assert repository.calls == []
+
+
+def test_flights_switched_off_by_the_owner_are_neither_shown_nor_priced():
+    repository = FakeFlightRepository(busy_flights())
+    off = FakeDemandSettings(flights_enabled=False)
+
+    body = get_flights(repository, demand_settings=off).json()
+    assert (body["status"], body["enabled"], body["airport_iata"], body["days"]) == ("flights", False, "RHO", [])
+
+    recommendation, agent, _ = recommend(repository, demand_settings=off)
+    assert recommendation["demand_signals"] is None and agent.contexts[0].demand_signals is None
     assert repository.calls == []
 
 

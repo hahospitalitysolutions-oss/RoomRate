@@ -12,6 +12,8 @@ from alembic.script import ScriptDirectory
 
 from api.models.market import (
     RoomRateAgentLease,
+    RoomRateDemandRun,
+    RoomRateDemandSettings,
     RoomRateFerryDestinationProfile,
     RoomRateFerryObservation,
     RoomRateFerryRoute,
@@ -23,6 +25,14 @@ from api.models.market import (
     RoomRateRoomMatch,
     RoomRateRoomPackage,
     RoomRateScrapeJob,
+)
+from api.models.performance import (
+    RoomRatePerformanceBooking,
+    RoomRatePerformanceBookingNight,
+    RoomRatePerformanceImport,
+    RoomRatePerformanceImportRow,
+    RoomRatePerformanceLabelMapping,
+    RoomRatePerformanceRevenueSettings,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -36,6 +46,9 @@ SCHEDULE_LOCAL_HOUR_REVISION = "20260930_0030"
 FERRY_DEMAND_REVISION = "20261011_0031"
 FERRY_OPTIONS_REVISION = "20261011_0032"
 FLIGHT_OBSERVATIONS_REVISION = "20261011_0033"
+DEMAND_SETTINGS_REVISION = "20261012_0034"
+PERFORMANCE_REVISION = "20261020_0035"
+IMPORT_EXTRAS_REVISION = "20261021_0036"
 
 
 def _script_directory() -> ScriptDirectory:
@@ -44,8 +57,59 @@ def _script_directory() -> ScriptDirectory:
     return ScriptDirectory.from_config(config)
 
 
-def test_flight_observations_migration_is_the_single_alembic_head():
-    assert _script_directory().get_heads() == [FLIGHT_OBSERVATIONS_REVISION]
+def test_import_extras_migration_is_the_single_alembic_head():
+    assert _script_directory().get_heads() == [IMPORT_EXTRAS_REVISION]
+
+
+def test_import_extras_migration_revises_the_performance_migration():
+    assert _script_directory().get_revision(IMPORT_EXTRAS_REVISION).down_revision == PERFORMANCE_REVISION
+    assert RoomRatePerformanceImport.__table__.columns["extras"].nullable is False
+
+
+def test_performance_migration_revises_the_demand_settings_migration():
+    assert _script_directory().get_revision(PERFORMANCE_REVISION).down_revision == DEMAND_SETTINGS_REVISION
+
+
+def test_orm_declares_the_performance_tables():
+    """One booking per reference and property, its nights, labels remembered, deleted with the property."""
+    bookings = RoomRatePerformanceBooking.__table__
+    nights = RoomRatePerformanceBookingNight.__table__
+    mappings = RoomRatePerformanceLabelMapping.__table__
+
+    assert "uq_roomrate_performance_bookings_ref" in {c.name for c in bookings.constraints}
+    foreign = {fk.target_fullname: fk.ondelete for fk in bookings.foreign_keys}
+    assert foreign == {
+        "roomrate_accounts.id": "CASCADE",
+        "roomrate_owned_properties.id": "CASCADE",
+        "roomrate_performance_imports.id": "SET NULL",
+        "roomrate_owned_property_room_types.id": "SET NULL",
+    }
+    # No guest's name, email, phone or address can be stored.
+    assert not {"guest_name", "email", "phone", "address"} & set(bookings.columns.keys())
+    assert [column.name for column in nights.primary_key] == ["booking_id", "stay_date"]
+    assert {index.name for index in nights.indexes} == {"ix_roomrate_performance_booking_nights_property_date"}
+    assert [column.name for column in mappings.primary_key] == ["owned_property_id", "label"]
+    assert "ck_roomrate_performance_label_mappings_target" in {c.name for c in mappings.constraints}
+    assert [column.name for column in RoomRatePerformanceImportRow.__table__.primary_key] == ["import_id", "row_number"]
+    assert RoomRatePerformanceRevenueSettings.__table__.columns["vat_pct"].server_default.arg == "13"
+
+
+def test_demand_settings_migration_revises_the_flight_observations_migration():
+    assert _script_directory().get_revision(DEMAND_SETTINGS_REVISION).down_revision == FLIGHT_OBSERVATIONS_REVISION
+
+
+def test_orm_declares_the_demand_settings_and_run_tables():
+    """Per owned property (deleted with it); one run per kind, scope and Greek day."""
+    settings_table = RoomRateDemandSettings.__table__
+    runs = RoomRateDemandRun.__table__
+
+    assert [column.name for column in settings_table.primary_key] == ["owned_property_id"]
+    foreign = {fk.target_fullname: fk.ondelete for fk in settings_table.foreign_keys}
+    assert foreign == {"roomrate_owned_properties.id": "CASCADE", "roomrate_accounts.id": "CASCADE"}
+    assert settings_table.columns["hour_local"].server_default.arg == "8"
+    assert "ck_roomrate_demand_settings_hour_local" in {c.name for c in settings_table.constraints}
+    assert [column.name for column in runs.primary_key] == ["kind", "scope", "run_on"]
+    assert "ck_roomrate_demand_runs_kind" in {c.name for c in runs.constraints}
 
 
 def test_flight_observations_migration_revises_the_ferry_options_migration():

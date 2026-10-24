@@ -6,6 +6,7 @@ import { AuthPageComponent } from "./pages/auth-page.component";
 import { PrivacyPageComponent } from "./pages/legal/privacy-page.component";
 import { TermsPageComponent } from "./pages/legal/terms-page.component";
 import { MapPageComponent } from "./pages/map-page.component";
+import { PerformancePageComponent } from "./pages/performance/performance-page.component";
 import { PricingPageComponent } from "./pages/pricing-page.component";
 import { SettingsPageComponent } from "./pages/settings-page.component";
 import { SetupPageComponent } from "./pages/setup-page.component";
@@ -21,6 +22,7 @@ export const routes: Routes = [
   { path: "setup", component: SetupPageComponent, canActivate: [authGuard, setupGuard] },
   { path: "map", component: MapPageComponent, canActivate: [authGuard, setupGuard] },
   { path: "pricing", component: PricingPageComponent, canActivate: [authGuard, setupGuard] },
+  { path: "performance", component: PerformancePageComponent, canActivate: [authGuard, setupGuard] },
   { path: "settings", component: SettingsPageComponent, canActivate: [authGuard] },
   { path: "", pathMatch: "full", redirectTo: "map" },
   { path: "**", redirectTo: "map" },
