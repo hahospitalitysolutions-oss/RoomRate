@@ -27,9 +27,9 @@ type AuthStep =
   template: `
     <main class="auth-page">
       <section class="auth-panel">
-        <div class="auth-brand">
-          <p class="eyebrow">RoomRate</p>
-          <h1>{{ isRecovery() ? "Επιλέξτε νέο κωδικό πρόσβασης" : mode() === "sign-in" ? "Συνδεθείτε στον χώρο εργασίας σας" : "Δημιουργήστε τον λογαριασμό σας στο RoomRate" }}</h1>
+        <header class="auth-brand">
+          <p class="eyebrow">{{ isRecovery() ? "Επαναφορά κωδικού" : mode() === "sign-in" ? "Σύνδεση" : "Νέος λογαριασμός" }}</p>
+          <h1>{{ isRecovery() ? "Επιλέξτε νέο κωδικό πρόσβασης" : mode() === "sign-in" ? "Συνδεθείτε στον χώρο εργασίας σας" : "Δημιουργήστε τον λογαριασμό σας" }}</h1>
           <p class="muted">
             {{ isRecovery()
               ? "Ορίστε νέο κωδικό πρόσβασης για τον λογαριασμό σας στο RoomRate."
@@ -37,124 +37,190 @@ type AuthStep =
               ? "Συνεχίστε στο ταίριασμα δωματίων και στον χάρτη ανταγωνιστών."
               : "Συμπληρώστε το όνομα και την τοποθεσία του καταλύματός σας. Το RoomRate εντοπίζει αυτόματα τον κατάλογο δωματίων σας στο Booking." }}
           </p>
-        </div>
+        </header>
 
-        <div *ngIf="loading()" class="progress-panel">
-          <strong>{{ loadingLabel() }}</strong>
-          <span>{{ message() }}</span>
-        </div>
-        <div *ngIf="!authConfigured" class="alert alert-error">
-          Λείπει η ρύθμιση σύνδεσης (neonAuthUrl). Συμπληρώστε τη στη ρύθμιση περιβάλλοντος του Angular πριν από τη σύνδεση.
-        </div>
-        <div *ngIf="mode() === 'sign-up' && !isRecovery()" class="alert">
-          Μετά τη δημιουργία του λογαριασμού, ελέγξτε τα εισερχόμενα και τον φάκελο ανεπιθύμητων. Μπορεί να χρειαστεί επιβεβαίωση του email πριν από τη σύνδεση.
+        <div class="auth-notices" *ngIf="loading() || !authConfigured || (message() && !loading())">
+          <div *ngIf="loading()" class="progress-panel" role="status">
+            <strong>{{ loadingLabel() }}</strong>
+            <span>{{ message() }}</span>
+          </div>
+          <div *ngIf="!authConfigured" class="alert alert-error">
+            Λείπει η ρύθμιση σύνδεσης (neonAuthUrl). Συμπληρώστε τη στη ρύθμιση περιβάλλοντος του Angular πριν από τη σύνδεση.
+          </div>
+          <div *ngIf="message() && !loading()" class="alert" [class.alert-error]="hasError()" role="alert">{{ message() }}</div>
         </div>
 
         <form class="auth-form" (ngSubmit)="submit()">
-          <label>
-            <span>Όνομα καταλύματος</span>
-            <input class="roomrate-input" name="propertyName" [(ngModel)]="propertyName" [required]="mode() === 'sign-up'" [disabled]="isRecovery()" autocomplete="organization" placeholder="π.χ. Rea Hotel">
-          </label>
-          <label>
-            <span>Τοποθεσία</span>
-            <input class="roomrate-input" name="location" [(ngModel)]="location" [required]="mode() === 'sign-up'" [disabled]="isRecovery()" placeholder="π.χ. Φαληράκι">
-          </label>
-          <label>
-            <span>Email</span>
-            <input class="roomrate-input" type="email" name="email" [(ngModel)]="email" [required]="!isRecovery()" [disabled]="isRecovery()" autocomplete="email">
-          </label>
-          <div>
-            <label for="roomrate-password">
-              <span>Κωδικός πρόσβασης</span>
-            </label>
-            <div class="password-field">
-              <input
-                id="roomrate-password"
-                class="roomrate-input password-input"
-                [type]="showPassword ? 'text' : 'password'"
-                name="password"
-                [(ngModel)]="password"
-                required
-                [autocomplete]="isRecovery() || mode() === 'sign-up' ? 'new-password' : 'current-password'"
-                [attr.aria-describedby]="isRecovery() || mode() === 'sign-up' ? 'roomrate-password-requirements' : null"
-              >
-              <button
-                class="password-toggle"
-                type="button"
-                [attr.aria-pressed]="showPassword"
-                [attr.aria-label]="showPassword ? 'Απόκρυψη κωδικού πρόσβασης' : 'Εμφάνιση κωδικού πρόσβασης'"
-                (mousedown)="$event.preventDefault()"
-                (click)="togglePasswordVisibility()"
-                (keydown.enter)="togglePasswordVisibilityFromKeyboard($event)"
-                (keydown.space)="togglePasswordVisibilityFromKeyboard($event)"
-              >
-                {{ showPassword ? "Απόκρυψη" : "Εμφάνιση" }}
-              </button>
+          <!--
+            Property name and location only belong to sign-up. On sign-in they
+            stay optional in the component (continueAfterAuth still falls back
+            to the stored drafts, and the wizard asks when there are none), so
+            the sign-in and recovery forms show just the credentials.
+          -->
+          <fieldset *ngIf="mode() === 'sign-up' && !isRecovery()" class="auth-fieldset">
+            <legend>Το κατάλυμά σας</legend>
+            <div class="auth-row">
+              <label>
+                <span>Όνομα καταλύματος</span>
+                <input class="roomrate-input" name="propertyName" [(ngModel)]="propertyName" required autocomplete="organization" placeholder="π.χ. Rea Hotel">
+              </label>
+              <label>
+                <span>Τοποθεσία</span>
+                <input class="roomrate-input" name="location" [(ngModel)]="location" required placeholder="π.χ. Φαληράκι">
+              </label>
             </div>
-            <p
-              *ngIf="mode() === 'sign-up' || isRecovery()"
-              id="roomrate-password-requirements"
-              class="password-requirements"
-              [class.password-requirements-met]="passwordMeetsRequirements()"
-            >
-              {{ passwordRequirements }}
-              <span *ngIf="password">({{ password.length }} χαρακτήρες{{ passwordMeetsRequirements() ? " ✓" : "" }})</span>
-            </p>
-          </div>
+          </fieldset>
 
-          <div *ngIf="message() && !loading()" class="alert" [class.alert-error]="hasError()">{{ message() }}</div>
+          <fieldset class="auth-fieldset">
+            <legend *ngIf="mode() === 'sign-up' && !isRecovery()">Στοιχεία λογαριασμού</legend>
+            <label *ngIf="!isRecovery()">
+              <span>Email</span>
+              <input class="roomrate-input" type="email" name="email" [(ngModel)]="email" required autocomplete="email" placeholder="name@hotel.gr">
+            </label>
+            <div class="auth-field">
+              <div class="field-head">
+                <label for="roomrate-password">
+                  <span>{{ isRecovery() ? "Νέος κωδικός πρόσβασης" : "Κωδικός πρόσβασης" }}</span>
+                </label>
+                <button
+                  *ngIf="mode() === 'sign-in' && !isRecovery()"
+                  class="text-button field-link"
+                  type="button"
+                  [disabled]="loading()"
+                  (click)="requestPasswordReset()"
+                >
+                  Ξέχασα τον κωδικό μου
+                </button>
+              </div>
+              <div class="password-field">
+                <input
+                  id="roomrate-password"
+                  class="roomrate-input password-input"
+                  [type]="showPassword ? 'text' : 'password'"
+                  name="password"
+                  [(ngModel)]="password"
+                  required
+                  [autocomplete]="isRecovery() || mode() === 'sign-up' ? 'new-password' : 'current-password'"
+                  [attr.aria-describedby]="isRecovery() || mode() === 'sign-up' ? 'roomrate-password-requirements' : null"
+                >
+                <button
+                  class="password-toggle"
+                  type="button"
+                  [attr.aria-pressed]="showPassword"
+                  [attr.aria-label]="showPassword ? 'Απόκρυψη κωδικού πρόσβασης' : 'Εμφάνιση κωδικού πρόσβασης'"
+                  (mousedown)="$event.preventDefault()"
+                  (click)="togglePasswordVisibility()"
+                  (keydown.enter)="togglePasswordVisibilityFromKeyboard($event)"
+                  (keydown.space)="togglePasswordVisibilityFromKeyboard($event)"
+                >
+                  {{ showPassword ? "Απόκρυψη" : "Εμφάνιση" }}
+                </button>
+              </div>
+              <p
+                *ngIf="mode() === 'sign-up' || isRecovery()"
+                id="roomrate-password-requirements"
+                class="password-requirements"
+                [class.password-requirements-met]="passwordMeetsRequirements()"
+              >
+                {{ passwordRequirements }}
+                <span *ngIf="password">({{ password.length }} χαρακτήρες{{ passwordMeetsRequirements() ? " ✓" : "" }})</span>
+              </p>
+            </div>
+          </fieldset>
 
           <button class="primary-button" type="submit" [disabled]="loading() || !authConfigured">
             {{ loading() ? loadingLabel() : isRecovery() ? "Ενημέρωση κωδικού" : mode() === "sign-in" ? "Σύνδεση" : "Δημιουργία λογαριασμού" }}
           </button>
+
+          <p *ngIf="mode() === 'sign-up' && !isRecovery()" class="auth-hint">
+            Μετά τη δημιουργία του λογαριασμού, ελέγξτε τα εισερχόμενα και τον φάκελο ανεπιθύμητων. Μπορεί να χρειαστεί επιβεβαίωση του email πριν από τη σύνδεση.
+          </p>
         </form>
 
-        <div *ngIf="!isRecovery()" class="auth-actions">
+        <div *ngIf="!isRecovery()" class="auth-switch">
+          <span>{{ mode() === "sign-in" ? "Δεν έχετε λογαριασμό;" : "Έχετε ήδη λογαριασμό;" }}</span>
           <button class="text-button" type="button" (click)="toggleMode()">
-            {{ mode() === "sign-in" ? "Δημιουργία νέου λογαριασμού" : "Έχω ήδη λογαριασμό" }}
-          </button>
-          <button
-            *ngIf="mode() === 'sign-in'"
-            class="text-button"
-            type="button"
-            [disabled]="loading() || !email.trim()"
-            (click)="resendConfirmation()"
-          >
-            Επαναποστολή email επιβεβαίωσης
-          </button>
-          <button
-            *ngIf="mode() === 'sign-in'"
-            class="text-button"
-            type="button"
-            [disabled]="loading() || !email.trim()"
-            (click)="requestPasswordReset()"
-          >
-            Ξέχασα τον κωδικό μου
+            {{ mode() === "sign-in" ? "Δημιουργία νέου λογαριασμού" : "Συνδεθείτε" }}
           </button>
         </div>
-
-        <!--
-          The same legal footer settings-page.component.ts carries, on the one
-          page a prospective customer sees BEFORE handing over an e-mail
-          address. /settings sits behind authGuard, so until now the policies
-          were reachable only after the account existed — which is late for a
-          document you are asked to accept at sign-up. Markup, classes and
-          styles are copied verbatim from there so the two footers stay
-          visually identical, and a future move of the settings-legal rules
-          into styles.css catches both.
-        -->
-        <footer class="auth-actions settings-legal">
-          <a routerLink="/privacy">Πολιτική Απορρήτου</a>
-          <a routerLink="/terms">Όροι Χρήσης</a>
-        </footer>
+        <p *ngIf="mode() === 'sign-in' && !isRecovery()" class="auth-resend">
+          Δεν λάβατε το email επιβεβαίωσης;
+          <button class="text-button" type="button" [disabled]="loading()" (click)="resendConfirmation()">
+            Επαναποστολή email επιβεβαίωσης
+          </button>
+        </p>
       </section>
+
+      <!--
+        The same policy links settings-page.component.ts carries, on the one
+        page a prospective customer sees BEFORE handing over an e-mail
+        address. /settings sits behind authGuard, so the policies must be
+        reachable here, before the account exists.
+      -->
+      <footer class="auth-legal">
+        <a routerLink="/privacy">Πολιτική Απορρήτου</a>
+        <span aria-hidden="true">·</span>
+        <a routerLink="/terms">Όροι Χρήσης</a>
+      </footer>
     </main>
   `,
   styles: [`
-    .settings-legal { gap: 1rem; }
-    .settings-legal a { color: var(--muted); font-size: 0.85rem; }
-    .password-requirements { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.85rem; }
-    .password-requirements-met { color: var(--teal); }
+    .auth-notices { display: grid; gap: 10px; margin-bottom: 20px; }
+    .auth-notices .progress-panel { margin-bottom: 0; }
+
+    .auth-fieldset { border: 0; display: grid; gap: 16px; margin: 0; min-width: 0; padding: 0; }
+    .auth-fieldset legend {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      margin-bottom: 12px;
+      padding: 0;
+      text-transform: uppercase;
+    }
+    .auth-fieldset + .auth-fieldset legend { padding-top: 4px; }
+    .auth-row { display: grid; gap: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .auth-form label { display: block; }
+
+    .field-head { align-items: baseline; display: flex; gap: 12px; justify-content: space-between; margin-bottom: 6px; }
+    .field-head label span { margin-bottom: 0; }
+    .field-link { font-size: 13px; }
+
+    .password-requirements { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+    .password-requirements-met { color: var(--sea); }
+
+    .auth-form .primary-button { margin-top: 4px; }
+    .auth-hint { color: var(--muted); font-size: 13px; line-height: 1.5; margin: 0; text-align: center; }
+
+    .auth-switch {
+      align-items: center;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      display: flex;
+      flex-wrap: wrap;
+      font-size: 14px;
+      gap: 6px;
+      justify-content: center;
+      margin-top: 24px;
+      padding-top: 20px;
+    }
+    .auth-resend { color: var(--muted); font-size: 13px; margin: 10px 0 0; text-align: center; }
+    .auth-resend .text-button { font-size: 13px; }
+
+    .auth-legal {
+      align-items: center;
+      color: var(--muted);
+      display: flex;
+      font-size: 13px;
+      gap: 10px;
+      justify-content: center;
+      margin-top: 20px;
+    }
+    .auth-legal a:hover { color: var(--ink); text-decoration: underline; }
+
+    @media (max-width: 520px) {
+      .auth-row { grid-template-columns: 1fr; }
+    }
   `],
 })
 export class AuthPageComponent {

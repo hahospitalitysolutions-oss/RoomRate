@@ -933,8 +933,9 @@ test("scenario 3.3: a blank sign-in of a property-less account continues to the 
   await page.getByRole("button", { name: /αποσύνδεση/i }).click();
   await expect(page).toHaveURL(/\/auth/);
   meBody = { ...FRESH_USER, auth_subject: "e2e-user-b" };   // B: no property at all
-  await expect(page.getByLabel(/όνομα καταλύματος/i)).toHaveValue("");
-  await expect(page.getByLabel(/^τοποθεσία$/i)).toHaveValue("");
+  // The sign-in form carries only the credentials: no name/location to type.
+  await expect(page.getByLabel(/όνομα καταλύματος/i)).toHaveCount(0);
+  await expect(page.getByLabel(/^τοποθεσία$/i)).toHaveCount(0);
 
   await page.getByLabel(/email/i).fill("b@roomrate.test");
   await page.locator("#roomrate-password").fill("e2e-password-2");

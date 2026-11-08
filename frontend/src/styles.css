@@ -286,9 +286,30 @@ h3 {
 }
 
 .auth-brand {
-  border-bottom: 1px solid var(--line);
-  margin-bottom: 20px;
-  padding-bottom: 18px;
+  margin-bottom: 24px;
+}
+
+.auth-brand h1 {
+  text-wrap: balance;
+}
+
+.auth-brand .muted {
+  font-size: 15px;
+  margin: 10px 0 0;
+}
+
+@media (max-width: 520px) {
+  .auth-page {
+    padding: 20px 16px 40px;
+  }
+
+  .auth-panel {
+    padding: 24px 20px;
+  }
+
+  .auth-panel h1 {
+    font-size: 24px;
+  }
 }
 
 .auth-panel h1,
