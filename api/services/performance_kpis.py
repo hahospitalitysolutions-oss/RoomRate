@@ -23,7 +23,8 @@ from __future__ import annotations
 import statistics
 import uuid
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from typing import Any
@@ -34,6 +35,17 @@ from api.services.room_rates_normalizer import comparable_room_type_categories
 
 MAX_PERIOD_DAYS = 3 * 366
 TOP_COUNTRIES = 10
+
+# A call's reads are independent and each costs a pooled connection's round
+# trips to the database (~280 ms to Neon from Greece, measured 2026-10-29), so
+# they run side by side: one call waits for its slowest read, not their sum.
+_READS = ThreadPoolExecutor(max_workers=16, thread_name_prefix="performance-read")
+
+
+def _read_together(**reads: Callable[[], Any]) -> dict[str, Any]:
+    """Run each read at once and return its result by name; the first error is raised."""
+    futures = {name: _READS.submit(read) for name, read in reads.items()}
+    return {name: future.result() for name, future in futures.items()}
 
 
 class KpiRejected(ValueError):
@@ -383,26 +395,46 @@ class PerformanceKpiService:
     def __init__(self, repository: PerformanceRepository):
         self.repository = repository
 
-    def _load(self, account_id: uuid.UUID, owned_property: dict[str, Any], filters: Filters) -> dict[str, Any]:
+    def _load(
+        self, account_id: uuid.UUID, owned_property: dict[str, Any], filters: Filters, *, with_market: bool = False
+    ) -> dict[str, Any]:
+        """The period's data; ``with_market`` also reads the market prices alongside when no room type filter
+        needs the room types first (``market`` is then set, else the caller reads it with ``_market``)."""
         if filters.date_to < filters.date_from:
             raise KpiRejected("Η περίοδος τελειώνει πριν αρχίσει.")
         if (filters.date_to - filters.date_from).days >= MAX_PERIOD_DAYS:
             raise KpiRejected("Διαλέξτε περίοδο έως 3 χρόνια.")
         owned_property_id = owned_property["id"]
-        room_types = self.repository.room_types(account_id, owned_property_id)
-        if filters.room_type_id and filters.room_type_id not in {room["id"] for room in room_types}:
-            raise KpiRejected("Ο τύπος δωματίου δεν ανήκει στο κατάλυμα.")
         windows = [(filters.date_from, filters.date_to)]
         last = filters.last_year() if filters.compare == "last_year" else None
         if last:
             windows.append((last.date_from, last.date_to))
-        nights = self.repository.sold_nights(account_id, owned_property_id, windows, filters.room_type_id)
-        bookings = self.repository.bookings_arriving(account_id, owned_property_id, windows, filters.room_type_id)
-        inventory = self.repository.inventory(account_id, owned_property_id)
-        closures = self.repository.closures(account_id, owned_property_id)
-        settings = (
-            self.repository.revenue_settings(account_id, owned_property_id) if filters.amounts == "net" else None
+        repository = self.repository
+        market_now = with_market and not filters.room_type_id
+        reads = _read_together(
+            market=lambda: (
+                self._market_for(
+                    account_id, owned_property, filters, owned_property.get("selected_room_type_category")
+                )
+                if market_now
+                else None
+            ),
+            room_types=lambda: repository.room_types(account_id, owned_property_id),
+            nights=lambda: repository.sold_nights(account_id, owned_property_id, windows, filters.room_type_id),
+            bookings=lambda: repository.bookings_arriving(
+                account_id, owned_property_id, windows, filters.room_type_id
+            ),
+            inventory=lambda: repository.inventory(account_id, owned_property_id),
+            closures=lambda: repository.closures(account_id, owned_property_id),
+            settings=lambda: (
+                repository.revenue_settings(account_id, owned_property_id) if filters.amounts == "net" else None
+            ),
         )
+        room_types = reads["room_types"]
+        if filters.room_type_id and filters.room_type_id not in {room["id"] for room in room_types}:
+            raise KpiRejected("Ο τύπος δωματίου δεν ανήκει στο κατάλυμα.")
+        nights, bookings = reads["nights"], reads["bookings"]
+        inventory, closures, settings = reads["inventory"], reads["closures"], reads["settings"]
 
         def window(f: Filters) -> dict[str, Any]:
             period_nights = in_period(nights, "stay_date", f.date_from, f.date_to)
@@ -426,8 +458,16 @@ class PerformanceKpiService:
             before = None  # no data a year earlier
         return {
             "now": now, "before": before, "settings": settings, "room_types": room_types,
-            "inventory": inventory, "closures": closures,
+            "inventory": inventory, "closures": closures, "market": reads["market"],
         }
+
+    def _market_of(
+        self, account_id: uuid.UUID, owned_property: dict[str, Any], filters: Filters, data: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """The market prices ``_load(with_market=True)`` read, else read now."""
+        if data["market"] is not None:
+            return data["market"]
+        return self._market(account_id, owned_property, filters, data["room_types"])
 
     def _market(
         self,
@@ -467,10 +507,10 @@ class PerformanceKpiService:
         return kpis(part["nights"], part["bookings"], part["availability"].total(period), filters.amounts, settings)
 
     def summary(self, account_id: uuid.UUID, owned_property: dict[str, Any], filters: Filters) -> dict[str, Any]:
-        data = self._load(account_id, owned_property, filters)
+        data = self._load(account_id, owned_property, filters, with_market=True)
         now = self._kpis(data["now"], filters, data["settings"])
         before = self._kpis(data["before"], filters, data["settings"]) if data["before"] else None
-        market = self._market(account_id, owned_property, filters, data["room_types"])
+        market = self._market_of(account_id, owned_property, filters, data)
         return {
             "period": {"date_from": filters.date_from, "date_to": filters.date_to},
             "amounts": filters.amounts,
@@ -481,9 +521,9 @@ class PerformanceKpiService:
         }
 
     def monthly(self, account_id: uuid.UUID, owned_property: dict[str, Any], filters: Filters) -> dict[str, Any]:
-        data = self._load(account_id, owned_property, filters)
+        data = self._load(account_id, owned_property, filters, with_market=True)
         now, before, settings = data["now"], data["before"], data["settings"]
-        market = self._market(account_id, owned_property, filters, data["room_types"])
+        market = self._market_of(account_id, owned_property, filters, data)
         prices: dict[str, list[float]] = defaultdict(list)
         for row in market:
             prices[month_of(row["check_in"])].append(row["price_eur"])
@@ -558,7 +598,17 @@ class PerformanceKpiService:
         nights, arrivals, settings = data["now"]["nights"], data["now"]["bookings"], data["settings"]
         period = days(filters.date_from, filters.date_to)
         ids = [room["id"] for room in data["room_types"]]
-        markets: dict[tuple[str, ...], float | None] = {}
+        # One market read per comparable pool, all at once.
+        categories = {comparable_room_type_categories(room.get("category")): room.get("category")
+                      for room in data["room_types"]}
+        prices = _read_together(**{
+            f"pool{index}": (lambda category=category: self._market_for(account_id, owned_property, filters, category))
+            for index, category in enumerate(categories.values())
+        })
+        markets = {
+            pool: median(row["price_eur"] for row in prices[f"pool{index}"])
+            for index, pool in enumerate(categories)
+        }
         rows = []
         for room in data["room_types"]:
             own_nights = [night for night in nights if night["room_type_id"] == room["id"]]
@@ -573,9 +623,6 @@ class PerformanceKpiService:
                 settings,
             )
             pool = comparable_room_type_categories(room.get("category"))
-            if pool not in markets:
-                market = self._market_for(account_id, owned_property, filters, room.get("category"))
-                markets[pool] = median(row["price_eur"] for row in market)
             rows.append(
                 {
                     "id": room["id"],
@@ -609,12 +656,17 @@ class PerformanceKpiService:
         owned_property_id = owned_property["id"]
         first, last = date(season, 1, 1), date(season, 12, 31)
         last_year_today = a_year_earlier(today)
-        held = self.repository.held_nights(
-            account_id, owned_property_id, [(first, last), (a_year_earlier(first), a_year_earlier(last))]
+        repository = self.repository
+        reads = _read_together(
+            held=lambda: repository.held_nights(
+                account_id, owned_property_id, [(first, last), (a_year_earlier(first), a_year_earlier(last))]
+            ),
+            room_types=lambda: repository.room_types(account_id, owned_property_id),
+            inventory=lambda: repository.inventory(account_id, owned_property_id),
+            closures=lambda: repository.closures(account_id, owned_property_id),
         )
-        room_types = self.repository.room_types(account_id, owned_property_id)
-        inventory = self.repository.inventory(account_id, owned_property_id)
-        closures = self.repository.closures(account_id, owned_property_id)
+        held, room_types = reads["held"], reads["room_types"]
+        inventory, closures = reads["inventory"], reads["closures"]
         ids = [room["id"] for room in room_types]
 
         now = [night for night in held if first <= night["stay_date"] <= last
