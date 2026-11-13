@@ -5,23 +5,13 @@ from datetime import date, timedelta
 
 import pytest
 
-from api.services.performance_kpis import (
-    LEAD_BUCKETS,
-    LENGTH_BUCKETS,
-    Filters,
-    KpiRejected,
-    PerformanceKpiService,
-    a_year_earlier,
-    availability,
-    bucket,
-    channel_totals,
-    country_totals,
-    days,
-    kpis,
-    months,
-    on_the_books,
-    stay_patterns,
-)
+from api.services.performance.kpis import Filters, KpiRejected, PerformanceKpiService
+from api.services.performance.kpis.availability import availability
+from api.services.performance.kpis.breakdowns import channel_totals, country_totals
+from api.services.performance.kpis.figures import kpis
+from api.services.performance.kpis.pace import on_the_books
+from api.services.performance.kpis.patterns import LEAD_BUCKETS, LENGTH_BUCKETS, bucket, stay_patterns
+from api.services.performance.kpis.periods import a_year_earlier, days, months
 
 DOUBLE, SUITE, SPARE = uuid.UUID(int=11), uuid.UUID(int=12), uuid.UUID(int=13)
 ACCOUNT_ID = uuid.UUID(int=1)
@@ -173,7 +163,9 @@ class Repository:
                 {"id": SUITE, "label": "Suite", "rooms": 1, "category": "suite"}]
 
     def inventory(self, account_id, owned_property_id):
-        return [inventory(DOUBLE, 5), inventory(SUITE, 1)]
+        # The service reads the room types off the rooms: label and category come with them.
+        return [{**inventory(DOUBLE, 5), "label": "Double", "category": "double"},
+                {**inventory(SUITE, 1), "label": "Suite", "category": "suite"}]
 
     def closures(self, account_id, owned_property_id):
         return []

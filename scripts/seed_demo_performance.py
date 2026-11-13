@@ -35,8 +35,8 @@ from sqlalchemy.engine import make_url  # noqa: E402
 from api.config import settings  # noqa: E402
 from api.db import get_engine  # noqa: E402
 from api.repositories.onboarding_repository import OnboardingRepository  # noqa: E402
-from api.repositories.performance_repository import PerformanceRepository  # noqa: E402
-from api.services.performance_demo import (  # noqa: E402
+from api.repositories.performance import PerformanceRepository  # noqa: E402
+from api.services.performance.demo import (  # noqa: E402
     DEFAULT_ROOM_TYPES,
     DemoRoomType,
     generate_demo_bookings,

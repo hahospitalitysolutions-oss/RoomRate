@@ -5,14 +5,14 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-from api.services.performance_import_service import (
+from api.services.performance.importing.labels import suggest_room_type
+from api.services.performance.importing.service import (
     ImportAlreadyCommitted,
     ImportNotFound,
     ImportRejected,
     PerformanceImportService,
-    suggest_room_type,
 )
-from api.services.performance_template import build_template
+from api.services.performance.template import build_template
 
 ACCOUNT_ID = uuid.UUID(int=1)
 PROPERTY_ID = uuid.UUID(int=2)
