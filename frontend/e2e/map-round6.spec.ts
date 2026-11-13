@@ -189,6 +189,14 @@ async function mockMapRound6(page: Page, options: Round6Options = {}): Promise<v
   });
 }
 
+/**
+ * The owner's room is on screen, so a Find click searches instead of asking
+ * for a room: clicking right after goto raced the catalog read.
+ */
+async function roomReady(page: Page): Promise<void> {
+  await expect(page.locator(".results-sidebar").getByLabel("Σύγκριση για")).toHaveValue(ROOM_TYPE_ID);
+}
+
 const postedJob = (calls: RecordedCall[]) =>
   calls.find((call) => call.method === "POST" && call.path === "/api/v1/scrape-jobs/")?.body as
     Record<string, unknown> | undefined;
@@ -779,6 +787,7 @@ test("one failed poll mid-scrape keeps the run and its progress alive", async ({
   await mockMapRound6(page, { restorable: false, polls });
 
   await page.goto("/map");
+  await roomReady(page);
   await page.getByRole("button", { name: "Εύρεση ανταγωνιστών" }).click();
   await expect(page.getByTestId("scrape-progress-text")).toHaveText("Στάδιο 2/2 — Τιμές δωματίων: 12/48 καταλύματα");
   await expect(page.locator(".alert-error")).toHaveCount(0);
@@ -802,6 +811,7 @@ test("five failed polls in a row give up with the API error text", async ({ page
   const polls = () => calls.filter((call) => call.method === "GET" && call.path.endsWith(NEW_JOB_ID)).length;
 
   await page.goto("/map");
+  await roomReady(page);
   await page.getByRole("button", { name: "Εύρεση ανταγωνιστών" }).click();
   await expect(page.locator(".filters-sidebar .alert-error")).toContainText("Το αίτημα προς το RoomRate API απέτυχε.");
   // Exactly five reads: the give-up came from the consecutive-failure limit, not the 360 cap.
@@ -826,6 +836,7 @@ test("a running search is polled for 30 minutes (360 polls) before the page give
   const polls = () => calls.filter((call) => call.method === "GET" && call.path.endsWith(NEW_JOB_ID)).length;
 
   await page.goto("/map");
+  await roomReady(page);
   await page.getByRole("button", { name: "Εύρεση ανταγωνιστών" }).click();
   // No mid-run "no error yet" check: with the 5 s wait shortened to 0 ms all
   // 360 polls can finish between two expect.poll samples, making it racy.
@@ -907,6 +918,7 @@ test("when «Μόνο συγκρίσιμα» leaves nothing it says so, and one 
   });
 
   await page.goto("/map");
+  await roomReady(page);
   await page.getByRole("button", { name: "Εύρεση ανταγωνιστών" }).click();
   await expect(page.locator(".header-actions").getByText("0 ανταγωνιστές")).toBeVisible();
   const comparableOnly = page.getByTestId("comparable-toggle");
