@@ -19,7 +19,6 @@ import { WorkflowStorageService } from "../services/workflow-storage.service";
 import {
   Competitor,
   CompetitorMapMarker,
-  CompetitorSort,
   MarketSummary,
   NearbyDestinationsResponse,
   OwnedPropertyRoomType,
@@ -34,7 +33,7 @@ import {
 import { ensureFutureStay, isPastLocalDate } from "../utils/date-defaults";
 import { areComparableRoomCategories } from "../utils/room-category";
 import { CompetitorCardComponent } from "./map/competitor-card.component";
-import { buildRoomGroups, formatEuro, formatRadius, hasValidCoordinates, hotelKey, markerKey, planKey } from "./map/competitor-format";
+import { formatEuro, formatRadius, hasValidCoordinates, hotelKey, markerKey } from "./map/competitor-format";
 import { CompetitorMapComponent, CompetitorMapSource } from "./map/competitor-map.component";
 import { MapFiltersSidebarComponent } from "./map/map-filters-sidebar.component";
 import {
@@ -42,7 +41,6 @@ import {
   MatchSourceState,
   JobScope,
   EmptyResultReason,
-  RoomPlanGroup,
   MapFilters,
   MAX_NEARBY_DESTINATIONS,
   DEFAULT_RADIUS_KM,
@@ -56,14 +54,9 @@ import {
   SEARCH_PLOTTED_MESSAGE,
   SEARCH_FILTERED_MESSAGE,
   FILTER_HIDES_ALL_MESSAGE,
-  AMENITY_FILTER_HIDES_ALL_TITLE,
-  AMENITY_FILTER_HIDES_ALL_EXPLANATION,
-  AMENITY_FILTER_HIDES_ALL_MESSAGE,
-  SEARCH_AMENITY_FILTERED_MESSAGE,
-  CLEAR_AMENITY_FILTERS_LABEL,
-  AMENITY_FILTER_FAILED_MESSAGE,
   AGENT_UNAVAILABLE_NOTICE,
   AGENT_IN_PROGRESS_NOTICE,
+  AGENT_STILL_RUNNING_RETRIES,
   agentRunNotice,
   AUTO_MATCH_PENDING_MESSAGE,
   COMPARABLE_FILTER_NAME,
@@ -75,21 +68,14 @@ import {
   START_SEARCH_MESSAGE,
   AUTO_PICKED_ROOM_HINT,
   DEFAULT_STAY,
-  AmenityOption,
-  COMMON_AMENITIES,
-  AMENITY_BY_VALUE,
-  FACILITY_MATCHERS,
 } from "./map/map-page.constants";
-import { MatchedCompetitorCardComponent } from "./map/matched-competitor-card.component";
 
 // All async-written state is signal-based. Every API call in this component
 // awaits getAccessToken() first, and supabase-js getSession() acquires a
 // navigator.locks lock that zone.js cannot patch — so the continuation after
 // EVERY await runs outside the Angular zone. Plain-field mutations there were
 // invisible to change detection (data only appeared after an unrelated
-// click); signal writes schedule change detection regardless of zone. State
-// written only by synchronous user handlers (matchRoomEnabled, minMatchScore,
-// matchSort) stays plain — the triggering click already runs in the zone.
+// click); signal writes schedule change detection regardless of zone.
 @Component({
   selector: "app-map-page",
   standalone: true,
@@ -102,7 +88,6 @@ import { MatchedCompetitorCardComponent } from "./map/matched-competitor-card.co
     EmptyStateComponent,
     IconComponent,
     MapFiltersSidebarComponent,
-    MatchedCompetitorCardComponent,
     AppHeaderComponent,
     NotificationToastsComponent,
     SetupChecklistComponent,
@@ -144,13 +129,10 @@ import { MatchedCompetitorCardComponent } from "./map/matched-competitor-card.co
           *ngIf="!filtersCollapsed()"
           appMapFiltersSidebar
           class="filters-sidebar"
-          [baselineRoom]="selectedOwnedRoom() ?? null"
           [filters]="filters()"
           [nearbyDestinations]="nearbyDestinations()"
           [nearbyDraft]="nearbyDraft()"
           [canAddNearbyDestination]="canAddNearbyDestination()"
-          [amenities]="amenities()"
-          [selectedAmenities]="selectedAmenities()"
           [searching]="actionStatus() === 'loading'"
           [message]="message()"
           [searchWarnings]="searchWarnings()"
@@ -163,88 +145,39 @@ import { MatchedCompetitorCardComponent } from "./map/matched-competitor-card.co
           (nearbyDraftChange)="nearbyDraft.set($event)"
           (nearbyAdd)="addNearbyDestination()"
           (nearbyRemove)="removeNearbyDestination($event)"
-          (amenityToggle)="toggleAmenity($event)"
-          (amenitiesClear)="clearAmenities()"
           (findRequest)="findCompetitors()"
         >
           <!--
             «Ταίριασμα δωματίου» as its own highlighted card at the foot of the
             «Φίλτρα» column (owner decision 2026-10-05), projected into the
-            sidebar so its bindings stay on this page. Same toggle, same
-            handlers as before.
+            sidebar so its bindings stay on this page. Since 2026-11-13 the
+            matching runs by itself right after every search, for ALL the
+            owner's room types in one pass; the card only says where the
+            scores come from and offers a re-run for when the AI failed.
+            «Σύγκριση για» picks which room type's results are shown.
           -->
-          <section class="match-controls" [class.is-on]="matchRoomEnabled">
-            <label class="checkbox-row match-toggle-row">
+          <section class="match-controls is-on" data-testid="match-controls">
+            <div class="checkbox-row match-toggle-row">
               <span class="match-toggle-icon" aria-hidden="true"><app-icon name="bed" [size]="20"></app-icon></span>
               <span class="match-toggle-text">
                 <strong class="filter-section-label">Ταίριασμα δωματίου</strong>
-                <span>Ταίριασμα με το δικό μου δωμάτιο</span>
+                <span>Γίνεται αυτόματα μετά από κάθε αναζήτηση, για όλους τους τύπους δωματίων σας.</span>
               </span>
-              <input class="switch-input" type="checkbox" role="switch" [ngModel]="matchRoomEnabled" (ngModelChange)="onMatchToggle($event)">
-            </label>
-            <ng-container *ngIf="matchRoomEnabled">
-              <!-- Agents (spec Α.4): ONE source badge for everything the match list
-                   shows. «Εκτίμηση AI» is only ever earned by an agent read — a
-                   false source here would be worse than no badge at all. -->
-              <div class="match-source-row">
-                <span class="source-chip" data-testid="match-source-badge">{{ matchSourceLabel() }}</span>
-                <!-- Manual agent re-run (spec Α.1): needs the completed job on
-                     screen and a reference room to send it. -->
-                <button
-                  type="button"
-                  class="panel-toggle-button"
-                  data-testid="reassess-button"
-                  [disabled]="reassessInFlight() || !canReassess()"
-                  (click)="reassessMatches()"
-                >{{ reassessInFlight() ? "Εκτίμηση σε εξέλιξη…" : "Επανεκτίμηση ταιριάσματος" }}</button>
-              </div>
-              <div *ngIf="reassessNotice()" class="alert" [class.alert-error]="isAgentFailureNotice(reassessNotice())" data-testid="reassess-notice">{{ reassessNotice() }}</div>
-              <div class="match-settings">
-                <label class="match-range">
-                  <span>Ελάχιστο σκορ ταιριάσματος: <b>{{ minMatchScore }}</b></span>
-                  <input type="range" min="0" max="100" step="5" [style.--fill]="minMatchScore + '%'" [ngModel]="minMatchScore" (ngModelChange)="onMinScoreChange($event)">
-                </label>
-                <label>
-                  <span>Ταξινόμηση κατά</span>
-                  <app-select-menu
-                    [options]="matchSortOptions"
-                    [value]="matchSort"
-                    (valueChange)="onMatchSortChange($any($event))"
-                  ></app-select-menu>
-                </label>
-              </div>
-              <div *ngIf="matchError()" class="alert alert-error">{{ matchError() }}</div>
-              <div *ngIf="matchStatus() === 'loading'" class="results-empty">
-                <strong>Βαθμολόγηση δωματίων</strong>
-                <span>Σύγκριση των πακέτων των ανταγωνιστών με το δικό σας δωμάτιο.</span>
-              </div>
-              <div *ngIf="matchStatus() === 'ready' && !matchedCompetitors().length" class="results-empty">
-                <strong>Κανένα ταίριασμα σε αυτό το όριο</strong>
-                <span>Μειώστε το ελάχιστο σκορ ταιριάσματος ή τρέξτε πρώτα νέα αναζήτηση ανταγωνιστών.</span>
-              </div>
-              <div *ngIf="matchedCompetitors().length" class="matched-list">
-                <article
-                  *ngFor="let hotel of matchedCompetitors(); index as hotelIndex"
-                  appMatchedCompetitorCard
-                  class="matched-card"
-                  [hotel]="hotel"
-                  [groups]="roomGroupsFor(hotel)"
-                  [hotelIndex]="hotelIndex"
-                  [expandedPlanKeys]="expandedPlanKeys()"
-                  [selectable]="competitorRowsByHotel().has(hotel.hotel_name)"
-                  [selected]="isHotelSelected(hotel)"
-                  (plansToggle)="togglePlans(hotelIndex, $event)"
-                  (selectionToggle)="toggleHotelSelection(hotel)"
-                  [class.is-highlighted]="highlightedCardKey() === matchedHotelKey(hotel)"
-                  [attr.data-hotel-key]="matchedHotelKey(hotel)"
-                  (mouseenter)="highlightMarker(matchedHotelKey(hotel))"
-                  (mouseleave)="unhighlightMarker(matchedHotelKey(hotel))"
-                  (focusin)="highlightMarker(matchedHotelKey(hotel))"
-                  (focusout)="unhighlightMarker(matchedHotelKey(hotel))"
-                  (click)="easeToMatchedMarker($event, hotel)"
-                ></article>
-              </div>
-            </ng-container>
+            </div>
+            <!-- Agents (spec Α.4): ONE source badge for the scores on screen.
+                 «Εκτίμηση AI» is only ever earned by an agent read — a false
+                 source here would be worse than no badge at all. -->
+            <div class="match-source-row">
+              <span class="source-chip" data-testid="match-source-badge">{{ matchSourceLabel() }}</span>
+              <button
+                type="button"
+                class="panel-toggle-button"
+                data-testid="reassess-button"
+                [disabled]="reassessInFlight() || autoMatchPending() || !canReassess()"
+                (click)="reassessMatches()"
+              >{{ reassessInFlight() ? "Ταίριασμα σε εξέλιξη…" : "Ξανά ταίριασμα" }}</button>
+            </div>
+            <div *ngIf="reassessNotice()" class="alert" [class.alert-error]="isAgentFailureNotice(reassessNotice())" data-testid="reassess-notice">{{ reassessNotice() }}</div>
           </section>
         </aside>
 
@@ -267,9 +200,10 @@ import { MatchedCompetitorCardComponent } from "./map/matched-competitor-card.co
             The room the whole column is read for, as the column's first
             control (owner feedback 2026-09-30): the owner compares per room
             type, so the choice cannot live in the «Φίλτρα» form, which starts
-            collapsed. Same signal and handler as ever: a switch re-reads the
-            markers, the summary and the matches with the room's id, and runs
-            the matching agent by itself when the job has no verdict for it.
+            collapsed. A pure view filter (owner decision 2026-11-13): one
+            matching pass already scored the job for every room type, so a
+            switch only re-reads the markers, the summary and the scores with
+            the room's id — no new search, no new matching run.
           -->
           <label class="compare-room-field">
             <span>Σύγκριση για</span>
@@ -371,7 +305,7 @@ import { MatchedCompetitorCardComponent } from "./map/matched-competitor-card.co
             >
             <span>{{ comparableFilterName }}</span>
           </label>
-          <!-- The automatic agent run for the room on screen: its pending line, then (on failure) the fallback notice. -->
+          <!-- The automatic matching run after a search: its pending line, then (on failure) the fallback notice. -->
           <div *ngIf="autoMatchPending()" class="results-empty" data-testid="auto-match-pending">
             <span>{{ autoMatchPendingMessage }}</span>
           </div>
@@ -403,8 +337,8 @@ import { MatchedCompetitorCardComponent } from "./map/matched-competitor-card.co
             Map ↔ list linking: hovering or focusing a card raises its hotel's
             marker, clicking it eases the map there; a marker click marks the
             hotel's cards (is-highlighted) while its popup is open and centres
-            the first in the list. The matched cards above link the same way.
-            data-hotel-key is the marker's own key (hotelKey).
+            the first in the list. data-hotel-key is the marker's own key
+            (hotelKey).
           -->
           <div class="competitor-list">
             <label
@@ -413,7 +347,7 @@ import { MatchedCompetitorCardComponent } from "./map/matched-competitor-card.co
               class="competitor-card"
               [competitor]="competitor"
               [selected]="selectedKeys().has(markerKey(competitor))"
-              [matchScore]="matchRoomEnabled ? matchScoreFor(competitor.hotel_name) : null"
+              [matchScore]="matchScoreFor(competitor.hotel_name)"
               (selectionToggle)="toggleCompetitor(markerKey(competitor))"
               [class.is-highlighted]="highlightedCardKey() === hotelKey(competitor)"
               [attr.data-hotel-key]="hotelKey(competitor)"
@@ -448,7 +382,6 @@ export class MapPageComponent implements OnInit, OnDestroy {
   readonly onlySelectedFilterName = ONLY_SELECTED_FILTER_NAME;
   readonly comparableFilterName = COMPARABLE_FILTER_NAME;
   readonly autoPickedRoomHint = AUTO_PICKED_ROOM_HINT;
-  readonly amenities = signal<AmenityOption[]>(COMMON_AMENITIES);
   readonly competitors = signal<CompetitorMapMarker[]>([]);
   readonly selectedKeys = signal<Set<string>>(new Set());
   // Optional "hide everything I did not tick" filter over the map. A finished
@@ -465,13 +398,13 @@ export class MapPageComponent implements OnInit, OnDestroy {
   // «Μόνο συγκρίσιμα» (owner decision 2026-09-30): ON by default, so every
   // read shows only the rooms the matching agent judged comparable with the
   // selected room; off, everything comes back with a `comparable` verdict per
-  // package. Every competitors/markers/summary/amenities read sends it as
+  // package. Every competitors/markers/summary read sends it as
   // `comparable_only`. Written only by its own click handler.
   readonly comparableOnly = signal(true);
-  // (job, room) pairs the automatic agent run has already been decided for in
-  // this visit — probed, posted or abandoned-for-good — so each pair is run
-  // at most ONCE per page session and a failed run is never retried by
-  // itself. A signal: it is written around awaits (AGENTS.md).
+  // Jobs the automatic matching run has already been started for in this
+  // visit, so each job is posted at most ONCE per page session and a failed
+  // run is never retried by itself. A signal: it is written around awaits
+  // (AGENTS.md).
   private readonly autoMatchDecided = signal<ReadonlySet<string>>(new Set());
   // The automatic run's pending line and its fallback notice: both written
   // after awaits, so signals.
@@ -487,7 +420,6 @@ export class MapPageComponent implements OnInit, OnDestroy {
   // selection legitimately starts over: a fresh search and the initial
   // property/room context reset.
   private readonly userTouchedSelection = signal(false);
-  readonly selectedAmenities = signal<Set<string>>(new Set());
   readonly roomTypes = signal<OwnedPropertyRoomType[]>([]);
   readonly propertyName = signal("");
   readonly selectedRoomId = signal("");
@@ -545,12 +477,6 @@ export class MapPageComponent implements OnInit, OnDestroy {
     return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   });
   readonly marketSummary = signal<MarketSummary | null>(null);
-  matchRoomEnabled = false;
-  minMatchScore = 0;
-  matchSort: CompetitorSort = "match";
-  readonly matchedCompetitors = signal<Competitor[]>([]);
-  readonly matchStatus = signal<LoadingState>("idle");
-  readonly matchError = signal("");
   // Where the shown match scores come from (spec Α.4). Written after the
   // /competitors/ await — outside the zone, so a signal like its siblings.
   // "statistical" until a read proves otherwise: that is the honest default
@@ -563,46 +489,13 @@ export class MapPageComponent implements OnInit, OnDestroy {
     }
     return source === "partial" ? "Εκτίμηση AI (μερική)" : "Στατιστική εκτίμηση";
   });
-  // The manual agent re-run (spec Α.1): in-flight flag and fallback notice
-  // are both written around awaits, so both are signals.
+  // «Ξανά ταίριασμα» (spec Α.1): in-flight flag and fallback notice are
+  // both written around awaits, so both are signals.
   readonly reassessInFlight = signal(false);
   readonly reassessNotice = signal("");
-  // The POST needs a completed job (activeJobId is only ever set for one) and
-  // the reference room it should score against.
-  readonly canReassess = computed(() => Boolean(this.activeJobId() && this.selectedRoomId()));
-  // The matched hotels' packages grouped into rooms (spec §5), computed once
-  // per match load: the template reads the groups on every change-detection
-  // pass, and rebuilding them there would hand *ngFor fresh identities each
-  // time — recreating the rows (and their expand buttons) under the user.
-  // The result rows per hotel name: matched hotels carry no property id, so
-  // the name is what ties a matched card to its rows, ticks and marker.
-  readonly competitorRowsByHotel = computed(() => {
-    const byHotel = new Map<string, CompetitorMapMarker[]>();
-    for (const row of this.competitors()) {
-      const rows = byHotel.get(row.hotel_name);
-      if (rows) {
-        rows.push(row);
-      } else {
-        byHotel.set(row.hotel_name, [row]);
-      }
-    }
-    return byHotel;
-  });
-  private readonly matchedRoomGroups = computed(() => {
-    const groups = new Map<Competitor, RoomPlanGroup[]>();
-    for (const hotel of this.matchedCompetitors()) {
-      groups.set(hotel, buildRoomGroups(hotel.packages ?? []));
-    }
-    return groups;
-  });
-  // Which «Πλάνα τιμών» lists are open, keyed cardIndex|room so two
-  // same-named hotels in one list cannot toggle together. A signal: the
-  // template reads it, the click handler and the match-load continuation
-  // (after an await) write it. Cleared whenever a match load LANDS — rows the
-  // server just re-sent are new rows, and an old key must not leave a list of
-  // a later search pre-opened.
-  readonly expandedPlanKeys = signal<Set<string>>(new Set());
-
+  // The POST needs a completed job (activeJobId is only ever set for one);
+  // it scores every room type of the property, whichever is on screen.
+  readonly canReassess = computed(() => Boolean(this.activeJobId()));
   readonly roomOptions = computed<SelectMenuOption[]>(() =>
     this.roomTypes().map((item) => ({
       value: item.id,
@@ -611,58 +504,19 @@ export class MapPageComponent implements OnInit, OnDestroy {
       hint: item.room_type_category,
     })),
   );
-  readonly matchSortOptions: SelectMenuOption[] = [
-    { value: "match", label: "Καλύτερο ταίριασμα" },
-    { value: "price", label: "Τιμή" },
-    { value: "distance", label: "Απόσταση" },
-  ];
   readonly selectedOwnedRoom = computed(() =>
     this.roomTypes().find((item) => item.id === this.selectedRoomId())
       || this.roomTypes().find((item) => item.room_type_category === this.selectedRoomType()),
   );
   /**
-   * True when the hotelier's own facility filter is the only thing that can
-   * explain an empty screen.
-   *
-   * The facility checkboxes are a READ filter — `amenities=` on the job-scoped
-   * competitor and summary reads — so unlike everything `result_summary`
-   * describes, they hide rows the scrape really did write. That makes them
-   * invisible to the summary-based reasoning below, which is why this is asked
-   * first and answered from different facts: ticks on screen, a job-scoped
-   * result with nothing in it, and a job whose own summary says it wrote rows.
-   *
-   * A job carrying NO summary counts too (older jobs, and the ones this page
-   * restores from a list): the read is scoped to that job, the job is what is
-   * on screen, and the read-time facility filter is the only thing the backend
-   * drops job-scoped rows for. `rows_written === 0` is the one case that falls
-   * through — the scrape itself wrote nothing, so the filter cannot be what is
-   * hiding it and the summary below has the truthful answer.
-   *
-   * "ready" is load-bearing and not a formality: a FAILED read leaves exactly
-   * this shape behind — setError empties the results, the job id stays, the
-   * ticks stay — and the map (which reads this before its own ready check)
-   * answered a 500 by blaming the facility filter, sending the user to untick
-   * boxes that would not bring the read back. Nothing is known about what the
-   * filter hides until a read has succeeded.
-   */
-  private readonly amenityFilterHidesEverything = computed(() => {
-    if (
-      this.status() !== "ready"
-      || !this.selectedAmenities().size
-      || this.competitors().length
-      || !this.activeScrapeJobId()
-    ) {
-      return false;
-    }
-    const summary = this.activeResultSummary();
-    return !summary || summary.version !== 1 || summary.rows_written > 0;
-  });
-
-  /**
-   * The same question for «Μόνο συγκρίσιμα», answered from the same facts:
-   * `comparable_only=true` is also a READ filter, so a job whose rows exist
-   * can come back empty because of the switch alone. Asked after the facility
-   * filter, which keeps its answer when both are on.
+   * True when «Μόνο συγκρίσιμα» is the only thing that can explain an empty
+   * screen: `comparable_only=true` is a READ filter, so a job whose rows
+   * exist can come back empty because of the switch alone. A job carrying NO
+   * summary counts too (older jobs, and the ones this page restores from a
+   * list); `rows_written === 0` falls through — the scrape itself wrote
+   * nothing, and the summary-based reasoning below has the truthful answer.
+   * "ready" is load-bearing: a FAILED read leaves the same shape behind, and
+   * nothing is known about what the filter hides until a read has succeeded.
    */
   private readonly comparableFilterHidesEverything = computed(() => {
     if (
@@ -678,17 +532,11 @@ export class MapPageComponent implements OnInit, OnDestroy {
   });
 
   private readonly emptyResultReason = computed<EmptyResultReason | null>(() => {
-    // Asked first, though for a v1 summary the two cannot both be true: this
-    // branch requires `rows_written > 0` and every branch below requires
-    // `rows_written === 0`. What makes the order load-bearing is the early
-    // `return null` two lines down — reversed, a job whose rows were written
-    // and then filtered out on the read would fall out of here with NO reason
-    // at all, and the generic «Δεν βρέθηκαν συγκρίσιμα δωμάτια» would blame
-    // the market for the user's own tick. It also answers the cases the
-    // summary cannot: a missing or non-v1 summary reaches nothing below.
-    if (this.amenityFilterHidesEverything()) {
-      return { kind: "amenities" };
-    }
+    // Asked first: it requires `rows_written > 0` and every branch below
+    // requires `rows_written === 0`, and reversed, a job whose rows were
+    // written and then filtered out on the read would fall out of here with
+    // NO reason at all. It also answers the cases the summary cannot: a
+    // missing or non-v1 summary reaches nothing below.
     if (this.comparableFilterHidesEverything()) {
       return { kind: "comparable" };
     }
@@ -705,6 +553,8 @@ export class MapPageComponent implements OnInit, OnDestroy {
         return { kind, count: stage.before };
       }
     }
+    // `room_name` and `amenities` stay listed: jobs from before 2026-11-13
+    // still carry their counts.
     const remainingFilters = ["room_name", "meal", "free_cancellation", "amenities"];
     const emptiedLater = remainingFilters.some((name) => {
       const stage = counts[name];
@@ -721,9 +571,6 @@ export class MapPageComponent implements OnInit, OnDestroy {
     const reason = this.emptyResultReason();
     if (!reason) {
       return "Δεν βρέθηκαν συγκρίσιμα δωμάτια";
-    }
-    if (reason.kind === "amenities") {
-      return AMENITY_FILTER_HIDES_ALL_TITLE;
     }
     if (reason.kind === "comparable") {
       return COMPARABLE_HIDES_ALL_TITLE;
@@ -745,22 +592,15 @@ export class MapPageComponent implements OnInit, OnDestroy {
       ? "Βρέθηκε 1 τιμή για λιγότερα άτομα από όσα ζητήσατε"
       : `Βρέθηκαν ${count} τιμές για λιγότερα άτομα από όσα ζητήσατε`;
   });
-  // The only two of these empty states the user can undo from where they are
-  // standing — the two read filters — so the only two that offer a button
+  // The only one of these empty states the user can undo from where they are
+  // standing — the read filter — so the only one that offers a button
   // (onEmptyResultAction). Empty elsewhere, and the empty-state component
   // renders no button for an empty label.
-  readonly emptyResultActionLabel = computed(() => {
-    const kind = this.emptyResultReason()?.kind;
-    if (kind === "amenities") {
-      return CLEAR_AMENITY_FILTERS_LABEL;
-    }
-    return kind === "comparable" ? SHOW_ALL_ROOMS_LABEL : "";
-  });
+  readonly emptyResultActionLabel = computed(() =>
+    this.emptyResultReason()?.kind === "comparable" ? SHOW_ALL_ROOMS_LABEL : "",
+  );
   readonly emptyResultExplanation = computed(() => {
     const reason = this.emptyResultReason();
-    if (reason?.kind === "amenities") {
-      return AMENITY_FILTER_HIDES_ALL_EXPLANATION;
-    }
     if (reason?.kind === "comparable") {
       return COMPARABLE_HIDES_ALL_EXPLANATION;
     }
@@ -833,7 +673,13 @@ export class MapPageComponent implements OnInit, OnDestroy {
 
   private ownedPropertyId = "";
   private rawDestination = "";
-  private hotelMatchScores = new Map<string, number>();
+  // Best match score per hotel name, for the result cards and the popups. A
+  // signal: written after the /competitors/ await, outside the zone, and the
+  // cards read it from the template.
+  private readonly hotelMatchScores = signal<ReadonlyMap<string, number>>(new Map());
+  // The match-score read loadMarkers started last, so the automatic run can
+  // judge the badge it produced instead of racing it.
+  private matchScoresLoad: Promise<void> = Promise.resolve();
   // Map ↔ list linking, keyed by hotelKey: the card marked after a marker
   // click, for as long as that marker's popup stays open (the map raises the
   // marker of a hovered card itself). A signal: it is written from Mapbox DOM
@@ -846,7 +692,7 @@ export class MapPageComponent implements OnInit, OnDestroy {
     selectedKeys: () => this.selectedKeys(),
     ownProperty: () => this.ownProperty(),
     ownLocation: () => this.ownLocation(),
-    popupMatchScore: (hotelName) => (this.matchRoomEnabled ? this.matchScoreFor(hotelName) : null),
+    popupMatchScore: (hotelName) => this.matchScoreFor(hotelName),
   };
   // The card/marker identities and the one format the page itself renders.
   readonly markerKey = markerKey;
@@ -889,7 +735,6 @@ export class MapPageComponent implements OnInit, OnDestroy {
   // the same reason as its sibling activeScrapeJobId above.
   private readonly activeJobScope = signal<JobScope | null>(null);
   private saveMessageTimeout: ReturnType<typeof window.setTimeout> | null = null;
-  private matchRefreshTimer: ReturnType<typeof window.setTimeout> | null = null;
   // Set by ngOnDestroy so long-running poll loops stop with the component.
   private destroyed = false;
 
@@ -918,7 +763,7 @@ export class MapPageComponent implements OnInit, OnDestroy {
     await this.loadCurrentUser();
     // The nearby defaults land BEFORE the restore starts, so a restored job's
     // own areas always overwrite them rather than racing them.
-    await Promise.all([this.loadAmenities(), this.loadNearbyDefaults(generation)]);
+    await this.loadNearbyDefaults(generation);
     if (!this.isCurrentChain(generation)) {
       return;
     }
@@ -937,9 +782,6 @@ export class MapPageComponent implements OnInit, OnDestroy {
     this.destroyed = true;
     if (this.saveMessageTimeout) {
       window.clearTimeout(this.saveMessageTimeout);
-    }
-    if (this.matchRefreshTimer) {
-      window.clearTimeout(this.matchRefreshTimer);
     }
     this.stopScrapeProgress();
   }
@@ -982,16 +824,14 @@ export class MapPageComponent implements OnInit, OnDestroy {
   /**
    * A marker click: its hotel's cards stay marked while the popup is open, and
    * the first one scrolls to the middle of the list, so the list says which
-   * result the map just opened. With room matching on, the matched card
-   * (higher up, with the scores) is the one brought into view. Runs in a
-   * Mapbox DOM listener, hence the signal; a newer click moves the mark.
+   * result the map just opened. Runs in a Mapbox DOM listener, hence the
+   * signal; a newer click moves the mark.
    */
   flashCard(key: string): void {
     this.highlightedCardKey.set(key);
     const escaped = CSS.escape(key);
     const host = this.hostElement.nativeElement;
-    const card = host.querySelector<HTMLElement>(`.matched-card[data-hotel-key="${escaped}"]`)
-      ?? host.querySelector<HTMLElement>(`.competitor-card[data-hotel-key="${escaped}"]`);
+    const card = host.querySelector<HTMLElement>(`.competitor-card[data-hotel-key="${escaped}"]`);
     card?.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
@@ -1000,43 +840,6 @@ export class MapPageComponent implements OnInit, OnDestroy {
     if (this.highlightedCardKey() === key) {
       this.highlightedCardKey.set(null);
     }
-  }
-
-  /** A matched card points at the same marker as the hotel's result rows. */
-  matchedHotelKey(hotel: Competitor): string {
-    const row = this.competitorRowsByHotel().get(hotel.hotel_name)?.[0];
-    return row ? hotelKey(row) : hotel.hotel_name;
-  }
-
-  /** A matched hotel is tracked when any of its result rows is ticked. */
-  isHotelSelected(hotel: Competitor): boolean {
-    const selected = this.selectedKeys();
-    return (this.competitorRowsByHotel().get(hotel.hotel_name) ?? []).some((row) => selected.has(markerKey(row)));
-  }
-
-  /**
-   * The matched card's checkbox: untick every row of the hotel, or tick its
-   * first row (the one its result card shows first). Hotels with no result
-   * row have nothing to track, and the card hides the checkbox.
-   */
-  toggleHotelSelection(hotel: Competitor): void {
-    const rows = this.competitorRowsByHotel().get(hotel.hotel_name) ?? [];
-    if (!rows.length) {
-      return;
-    }
-    const selected = this.selectedKeys();
-    const ticked = rows.filter((row) => selected.has(markerKey(row)));
-    for (const row of ticked.length ? ticked : rows.slice(0, 1)) {
-      this.toggleCompetitor(markerKey(row));
-    }
-  }
-
-  /** A matched-card click eases the map like a result card, but never from its own controls. */
-  easeToMatchedMarker(event: Event, hotel: Competitor): void {
-    if (event.target instanceof Element && event.target.closest("button, input, a")) {
-      return;
-    }
-    this.easeToMarker(event, this.matchedHotelKey(hotel));
   }
 
   setFilter(key: keyof MapFilters, value: string): void {
@@ -1143,14 +946,11 @@ export class MapPageComponent implements OnInit, OnDestroy {
       // filter is the only thing left that can be hiding them.
       return FILTER_HIDES_ALL_MESSAGE;
     }
-    // Nothing came back at all, and the facility filter is what dropped it:
-    // the rows exist in the job behind this screen. Said on the map too, not
-    // only in the sidebar, because this is a state the user caused and can undo
-    // — the generic "see the right-hand column" below is for the reasons they
+    // Nothing came back at all, and «Μόνο συγκρίσιμα» is what dropped it: the
+    // rows exist in the job behind this screen. Said on the map too, not only
+    // in the sidebar, because this is a state the user caused and can undo —
+    // the generic "see the right-hand column" below is for the reasons they
     // cannot.
-    if (this.amenityFilterHidesEverything()) {
-      return AMENITY_FILTER_HIDES_ALL_MESSAGE;
-    }
     if (this.comparableFilterHidesEverything()) {
       return COMPARABLE_HIDES_ALL_MESSAGE;
     }
@@ -1175,13 +975,10 @@ export class MapPageComponent implements OnInit, OnDestroy {
 
   /** The banner for a search that returned rooms, true for the filters as they are. */
   private searchResultMessage(): string {
-    // The two read filters are asked first because they are the banners that
-    // can be true with nothing on the map: the other two describe what IS
-    // plotted, and «Όλα τα αποτελέσματα εμφανίζονται στον χάρτη» over an empty
-    // map is a lie the user can see through.
-    if (this.amenityFilterHidesEverything()) {
-      return SEARCH_AMENITY_FILTERED_MESSAGE;
-    }
+    // The read filter is asked first because it is the banner that can be
+    // true with nothing on the map: the other two describe what IS plotted,
+    // and «Όλα τα αποτελέσματα εμφανίζονται στον χάρτη» over an empty map is a
+    // lie the user can see through.
     if (this.comparableFilterHidesEverything()) {
       return SEARCH_COMPARABLE_FILTERED_MESSAGE;
     }
@@ -1197,15 +994,14 @@ export class MapPageComponent implements OnInit, OnDestroy {
    * on, and overwriting those would lose what they say.
    *
    * Called from both filters that can empty a screen full of results: the map
-   * filter (synchronously, from its own click) and the facility checkboxes
-   * (after their re-read, which is the only moment their effect is known).
+   * filter (synchronously, from its own click) and «Μόνο συγκρίσιμα» (after
+   * its re-read, which is the only moment its effect is known).
    */
   private refreshSearchResultMessage(): void {
     const current = this.message();
     if (
       current === SEARCH_PLOTTED_MESSAGE
       || current === SEARCH_FILTERED_MESSAGE
-      || current === SEARCH_AMENITY_FILTERED_MESSAGE
       || current === SEARCH_COMPARABLE_FILTERED_MESSAGE
     ) {
       this.message.set(this.searchResultMessage());
@@ -1244,75 +1040,42 @@ export class MapPageComponent implements OnInit, OnDestroy {
     return parts.join(" · ");
   }
 
-  toggleAmenity(amenity: string): void {
-    this.selectedAmenities.update((selected) => {
-      const next = new Set(selected);
-      if (next.has(amenity)) {
-        next.delete(amenity);
-      } else {
-        next.add(amenity);
-      }
-      return next;
-    });
-    void this.reloadActiveJob(AMENITY_FILTER_FAILED_MESSAGE);
-  }
-
-  clearAmenities(): void {
-    this.selectedAmenities.set(new Set());
-    void this.reloadActiveJob(AMENITY_FILTER_FAILED_MESSAGE);
-  }
-
   /**
    * «Μόνο συγκρίσιμα» on or off (owner decision 2026-09-30).
    *
-   * Like the facility checkboxes, a filter the server applies while READING
-   * (`comparable_only`), so the job on screen is read again. The facility
-   * list is read with the same scope first: it can lose the facility only
-   * non-comparable rooms had, and pruning it after the job's re-read went out
-   * would leave the boxes and the rows disagreeing (the same order
-   * onRoomTypeChange keeps).
+   * A filter the server applies while READING (`comparable_only`), so the job
+   * on screen is read again.
    */
   async toggleComparableOnly(): Promise<void> {
     this.comparableOnly.update((only) => !only);
-    await this.loadAmenities();
     await this.reloadActiveJob("Δεν ήταν δυνατή η εφαρμογή του φίλτρου συγκρίσιμων.");
   }
 
   /**
-   * The empty state's one button: undo the read filter that emptied the
-   * screen — clear the facilities, or switch «Μόνο συγκρίσιμα» off. Both
-   * re-read the job on screen.
+   * The empty state's one button: switch «Μόνο συγκρίσιμα» off, which
+   * re-reads the job on screen.
    */
   onEmptyResultAction(): void {
-    const kind = this.emptyResultReason()?.kind;
-    if (kind === "amenities") {
-      this.clearAmenities();
-    } else if (kind === "comparable" && this.comparableOnly()) {
+    if (this.emptyResultReason()?.kind === "comparable" && this.comparableOnly()) {
       void this.toggleComparableOnly();
     }
   }
 
   /**
-   * Re-read the job on screen with the read filters as they now stand: the
-   * facility checkboxes and «Μόνο συγκρίσιμα».
+   * Re-read the job on screen with the read scope as it now stands: the room
+   * type in «Σύγκριση για» and «Μόνο συγκρίσιμα».
    *
-   * Both are filters the BACKEND applies while reading the job's rows, so
-   * until those rows are fetched again nothing on screen changes: ticking a
-   * facility moved a signal and left the map, the market strip and the cards
-   * all showing the unfiltered job. Routed through loadMarkers rather than a
-   * bare marker read so the three stay one result set — it re-runs the summary
-   * and (when it is on) the match read with the same params.
+   * Both are applied by the BACKEND while reading the job's rows, so until
+   * those rows are fetched again nothing on screen changes. Routed through
+   * loadMarkers rather than a bare marker read so the three stay one result
+   * set — it re-runs the summary and the match-score read with the same
+   * params.
    *
    * The generation is read HERE, the way refreshRoomMatches defaults it: the
    * click starts no chain of its own, it joins whichever chain owns the screen,
    * so a Find pressed while this read is in flight still drops the whole tail.
    * Bumping the generation instead would cancel a restore that has not yet
    * published its job id — and this would then find nothing to re-read.
-   *
-   * One read per toggle, deliberately: the facility list is a dozen checkboxes
-   * clicked one at a time, and the only debounce this component has
-   * (scheduleMatchRefresh) exists for a slider that fires continuously while it
-   * is dragged. Nothing here fires on its own.
    */
   private async reloadActiveJob(failureMessage: string): Promise<void> {
     const scrapeJobId = this.activeScrapeJobId();
@@ -1359,26 +1122,11 @@ export class MapPageComponent implements OnInit, OnDestroy {
     this.workflow.set("roomTypeId", roomTypeId);
     this.workflow.set("roomTypeCategory", this.selectedRoomType());
     this.persistSelectedRoomType();
-    // The facility ticks used to be wiped here, and nothing re-read the rows
-    // they filter: the boxes went blank while the screen kept showing the
-    // FILTERED (empty) result set, so a job that really did write rows
-    // answered «Δεν βρέθηκαν συγκρίσιμα δωμάτια» — the exact lie the amenity
-    // empty state exists to prevent, walked back into through the room
-    // dropdown. The clear is gone rather than paired with a re-read: a ticked
-    // facility is the user's own read filter and nothing about a different
-    // room makes it wrong, so wiping it was both a surprise and a wasted read.
-    //
-    // loadAmenities still prunes the selection to the options it hands back,
-    // and the rows are re-read right after it, so the boxes and the rows can
-    // never disagree.
-    //
-    // The re-read is unconditional now (owner decision 2026-09-30): every
-    // read carries `owned_room_type_id`, and the comparable set is the
-    // agent's verdict for ONE room — another room is another set over the
-    // same job, so the markers, the summary and the match list all change.
-    // loadMarkers then runs the agent by itself for this room when the job
-    // has no verdict for it yet (autoRunAgentMatching).
-    await this.loadAmenities();
+    // A pure view filter (owner decision 2026-11-13): every read carries
+    // `owned_room_type_id`, and the comparable set is the agent's verdict for
+    // ONE room type — another room type is another set over the same job, so
+    // the markers, the summary and the scores are read again. The job's one
+    // matching pass already judged every room type: no search, no run.
     await this.reloadActiveJob("Δεν ήταν δυνατή η φόρτωση των συγκρίσιμων για αυτό το δωμάτιο.");
   }
 
@@ -1475,10 +1223,9 @@ export class MapPageComponent implements OnInit, OnDestroy {
     this.mapView?.resetFit();
     this.marketSummary.set(null);
     this.marketSummaryStatus.set("idle");
-    this.matchedCompetitors.set([]);
-    this.hotelMatchScores.clear();
-    this.matchError.set("");
-    this.matchStatus.set("idle");
+    this.clearMatchScores();
+    this.autoMatchNotice.set("");
+    this.reassessNotice.set("");
     this.mapView?.clearMarkers();
     // No deep_crawl_max_items any more: the server derives it from its own
     // hotel cap, which also counts the nearby areas (spec §3.1).
@@ -1507,10 +1254,11 @@ export class MapPageComponent implements OnInit, OnDestroy {
         // Spec §3.1: the radius centre is resolved by the server, never sent from here.
         nearby_destinations: this.nearbyDestinations(),
         radius_km: this.readBoundedNumber(this.filters().radius_km, DEFAULT_RADIUS_KM, MIN_RADIUS_KM, MAX_RADIUS_KM),
+        // No room-name filter (owner decision 2026-11-13): the search stores
+        // every room of every competitor, and the matching that follows
+        // judges each one against ALL the owner's room types.
         filters_payload: {
           limit: resultLimit,
-          match_mode: "catalog_room_name",
-          room_type: baselineRoom.room_type,
         },
       });
 
@@ -1520,7 +1268,6 @@ export class MapPageComponent implements OnInit, OnDestroy {
         return;
       }
       this.workflow.set("lastCompetitorJobId", completedJob.id);
-      await this.loadAmenities();
       // The stay comes from the job the backend actually ran, not from the
       // date inputs: those stay editable while a search runs, and they still
       // held a restored job's window in the live failure this fixes.
@@ -1532,12 +1279,12 @@ export class MapPageComponent implements OnInit, OnDestroy {
       }, completedJob.result_summary);
       // Filter-aware, for both filters that survive a search. This run cleared
       // the ticked cards, so with the map filter on the map is empty — saying
-      // the results are all on it would be a lie the user can see through. The
-      // facility checkboxes survive too and empty the screen from the backend
-      // side, which is why they are asked about before the sentence below:
-      // that one blames the own-property exclusion, and a filtered-out result
-      // set was not excluded, it was filtered.
-      this.message.set(this.competitors().length || this.amenityFilterHidesEverything() || this.comparableFilterHidesEverything()
+      // the results are all on it would be a lie the user can see through.
+      // «Μόνο συγκρίσιμα» survives too and empties the screen from the backend
+      // side, which is why it is asked about before the sentence below: that
+      // one blames the own-property exclusion, and a filtered-out result set
+      // was not excluded, it was filtered.
+      this.message.set(this.competitors().length || this.comparableFilterHidesEverything()
         ? this.searchResultMessage()
         : "Δεν βρέθηκαν δωμάτια ανταγωνιστών αφού εξαιρέθηκε το δικό σας κατάλυμα.");
       this.actionStatus.set("ready");
@@ -1611,139 +1358,82 @@ export class MapPageComponent implements OnInit, OnDestroy {
     window.setTimeout(() => this.mapView?.resize(), 0);
   }
 
-  onMatchToggle(enabled: boolean): void {
-    this.matchRoomEnabled = enabled;
-    if (!enabled) {
-      this.matchedCompetitors.set([]);
-      this.hotelMatchScores.clear();
-      this.matchError.set("");
-      this.matchStatus.set("idle");
-      this.matchSource.set("statistical");
-      this.reassessNotice.set("");
-      // Rebuild popups without the match row.
-      this.mapView?.renderMarkers();
-      return;
-    }
-    void this.refreshRoomMatches();
-  }
-
-  onMinScoreChange(value: number): void {
-    this.minMatchScore = this.readBoundedNumber(String(value), 0, 0, 100);
-    // The range input fires continuously while dragging; debounce the refetch.
-    this.scheduleMatchRefresh();
-  }
-
-  onMatchSortChange(value: CompetitorSort): void {
-    this.matchSort = value;
-    void this.refreshRoomMatches();
-  }
-
   matchScoreFor(hotelName: string): number | null {
-    const score = this.hotelMatchScores.get(hotelName);
+    const score = this.hotelMatchScores().get(hotelName);
     return typeof score === "number" ? score : null;
   }
 
-  roomGroupsFor(hotel: Competitor): RoomPlanGroup[] {
-    return this.matchedRoomGroups().get(hotel) ?? [];
-  }
-
-  togglePlans(hotelIndex: number, group: RoomPlanGroup): void {
-    const key = planKey(hotelIndex, group);
-    const next = new Set(this.expandedPlanKeys());
-    if (!next.delete(key)) {
-      next.add(key);
-    }
-    this.expandedPlanKeys.set(next);
-  }
-
   /**
-   * Score competitor rooms against the selected room.
+   * The match scores of the job on screen for the room type in «Σύγκριση
+   * για»: the best score per hotel (competitor cards, map popups) and the
+   * source badge. No score floor, best match first — the slider and the sort
+   * are gone (owner decision 2026-11-13). Best effort: a failed read leaves
+   * the cards without scores and the badge on «Στατιστική εκτίμηση».
    *
-   * `generation` defaults to the current chain because the user handlers
-   * (toggle, sort, debounced slider) start one right where they are called;
-   * loadMarkers passes its own so a superseded load cannot refill the match
-   * list that findCompetitors just cleared.
+   * `generation` defaults to the current chain; loadMarkers passes its own so
+   * a superseded load cannot refill the scores findCompetitors just cleared.
    */
   async refreshRoomMatches(generation: number = this.chainGeneration): Promise<void> {
-    if (!this.matchRoomEnabled) {
-      return;
-    }
     if (!this.ownedPropertyId || !this.selectedRoomType() || !this.filters().destination.trim()) {
-      this.matchError.set("Επιλέξτε κατάλυμα και δωμάτιο πριν ενεργοποιήσετε το ταίριασμα δωματίου.");
-      this.matchStatus.set("error");
       return;
     }
-    this.matchStatus.set("loading");
-    this.matchError.set("");
     try {
       const params = this.buildMarkerParams(this.activeScrapeJobId() || undefined);
-      // The match list keeps its own row cap (the map and summary read the whole job).
+      // The match read keeps its own row cap (the map and summary read the whole job).
       params.set("limit", "500");
       params.set("match_room", "true");
-      params.set("min_match_score", String(this.minMatchScore));
-      // `sort=distance` is a 400 without owned_property_id; buildMarkerParams
-      // always carries it here, since this method returns above without one.
-      params.set("sort", this.matchSort);
-      const hotels = await this.api.get<Competitor[]>("/api/v1/competitors/", params);
+      params.set("min_match_score", "0");
+      params.set("sort", "match");
+      const answer = await this.api.get<Competitor[]>("/api/v1/competitors/", params);
       if (!this.isCurrentChain(generation)) {
         return;
       }
-      this.matchedCompetitors.set(Array.isArray(hotels) ? hotels : []);
-      // Fresh rows, fresh cards: an open plans list of the PREVIOUS load must
-      // not carry over to a card that merely reuses its position and name.
-      this.expandedPlanKeys.set(new Set());
-      this.hotelMatchScores = new Map(
-        this.matchedCompetitors()
+      const hotels = Array.isArray(answer) ? answer : [];
+      this.hotelMatchScores.set(new Map(
+        hotels
           .filter((hotel) => typeof hotel.best_match_score === "number")
           .map((hotel) => [hotel.hotel_name, hotel.best_match_score as number]),
-      );
-      this.matchSource.set(this.deriveMatchSource(this.matchedCompetitors()));
-      this.matchStatus.set("ready");
-      // Refresh popups so they include the newly loaded match scores.
-      this.mapView?.renderMarkers();
-    } catch (error) {
+      ));
+      this.matchSource.set(this.deriveMatchSource(hotels));
+    } catch {
       if (!this.isCurrentChain(generation)) {
         return;
       }
-      const message = error instanceof Error ? error.message : "Δεν ήταν δυνατή η βαθμολόγηση των δωματίων των ανταγωνιστών.";
-      // The probe stays English on purpose: it matches the BACKEND's own
-      // error text, which Round 5.1 does not translate (inventory N7).
-      this.matchError.set(message.includes("No selected room type")
-        ? "Δεν έχει επιλεγεί ακόμη δωμάτιο αναφοράς για το κατάλυμά σας. Ολοκληρώστε την επιλογή δωματίου στον οδηγό ρύθμισης για να ενεργοποιηθεί το ταίριασμα."
-        : message);
-      this.matchedCompetitors.set([]);
-      this.expandedPlanKeys.set(new Set());
-      this.hotelMatchScores.clear();
+      this.hotelMatchScores.set(new Map());
       this.matchSource.set("statistical");
-      this.matchStatus.set("error");
     }
+    // Refresh popups so they show the scores just loaded (or none).
+    this.mapView?.renderMarkers();
+  }
+
+  private clearMatchScores(): void {
+    this.hotelMatchScores.set(new Map());
+    this.matchSource.set("statistical");
   }
 
   /**
-   * Manual agent re-run (spec Α.1): POST once for the (completed job,
-   * reference room) pair on screen, then re-read the match list so the
-   * scores and the badge reflect whatever the run wrote. Every failure —
-   * status "error" or "skipped", the 429 quota, a transport error — only
-   * raises the fallback notice (spec Α.5): the list on screen is untouched
-   * and keeps working with the scores it already shows. A run still in
+   * «Ξανά ταίριασμα» (spec Α.1): one matching pass over the job on screen
+   * for EVERY room type, replacing their verdicts, then a re-read of the job
+   * so the comparison set, the scores and the badge reflect what it wrote.
+   * Every failure — status "error" or "skipped", the 429 quota, a transport
+   * error — only raises the fallback notice (spec Α.5): the screen is
+   * untouched and keeps the scores it already shows. A run still in
    * progress elsewhere (skip_reason "in_progress") is said as such, quietly.
    */
   async reassessMatches(): Promise<void> {
     const scrapeJobId = this.activeJobId();
-    const ownedRoomTypeId = this.selectedRoomId();
-    if (!scrapeJobId || !ownedRoomTypeId || this.reassessInFlight()) {
+    if (!scrapeJobId || this.reassessInFlight()) {
       return;
     }
     this.reassessInFlight.set(true);
     this.reassessNotice.set("");
     try {
-      const body: RoomMatchRunRequest = {
-        scrape_job_id: scrapeJobId,
-        owned_room_type_id: ownedRoomTypeId,
-      };
+      const body: RoomMatchRunRequest = { scrape_job_id: scrapeJobId, only_missing: false };
       const run = await this.api.post<RoomMatchRunResponse>("/api/v1/agents/room-matches", body);
       if (run?.status === "completed") {
-        await this.refreshRoomMatches();
+        if (this.activeScrapeJobId() === scrapeJobId) {
+          await this.reloadActiveJob("Δεν ήταν δυνατή η φόρτωση των νέων ταιριασμάτων.");
+        }
       } else {
         this.reassessNotice.set(agentRunNotice(run));
       }
@@ -1760,7 +1450,7 @@ export class MapPageComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * The badge over the match list (spec Α.4). «Εκτίμηση AI» must never be a
+   * The match source badge (spec Α.4). «Εκτίμηση AI» must never be a
    * false claim, so only a non-empty read whose EVERY row says agent earns
    * it. A read that mixes agent rows with statistical ones (or with rows an
    * older API sent without the field) says so — «Εκτίμηση AI (μερική)» —
@@ -1776,86 +1466,64 @@ export class MapPageComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * The automatic agent run (owner decision 2026-09-30): the comparison set
-   * is the matching agent's verdict, so a completed job shown for a room the
-   * agent has not judged yet gets the run by itself — at most ONCE per
-   * (job, room) per visit, and a failure (error, skipped, 429, transport) is
-   * only the fallback notice, never an automatic retry. When the search's
-   * own run still holds the room, the server waits for it and answers with
-   * its verdicts; past that wait the notice says the run is in progress.
+   * The automatic matching run (owner decision 2026-11-13): right after a
+   * search — and once for any job this visit brings on screen — ONE pass
+   * judges every competitor room against ALL the owner's room types. It is
+   * posted with `only_missing`, so the server scores only the room types
+   * without verdicts (none: an instant "already_matched") and, when the
+   * post-scrape run is already scoring the job, waits for that run instead
+   * of paying for a second one. The screen shows the statistical set in the
+   * meantime and is read again once the verdicts are in.
    *
-   * "Not judged yet" is read from `/competitors/` with `match_room=true`:
-   * `match_source` is only ever "agent" on that read. It asks with
-   * `comparable_only=false` so a verdict of "nothing is comparable" still
-   * shows up as agent rows instead of an empty list, and without a score
-   * floor so the slider cannot hide them. An empty job has nothing to judge.
-   *
-   * The pair is marked decided BEFORE the await, so the re-read this very run
-   * triggers (and any concurrent reload) cannot probe or post it again; it is
-   * unmarked only when the probe is abandoned because the screen moved on
-   * (another room or another chain), so coming back to it still runs.
+   * At most ONCE per job per visit: the job is marked before the await, and
+   * a failure (error, skipped, 429, transport) is only the fallback notice,
+   * never an automatic retry — except "in_progress", which means the other
+   * run is still going after the server's wait, and is asked again a few
+   * times before the notice says so.
    */
-  private async autoRunAgentMatching(scrapeJobId: string, generation: number): Promise<void> {
-    const ownedRoomTypeId = this.selectedRoomId();
-    if (!scrapeJobId || !ownedRoomTypeId || !this.ownedPropertyId) {
+  private async runJobMatching(scrapeJobId: string, generation: number): Promise<void> {
+    if (!scrapeJobId || !this.ownedPropertyId || this.autoMatchDecided().has(scrapeJobId)) {
       return;
     }
-    const pairKey = `${scrapeJobId}|${ownedRoomTypeId}`;
-    if (this.autoMatchDecided().has(pairKey)) {
-      return;
-    }
-    this.autoMatchDecided.update((decided) => new Set(decided).add(pairKey));
+    this.autoMatchDecided.update((decided) => new Set(decided).add(scrapeJobId));
     const screenMovedOn = () =>
-      !this.isCurrentChain(generation)
-      || this.selectedRoomId() !== ownedRoomTypeId
-      || this.activeScrapeJobId() !== scrapeJobId;
-    const forget = () => this.autoMatchDecided.update((decided) => {
-      const next = new Set(decided);
-      next.delete(pairKey);
-      return next;
-    });
-
-    let hotels: Competitor[];
-    try {
-      const params = this.buildMarkerParams(scrapeJobId);
-      params.set("comparable_only", "false");
-      params.set("match_room", "true");
-      params.set("limit", "500");
-      const answer = await this.api.get<Competitor[]>("/api/v1/competitors/", params);
-      hotels = Array.isArray(answer) ? answer : [];
-    } catch {
-      // Nothing is known about the verdict; the manual button stays the way in.
-      return;
-    }
-    if (screenMovedOn()) {
-      forget();
-      return;
-    }
-    if (!hotels.length || hotels.some((hotel) => hotel.match_source === "agent")) {
-      return;
-    }
+      !this.isCurrentChain(generation) || this.activeScrapeJobId() !== scrapeJobId;
 
     this.autoMatchPending.set(true);
     this.autoMatchNotice.set("");
     let run: RoomMatchRunResponse | null = null;
     try {
-      const body: RoomMatchRunRequest = { scrape_job_id: scrapeJobId, owned_room_type_id: ownedRoomTypeId };
-      run = await this.api.post<RoomMatchRunResponse>("/api/v1/agents/room-matches", body);
+      const body: RoomMatchRunRequest = { scrape_job_id: scrapeJobId, only_missing: true };
+      for (let attempt = 0; attempt <= AGENT_STILL_RUNNING_RETRIES; attempt += 1) {
+        run = await this.api.post<RoomMatchRunResponse>("/api/v1/agents/room-matches", body);
+        if (run?.skip_reason !== "in_progress" || screenMovedOn()) {
+          break;
+        }
+      }
     } catch {
       run = null;
     } finally {
       this.autoMatchPending.set(false);
     }
-    if (run?.status !== "completed") {
-      this.autoMatchNotice.set(agentRunNotice(run));
-      return;
-    }
-    // The run rewrote the verdicts, so every read of this job is stale: the
-    // comparable markers, the summary, the facilities and the match list.
     if (screenMovedOn()) {
       return;
     }
-    await this.loadAmenities();
+    const verdictsReady = run?.status === "completed"
+      || (run?.status === "skipped" && run.skip_reason === "already_matched");
+    if (!verdictsReady) {
+      this.autoMatchNotice.set(agentRunNotice(run));
+      return;
+    }
+    // Every room type was already judged: re-read only when the screen does
+    // not show those verdicts yet (its read landed before they were written).
+    if (run?.status === "skipped") {
+      await this.matchScoresLoad;
+      if (screenMovedOn() || this.matchSource() !== "statistical") {
+        return;
+      }
+    }
+    // The verdicts changed, so every read of this job is stale: the
+    // comparable markers, the summary and the scores.
     await this.reloadActiveJob("Δεν ήταν δυνατή η φόρτωση των συγκρίσιμων για αυτό το δωμάτιο.");
   }
 
@@ -1903,13 +1571,6 @@ export class MapPageComponent implements OnInit, OnDestroy {
     this.workflow.set("roomTypeId", selected.id);
     this.workflow.set("roomTypeCategory", selected.room_type_category);
     this.persistSelectedRoomType();
-  }
-
-  private splitFacilities(value: string): string[] {
-    return value
-      .split("|")
-      .map((item) => item.trim())
-      .filter(Boolean);
   }
 
   private async pollScrapeJob(jobId: string): Promise<ScrapeJobResponse> {
@@ -2039,7 +1700,8 @@ export class MapPageComponent implements OnInit, OnDestroy {
     if (!this.isCurrentChain(generation)) {
       return;
     }
-    // A re-read of the job already on screen (a facility tick) keeps its
+    // A re-read of the job already on screen (a room switch, «Μόνο
+    // συγκρίσιμα») keeps its
     // markers, and an open popup with them: renderMarkers reconciles them with
     // the new rows below. Any other job starts from an empty map.
     const rereadsJobOnScreen = scrapeJobId === this.activeScrapeJobId();
@@ -2086,7 +1748,7 @@ export class MapPageComponent implements OnInit, OnDestroy {
       this.applyTrackedCompetitors(tracked);
     }
     // Only a job NEW to the screen earns a fresh camera fit. A re-read of the
-    // job already shown (a facility tick, «Μόνο συγκρίσιμα») changes the
+    // job already shown (a room switch, «Μόνο συγκρίσιμα») changes the
     // rows, not the ground they stand on — resetting here yanked the map away
     // from wherever the user had panned or zoomed it.
     if (!rereadsJobOnScreen) {
@@ -2096,12 +1758,13 @@ export class MapPageComponent implements OnInit, OnDestroy {
     this.mapView?.renderMarkers();
     // The strip and match scores describe the same result set as the markers.
     void this.loadMarketSummary(scrapeJobId, generation);
-    if (this.matchRoomEnabled) {
-      void this.refreshRoomMatches(generation);
+    this.matchScoresLoad = this.refreshRoomMatches(generation);
+    // A job new to the screen (a fresh search, a restore) gets its one
+    // automatic matching run for every room type; a re-read (a room switch,
+    // «Μόνο συγκρίσιμα») is a view change and runs nothing.
+    if (!rereadsJobOnScreen) {
+      void this.runJobMatching(scrapeJobId, generation);
     }
-    // First load and every room switch alike: a room the agent has not judged
-    // for this job gets its one automatic run.
-    void this.autoRunAgentMatching(scrapeJobId, generation);
   }
 
   /** True while `generation` is still the chain that owns the screen. */
@@ -2299,16 +1962,6 @@ export class MapPageComponent implements OnInit, OnDestroy {
     }
   }
 
-  private scheduleMatchRefresh(): void {
-    if (this.matchRefreshTimer) {
-      window.clearTimeout(this.matchRefreshTimer);
-    }
-    this.matchRefreshTimer = window.setTimeout(() => {
-      this.matchRefreshTimer = null;
-      void this.refreshRoomMatches();
-    }, 400);
-  }
-
   private async loadMarketSummary(scrapeJobId: string, generation: number): Promise<void> {
     this.marketSummaryStatus.set("loading");
     try {
@@ -2331,56 +1984,6 @@ export class MapPageComponent implements OnInit, OnDestroy {
       this.marketSummary.set(null);
       this.marketSummaryStatus.set("error");
     }
-  }
-
-  private async loadAmenities(): Promise<void> {
-    if (!this.filters().destination || !this.selectedRoomType()) {
-      this.amenities.set(COMMON_AMENITIES);
-      return;
-    }
-    const params = new URLSearchParams({
-      destination: this.filters().destination,
-      room_type_category: this.selectedRoomType(),
-      check_in: this.filters().check_in,
-      check_out: this.filters().check_out,
-      adults: this.filters().adults,
-      children: this.filters().children,
-      rooms: this.filters().rooms,
-      limit: "200",
-    });
-    // The facilities offered are those of the rooms the reads will show.
-    this.appendComparableScope(params);
-    try {
-      const options = await this.api.get<string[]>("/api/v1/market/amenities", params);
-      const normalizedOptions = this.normalizeAmenityOptions(options);
-      this.amenities.set(normalizedOptions.length ? normalizedOptions : COMMON_AMENITIES);
-      // Selection is held as backend VALUES, so it is pruned against values.
-      const available = new Set(this.amenities().map((option) => option.value));
-      this.selectedAmenities.update((selected) =>
-        new Set(Array.from(selected).filter((amenity) => available.has(amenity))),
-      );
-    } catch {
-      this.amenities.set(COMMON_AMENITIES);
-    }
-  }
-
-  private normalizeAmenityOptions(options: string[]): AmenityOption[] {
-    const rawText = options
-      .flatMap((option) => this.splitFacilities(option))
-      .join("|")
-      .toLocaleLowerCase("el-GR");
-    // Matching happens on VALUES throughout: the scraped facility text is the
-    // backend's vocabulary, and the Greek label plays no part in it.
-    const matched = Array.from(new Set(FACILITY_MATCHERS
-      .filter((facility) => facility.terms.some((term) => rawText.includes(term.toLocaleLowerCase("el-GR"))))
-      .map((facility) => facility.value)));
-    const ordered = [
-      ...matched
-        .map((value) => AMENITY_BY_VALUE.get(value))
-        .filter((option): option is AmenityOption => Boolean(option)),
-      ...COMMON_AMENITIES.filter((option) => !matched.includes(option.value)),
-    ];
-    return ordered.slice(0, 12);
   }
 
   /**
@@ -2464,23 +2067,13 @@ export class MapPageComponent implements OnInit, OnDestroy {
     if (scrapeJobId) {
       params.set("scrape_job_id", scrapeJobId);
     }
-    // Appended to EVERY read, job-scoped or not. It used to be appended only
-    // when there was no `scrape_job_id`, which made the facility checkboxes a
-    // dead control in the normal flow: every read after a search is job-scoped
-    // (markers, market summary, room matching), so the filter reached the
-    // backend nowhere the hotelier could see. The backend has always honoured
-    // `amenities` on the job-scoped read too — its builder applies the same
-    // amenities filter as the snapshot one.
-    for (const amenity of this.selectedAmenities()) {
-      params.append("amenities", amenity);
-    }
     this.appendComparableScope(params);
     return params;
   }
 
   /**
    * «Μόνο συγκρίσιμα» and the room it is judged against, on every read of the
-   * market (competitors, markers, summary, facilities). Always sent, both
+   * market (competitors, markers, summary). Always sent, both
    * values: the comparison set belongs to ONE of the owner's rooms, so a
    * switch of room is a different set even over the same job. The legacy
    * `include_similar` is not sent any more.
@@ -2585,10 +2178,7 @@ export class MapPageComponent implements OnInit, OnDestroy {
     this.mapView?.resetFit();
     this.marketSummary.set(null);
     this.marketSummaryStatus.set("idle");
-    this.matchedCompetitors.set([]);
-    this.hotelMatchScores.clear();
-    this.matchError.set("");
-    this.matchStatus.set("idle");
+    this.clearMatchScores();
     // Deliberately keep lastCompetitorJobId/lastCompetitorSelection: they feed
     // restoreLatestCompetitorSearch (stale entries clean themselves up there).
     this.message.set(START_SEARCH_MESSAGE);

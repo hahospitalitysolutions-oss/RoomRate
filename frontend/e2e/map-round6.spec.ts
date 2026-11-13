@@ -92,7 +92,7 @@ const COMPETITORS = MAP_MARKERS.map((marker) => ({
   review_score: marker.review_score, review_count: marker.review_count,
   price_min_eur: marker.price_per_night_eur, price_max_eur: marker.price_per_night_eur + 20, rooms_left: 3,
   distance_km: marker.distance_km, category_match: marker.category_match, booking_url: marker.booking_url,
-  best_match_score: 80,
+  best_match_score: 80, match_source: "agent",
   packages: [{ room_type: marker.room_type, price_per_night_eur: marker.price_per_night_eur,
     price_total_eur: marker.price_per_night_eur * 4, meals: "", free_cancellation: "", rooms_left: 3,
     match_score: 80, room_type_category: marker.room_type_category, category_match: marker.category_match }],
@@ -118,7 +118,7 @@ type Round6Options = {
   polls?: Array<Record<string, unknown> | number>;
   /** Every scrape-jobs call (the POST payload lives here). */
   calls?: RecordedCall[];
-  /** Every read of maps/own-property, maps/competitors, competitors/, market/summary and market/amenities. */
+  /** Every read of maps/own-property, maps/competitors, competitors/ and market/summary. */
   reads?: ReadCall[];
   /** Every query string sent to onboarding/nearby-destinations (kept apart from `reads`). */
   nearbyReads?: URLSearchParams[];
@@ -127,9 +127,9 @@ type Round6Options = {
 /** The reads of one endpoint (a path suffix such as "/maps/competitors"), oldest first. */
 const readsOf = (reads: ReadCall[], pathSuffix: string) =>
   reads.filter((read) => read.path.endsWith(pathSuffix)).map((read) => read.query);
-/** The match list's own /competitors/ reads: the automatic agent probe reads it too, without a score floor. */
+/** The match-score reads (/competitors/ with match_room=true). */
 const matchListReads = (reads: ReadCall[]) =>
-  readsOf(reads, "/competitors/").filter((query) => query.has("min_match_score"));
+  readsOf(reads, "/competitors/").filter((query) => query.get("match_room") === "true");
 
 async function mockMapRound6(page: Page, options: Round6Options = {}): Promise<void> {
   const {
@@ -159,19 +159,14 @@ async function mockMapRound6(page: Page, options: Round6Options = {}): Promise<v
   });
   await page.route(`${API}/api/v1/maps/own-property**`, (route) => { record(route); return route.fulfill({ json: ownProperty }); });
   await page.route(`${API}/api/v1/maps/competitors**`, (route) => { record(route); return route.fulfill({ json: markerRows }); });
-  await page.route(`${API}/api/v1/competitors/**`, (route) => {
-    record(route);
-    // The automatic-run probe (no score floor) is told the room already has
-    // agent verdicts, so no automatic run joins these scenarios — that run is
-    // comparable.spec.ts's subject.
-    const probe = !new URL(route.request().url()).searchParams.has("min_match_score");
-    return route.fulfill({
-      json: probe ? COMPETITORS.map((row) => ({ ...row, match_source: "agent" })) : COMPETITORS,
-    });
-  });
+  await page.route(`${API}/api/v1/competitors/**`, (route) => { record(route); return route.fulfill({ json: COMPETITORS }); });
   await page.route(`${API}/api/v1/market/summary**`, (route) => { record(route); return route.fulfill({ json: MARKET_SUMMARY }); });
-  // An empty facility list: the page falls back to its own twelve options.
-  await page.route(`${API}/api/v1/market/amenities**`, (route) => { record(route); return route.fulfill({ json: [] }); });
+  // Every job on screen gets its automatic matching call; here every room
+  // type is judged already, so it joins no scenario — that run is
+  // comparable.spec.ts's subject.
+  await page.route(`${API}/api/v1/agents/room-matches`, (route) => route.fulfill({ json: {
+    status: "skipped", matches_written: 0, room_types_matched: 1, skip_reason: "already_matched", source: "agent",
+  } }));
   await page.route(`${API}/api/v1/tracked/competitors**`, (route) =>
     route.fulfill({ json: { owned_property_id: OWNED_PROPERTY_ID, room_type_category: "double", competitors: [] } }));
   await page.route(`${API}/api/v1/scrape-jobs/**`, (route) => {
@@ -213,8 +208,9 @@ test("the form defaults to 40 hotels, caps at 80 and no longer sends deep_crawl_
   await page.getByRole("button", { name: "Εύρεση ανταγωνιστών" }).click();
   await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
 
+  // No room-name filter any more (owner decision 2026-11-13): the search stores every room.
   const payload = postedJob(calls)?.["filters_payload"];
-  expect(payload).toEqual({ limit: 80, match_mode: "catalog_room_name", room_type: "Double Room with Sea View" });
+  expect(payload).toEqual({ limit: 80 });
 });
 
 const chipNames = (page: Page) => page.getByTestId("nearby-chip");
@@ -443,12 +439,12 @@ const markerFor = (page: Page, hotel: string) => page.locator(`.roomrate-marker-
 const cardFor = (page: Page, hotel: string) => page.locator(".competitor-card", { hasText: hotel });
 const openPopup = (page: Page) => page.locator(".mapboxgl-popup");
 
-test("an open marker popup survives a card tick, the map filter and a facility re-read", async ({ page }) => {
-  const reads: ReadCall[] = [];
+test("an open marker popup survives a card tick and the map filter", async ({ page }) => {
   // No «Εσείς»: its 10 km circle zooms the fit out until the markers stack,
   // and this scenario clicks one. The owner's marker has its own scenarios.
-  await mockMapRound6(page, { reads, ownProperty: null });
-  // Tall enough that the facility list at the foot of the filters form is clickable.
+  // (A re-read of the job — «Μόνο συγκρίσιμα» — keeps it open too: see the
+  // no-refit scenario below.)
+  await mockMapRound6(page, { ownProperty: null });
   await page.setViewportSize({ width: 1280, height: 1400 });
 
   await page.goto("/map");
@@ -467,12 +463,6 @@ test("an open marker popup survives a card tick, the map filter and a facility r
   await expect(markers(page)).toHaveCount(1);
   await expect(openPopup(page)).toContainText("Hotel Beta");
   await onlySelected.uncheck();
-  await expect(markers(page)).toHaveCount(3);
-  await expect(openPopup(page)).toContainText("Hotel Beta");
-
-  // A facility tick re-reads the whole job; the summary read is the last thing that re-read starts.
-  await page.locator(".amenity-list .checkbox-row", { hasText: "Δωρεάν WiFi" }).locator("input[type=checkbox]").check();
-  await expect.poll(() => readsOf(reads, "/market/summary").filter((query) => query.has("amenities")).length).toBe(1);
   await expect(markers(page)).toHaveCount(3);
   await expect(openPopup(page)).toHaveCount(1);
   await expect(openPopup(page)).toContainText("Hotel Beta");
@@ -631,18 +621,19 @@ test("«Μόνο συγκρίσιμα» is on by default, and turning it off re-
   await expect(comparableOnly).toBeChecked();
   await expect(page.locator(".header-actions").getByText("2 ανταγωνιστές")).toBeVisible();
   await expect(cardFor(page, "Hotel Beta")).toHaveCount(0);
-  // The match list is on, so its read is part of what the switch re-reads.
-  await page.locator(".match-controls .checkbox-row", { hasText: "Ταίριασμα με το δικό μου δωμάτιο" })
-    .locator("input[type=checkbox]").check();
-  await expect.poll(() => matchListReads(reads).length).toBeGreaterThan(0);
+  // The match scores are always read, so their read is part of what the switch re-reads.
+  await expect.poll(() => matchListReads(reads).length).toBe(1);
   await expect.poll(() => readsOf(reads, "/market/summary").length).toBe(1);
   // Every read carries the switch and the room; the legacy parameter is gone.
-  for (const endpoint of ["/maps/competitors", "/market/summary", "/market/amenities"]) {
+  for (const endpoint of ["/maps/competitors", "/market/summary"]) {
     const last = readsOf(reads, endpoint).at(-1)!;
     expect(last.get("comparable_only"), endpoint).toBe("true");
     expect(last.get("owned_room_type_id"), endpoint).toBe(ROOM_TYPE_ID);
   }
-  expect(matchListReads(reads).at(-1)?.get("comparable_only")).toBe("true");
+  const scores = matchListReads(reads).at(-1)!;
+  expect(scores.get("comparable_only")).toBe("true");
+  expect(scores.get("owned_property_id")).toBe(OWNED_PROPERTY_ID);
+  expect(scores.get("scrape_job_id")).toBe(JOB_ID);
   expect(reads.some((read) => read.query.has("include_similar"))).toBe(false);
 
   await comparableOnly.uncheck();
@@ -658,7 +649,6 @@ test("«Μόνο συγκρίσιμα» is on by default, and turning it off re-
     // Still the job on screen, not a market-wide read.
     expect(last.get("scrape_job_id"), endpoint).toBe(JOB_ID);
   }
-  expect(readsOf(reads, "/market/amenities").at(-1)?.get("comparable_only")).toBe("false");
 
   await comparableOnly.check();
   await expect(page.locator(".header-actions").getByText("2 ανταγωνιστές")).toBeVisible();
@@ -700,28 +690,6 @@ test("«Μόνο συγκρίσιμα» re-reads the job without refitting the c
   await comparableOnly.check();
   await expect(markers(page)).toHaveCount(2);
   await expect(mapContainer).toHaveAttribute("data-fit-count", fitsAfterLoad!);
-});
-
-test("the match list sorts by distance, always for the owner's property", async ({ page }) => {
-  const reads: ReadCall[] = [];
-  await mockMapRound6(page, { reads });
-  await page.setViewportSize({ width: 1280, height: 1400 });
-
-  await page.goto("/map");
-  await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
-  await page.locator(".match-controls .checkbox-row", { hasText: "Ταίριασμα με το δικό μου δωμάτιο" })
-    .locator("input[type=checkbox]").check();
-  const sort = page.locator(".match-controls select");
-  await expect(sort.locator("option")).toHaveText(["Καλύτερο ταίριασμα", "Τιμή", "Απόσταση"]);
-  await sort.selectOption({ label: "Απόσταση" });
-
-  // `sort=distance` is refused (400) without owned_property_id.
-  await expect.poll(() => readsOf(reads, "/competitors/").at(-1)?.get("sort")).toBe("distance");
-  const read = readsOf(reads, "/competitors/").at(-1)!;
-  expect(read.get("owned_property_id")).toBe(OWNED_PROPERTY_ID);
-  expect(read.get("scrape_job_id")).toBe(JOB_ID);
-  // The order is the server's; the distance it sorted by is on each matched card.
-  await expect(page.locator(".matched-card", { hasText: "Hotel Beta" })).toContainText("0,4 km");
 });
 
 test("a completed search links to a price recommendation for that very job", async ({ page }) => {

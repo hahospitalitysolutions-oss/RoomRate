@@ -153,46 +153,62 @@ class PriceRecommendationResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class RoomMatchCandidate(BaseModel):
-    """One competitor room scored by the matching agent.
+def _round_half_up(value: Any) -> Any:
+    """Round a fractional score (87.5 -> 88) instead of failing the answer.
 
-    Used as part of the Anthropic structured-output schema, so it stays free
-    of numeric/string constraints (module docstring). ``c`` is the
-    candidate's index in its chunk's input list — a few output tokens
-    instead of echoing a UUID plus the room name. The service maps it back
-    to the stored identity and drops unknown or repeated indices.
+    One bad row must not sink a whole run: strict ``int`` validation would
+    reject 87.5 and drop every score of the chunk. Rounding is half-up
+    (Python's ``round`` is banker's: 88.5 -> 88); the 0-100 clamp stays in
+    the service. Validators do not alter the JSON schema, so the
+    structured-output contract is still a plain integer.
+    """
+    if isinstance(value, bool) or not isinstance(value, (float, str)):
+        return value
+    try:
+        number = Decimal(str(value).strip())
+    except InvalidOperation:
+        return value  # not a number at all: let int validation reject it
+    if not number.is_finite():
+        return value
+    return int(number.quantize(Decimal(1), rounding=ROUND_HALF_UP))
+
+
+class RoomMatchScore(BaseModel):
+    """The agent's verdict on one competitor room against ONE owned room type.
+
+    Part of the Anthropic structured-output schema, so it stays free of
+    numeric/string constraints (module docstring). ``r`` is the owned room's
+    index in the input's ``reference_rooms``.
     """
 
-    c: int
+    r: int
     score: int
-    category_match: Literal["same", "similar"]
-    reasoning: str
-    # The owner's comparison set (decision 2026-09-30): the model's yes/no
-    # verdict whether a guest looking for the reference room would genuinely
-    # consider this room a substitute. Required, so every scored row carries
-    # a verdict; the read side hides non-comparable rooms by default.
+    # The owner's comparison set (decision 2026-09-30): whether a guest
+    # looking for reference room ``r`` would genuinely consider this room a
+    # substitute. Required, so every scored pair carries a verdict; the read
+    # side hides non-comparable rooms by default.
     comparable: bool
 
     @field_validator("score", mode="before")
     @classmethod
     def _round_fractional_score_half_up(cls, value: Any) -> Any:
-        """Round a fractional score (87.5 -> 88) instead of failing the answer.
+        return _round_half_up(value)
 
-        One bad row must not sink a whole run: strict ``int`` validation
-        would reject 87.5 and drop every score of the job. Rounding is
-        half-up (Python's ``round`` is banker's: 88.5 -> 88); the 0-100
-        clamp stays in the service. Validators do not alter the JSON schema,
-        so the structured-output contract is still a plain integer.
-        """
-        if isinstance(value, bool) or not isinstance(value, (float, str)):
-            return value
-        try:
-            number = Decimal(str(value).strip())
-        except InvalidOperation:
-            return value  # not a number at all: let int validation reject it
-        if not number.is_finite():
-            return value
-        return int(number.quantize(Decimal(1), rounding=ROUND_HALF_UP))
+
+class RoomMatchCandidate(BaseModel):
+    """One competitor room scored against EVERY owned room type in one pass.
+
+    ``c`` is the candidate's index in its chunk's input list — a few output
+    tokens instead of echoing a UUID plus the room name. ``scores`` holds
+    one verdict per owned room (by ``r``). The service maps both indices
+    back to stored identities and drops unknown or repeated ones.
+    ``reasoning`` is one short Greek sentence for the room as a whole
+    (which owned room it corresponds to, or why none).
+    """
+
+    c: int
+    scores: list[RoomMatchScore]
+    reasoning: str
 
 
 class RoomMatchProposal(BaseModel):
@@ -202,26 +218,37 @@ class RoomMatchProposal(BaseModel):
 
 
 class RoomMatchRunRequest(BaseModel):
-    """Request body for ``POST /api/v1/agents/room-matches``."""
+    """Request body for ``POST /api/v1/agents/room-matches``.
+
+    One run scores the job against EVERY active room type of its property.
+    ``only_missing`` is the map's call right after a search: it scores only
+    the room types without rows yet (none: nothing to do) and waits for a
+    run already in flight; the «Νέο ταίριασμα» button sends False and
+    replaces every room type's rows. Older clients still sending
+    ``owned_room_type_id`` are accepted; the field is ignored.
+    """
 
     scrape_job_id: UUID
-    owned_room_type_id: UUID
+    only_missing: bool = False
 
 
 class RoomMatchRunResponse(BaseModel):
-    """Synchronous outcome of one manual matching run.
+    """Synchronous outcome of one matching run over the job's room types.
 
     ``skipped`` means the agent did not run: ``skip_reason`` "no_api_key"
-    (no key configured) or "in_progress" (another run is still scoring this
-    scope — its rows appear on a later read; a run that finishes within the
-    wait comes back as ``completed`` with ITS rows). Quota exhaustion is a
-    429, mirroring the pricing endpoint. ``source`` is the constant
-    ``"agent"`` so the UI can label the refresh button's result without
-    inspecting anything else.
+    (no key configured), "already_matched" (``only_missing`` and every room
+    type already has rows) or "in_progress" (another run is still scoring
+    this job — its rows appear on a later read; a run that finishes within
+    the wait comes back as ``completed`` with ITS rows). Quota exhaustion is
+    a 429, mirroring the pricing endpoint. ``room_types_matched`` counts the
+    owned room types that hold agent rows for the job after the call.
+    ``source`` is the constant ``"agent"`` so the UI can label the result
+    without inspecting anything else.
     """
 
     status: Literal["completed", "error", "skipped"]
     matches_written: int = Field(default=0, ge=0)
+    room_types_matched: int = Field(default=0, ge=0)
     skip_reason: str | None = None
     source: Literal["agent"] = "agent"
 

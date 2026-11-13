@@ -80,82 +80,102 @@ def test_count_runs_today_is_account_scoped_to_matching_runs_in_utc(monkeypatch)
     assert params["account_id"] == ACCOUNT_ID
 
 
-def test_has_matches_checks_the_job_and_owned_room_scope(monkeypatch):
-    engine = _install(monkeypatch, [FakeResult(scalar_value=1)])
+def test_matched_room_type_ids_lists_the_jobs_scored_room_types(monkeypatch):
+    other = UUID("00000000-0000-0000-0000-000000000abd")
+    engine = _install(
+        monkeypatch,
+        [FakeResult(rows=[{"owned_room_type_id": ROOM_TYPE_ID}, {"owned_room_type_id": str(other)}])],
+    )
 
-    assert RoomMatchRepository().has_matches(ACCOUNT_ID, JOB_ID, ROOM_TYPE_ID) is True
+    matched = RoomMatchRepository().matched_room_type_ids(ACCOUNT_ID, JOB_ID)
+
+    assert matched == {ROOM_TYPE_ID, other}
     sql, params = engine.connection.executed[0]
+    assert "SELECT DISTINCT owned_room_type_id" in sql
     assert "roomrate_room_matches" in sql
-    assert params == {
-        "account_id": ACCOUNT_ID,
-        "scrape_job_id": JOB_ID,
-        "owned_room_type_id": ROOM_TYPE_ID,
-    }
+    assert params == {"account_id": ACCOUNT_ID, "scrape_job_id": JOB_ID}
 
 
-def test_has_matches_false_when_no_row_exists(monkeypatch):
-    _install(monkeypatch, [FakeResult(scalar_value=None)])
-
-    assert RoomMatchRepository().has_matches(ACCOUNT_ID, JOB_ID, ROOM_TYPE_ID) is False
-
-
-def test_replace_matches_deletes_then_inserts_in_one_transaction(monkeypatch):
+def test_replace_job_matches_replaces_every_room_type_in_one_transaction(monkeypatch):
+    other = UUID("00000000-0000-0000-0000-000000000abd")
     engine = _install(monkeypatch, [FakeResult(), FakeResult()])
 
-    written = RoomMatchRepository().replace_matches(
+    written = RoomMatchRepository().replace_job_matches(
         account_id=ACCOUNT_ID,
         scrape_job_id=JOB_ID,
-        owned_room_type_id=ROOM_TYPE_ID,
         model_version="claude-sonnet-5-5",
-        matches=[
-            {
-                "property_id": PROPERTY_ID,
-                "room_type": "Double Room",
-                "score": 85,
-                "category_match": "same",
-                "reasoning": "Ίδια κατηγορία και χωρητικότητα.",
-            }
-        ],
+        matches_by_room_type={
+            ROOM_TYPE_ID: [
+                {
+                    "property_id": PROPERTY_ID,
+                    "room_type": "Double Room",
+                    "score": 85,
+                    "category_match": "same",
+                    "reasoning": "Ίδια κατηγορία και χωρητικότητα.",
+                    "comparable": True,
+                }
+            ],
+            # An honest zero-match result still clears its scope.
+            other: [],
+        },
     )
 
     assert written == 1
-    # DELETE + INSERT run inside ONE begin() so a crash between the two can
-    # never leave the (job, room) scope half-replaced.
+    # DELETE + INSERT for ALL room types run inside ONE begin(), so a crash
+    # between the two can never leave a room type half-replaced.
     assert engine.begin_calls == 1
     delete_sql, delete_params = engine.connection.executed[0]
     assert "DELETE FROM roomrate_room_matches" in delete_sql
+    assert "owned_room_type_id = ANY(CAST(:owned_room_type_ids AS uuid[]))" in delete_sql
     assert delete_params == {
         "account_id": ACCOUNT_ID,
         "scrape_job_id": JOB_ID,
-        "owned_room_type_id": ROOM_TYPE_ID,
+        "owned_room_type_ids": [str(ROOM_TYPE_ID), str(other)],
     }
     insert_sql, insert_rows = engine.connection.executed[1]
     assert "INSERT INTO roomrate_room_matches" in insert_sql
+    assert ":comparable" in insert_sql
     assert isinstance(insert_rows, list) and len(insert_rows) == 1
     row = insert_rows[0]
     assert row["account_id"] == ACCOUNT_ID
+    assert row["owned_room_type_id"] == ROOM_TYPE_ID
     assert row["property_id"] == PROPERTY_ID
     assert row["room_type"] == "Double Room"
     assert row["score"] == 85
     assert row["category_match"] == "same"
+    assert row["comparable"] is True
     assert row["model_version"] == "claude-sonnet-5-5"
     assert row["id"]  # each row gets its own uuid
 
 
-def test_replace_matches_with_no_rows_only_clears_the_scope(monkeypatch):
+def test_replace_job_matches_with_no_rows_only_clears_the_scopes(monkeypatch):
     engine = _install(monkeypatch, [FakeResult()])
 
-    written = RoomMatchRepository().replace_matches(
+    written = RoomMatchRepository().replace_job_matches(
         account_id=ACCOUNT_ID,
         scrape_job_id=JOB_ID,
-        owned_room_type_id=ROOM_TYPE_ID,
         model_version="claude-sonnet-5-5",
-        matches=[],
+        matches_by_room_type={ROOM_TYPE_ID: []},
     )
 
     assert written == 0
     assert len(engine.connection.executed) == 1
     assert "DELETE FROM roomrate_room_matches" in engine.connection.executed[0][0]
+
+
+def test_replace_job_matches_without_room_types_touches_nothing(monkeypatch):
+    engine = _install(monkeypatch, [])
+
+    assert (
+        RoomMatchRepository().replace_job_matches(
+            account_id=ACCOUNT_ID,
+            scrape_job_id=JOB_ID,
+            model_version="claude-sonnet-5-5",
+            matches_by_room_type={},
+        )
+        == 0
+    )
+    assert engine.begin_calls == 0
 
 
 def test_insert_run_records_status_model_and_error(monkeypatch):
@@ -202,30 +222,7 @@ def test_fetch_matches_returns_scoped_rows(monkeypatch):
     }
 
 
-def test_replace_matches_persists_the_comparable_verdict_and_reads_it_back(monkeypatch):
-    engine = _install(monkeypatch, [FakeResult(), FakeResult()])
-
-    RoomMatchRepository().replace_matches(
-        account_id=ACCOUNT_ID,
-        scrape_job_id=JOB_ID,
-        owned_room_type_id=ROOM_TYPE_ID,
-        model_version="claude-sonnet-5-5",
-        matches=[
-            {
-                "property_id": PROPERTY_ID,
-                "room_type": "Junior Suite",
-                "score": 85,
-                "category_match": "similar",
-                "reasoning": "Σουίτα, όχι υποκατάστατο.",
-                "comparable": False,
-            }
-        ],
-    )
-
-    insert_sql, insert_rows = engine.connection.executed[1]
-    assert ":comparable" in insert_sql
-    assert insert_rows[0]["comparable"] is False
-
+def test_fetch_matches_reads_the_comparable_verdict_back(monkeypatch):
     read_engine = _install(monkeypatch, [FakeResult(rows=[])])
     RoomMatchRepository().fetch_matches(ACCOUNT_ID, JOB_ID, ROOM_TYPE_ID)
     select_sql, _ = read_engine.connection.executed[0]
@@ -233,7 +230,7 @@ def test_replace_matches_persists_the_comparable_verdict_and_reads_it_back(monke
 
 
 # ---------------------------------------------------------------------------
-# The in-flight lease (migration 20260930_0028): one run per scope.
+# The in-flight lease (migration 20260930_0028): one run per job.
 # ---------------------------------------------------------------------------
 
 HOLDER = UUID("00000000-0000-0000-0000-00000000c0de")
@@ -307,14 +304,3 @@ def test_lease_held_ignores_a_stale_lease(monkeypatch):
     assert held is True
     assert "acquired_at >= now() - :stale_after_seconds * interval '1 second'" in sql
     assert params["account_id"] == ACCOUNT_ID
-
-
-def test_count_matches_counts_the_scope(monkeypatch):
-    engine = _install(monkeypatch, [FakeResult(scalar_value=7)])
-
-    count = RoomMatchRepository().count_matches(ACCOUNT_ID, JOB_ID, ROOM_TYPE_ID)
-
-    sql, params = engine.connection.executed[0]
-    assert count == 7
-    assert "FROM roomrate_room_matches" in sql
-    assert params["owned_room_type_id"] == ROOM_TYPE_ID

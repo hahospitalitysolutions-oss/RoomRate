@@ -67,7 +67,7 @@ const MARKET_SUMMARY = {
   price_median_eur: 61, avg_review_score: 7.8, rooms_left_total: 9,
 };
 
-/** One /competitors/ row for Keira, scored by `source`: a statistical read is what triggers the automatic agent run. */
+/** One /competitors/ row for Keira, scored by `source`. */
 const competitorRows = (source: "agent" | "statistical") => [{
   hotel_name: "Hotel Keira", city: "Faliraki", address: "", property_type: "hotel",
   latitude: 36.34, longitude: 28.2, stars: 4, review_score: 8.8, review_count: 211,
@@ -89,8 +89,8 @@ type MapMocks = {
 async function mockMap(page: Page): Promise<MapMocks> {
   const mocks: MapMocks = { reads: [], calls: [] };
   const record = (url: URL) => mocks.reads.push({ path: url.pathname, query: url.searchParams });
-  // Only the first room has agent verdicts for the job: switching runs the agent for the second.
-  const judgedRooms = new Set<string>([ROOM_TYPE_ID]);
+  // One matching pass judged every room type of the job.
+  const judgedRooms = new Set<string>(ROOM_TYPES.map((room) => room.id));
 
   await seedBrowserState(page);
   await mockMapbox(page);
@@ -111,7 +111,6 @@ async function mockMap(page: Page): Promise<MapMocks> {
     record(new URL(route.request().url()));
     return route.fulfill({ json: MARKET_SUMMARY });
   });
-  await page.route(`${API}/api/v1/market/amenities**`, (route) => route.fulfill({ json: [] }));
   await page.route(`${API}/api/v1/tracked/competitors**`, (route) =>
     route.fulfill({ json: { owned_property_id: OWNED_PROPERTY_ID, room_type_category: "double", competitors: [] } }));
   await page.route(`${API}/api/v1/competitors/**`, (route) => {
@@ -122,11 +121,12 @@ async function mockMap(page: Page): Promise<MapMocks> {
     new URL(route.request().url()).pathname.endsWith("/scrape-jobs/")
       ? route.fulfill({ json: [COMPLETED_JOB] })
       : route.fulfill({ json: COMPLETED_JOB }));
+  // The restored job's automatic call: every room type is judged already.
   await page.route(`${API}/api/v1/agents/room-matches`, (route) => {
     recordCall(mocks.calls, route);
-    const body = route.request().postDataJSON() as { owned_room_type_id: string };
-    judgedRooms.add(body.owned_room_type_id);
-    return route.fulfill({ json: { status: "completed", matches_written: 3, source: "agent" } });
+    return route.fulfill({ json: {
+      status: "skipped", matches_written: 0, room_types_matched: 2, skip_reason: "already_matched", source: "agent",
+    } });
   });
   return mocks;
 }
@@ -164,15 +164,18 @@ test("the room is chosen at the top of the results column, and the filters no lo
   await expect(page.locator(".filters-sidebar select")).toHaveCount(0);
   await expect(page.getByLabel("Σύγκριση για")).toHaveCount(1);
 
-  // Same behaviour as before: every read is for the chosen room, and a room
-  // without verdicts for the job gets its automatic agent run.
+  // The restored job got its one automatic matching call, for the whole job.
+  await expect.poll(() => roomMatchPosts(calls).length).toBe(1);
+  expect(roomMatchPosts(calls)[0].body).toEqual({ scrape_job_id: JOB_ID, only_missing: true });
+
+  // A pure view filter: every read is for the chosen room, and nothing runs.
   const markerReadsBefore = readsOf(reads, "/maps/competitors").length;
   await select.selectOption(SECOND_ROOM_ID);
   await expect.poll(() => readsOf(reads, "/maps/competitors").length).toBeGreaterThan(markerReadsBefore);
   expect(readsOf(reads, "/maps/competitors").at(-1)?.get("owned_room_type_id")).toBe(SECOND_ROOM_ID);
-  await expect.poll(() => roomMatchPosts(calls).length).toBe(1);
-  expect(roomMatchPosts(calls)[0].body).toEqual({ scrape_job_id: JOB_ID, owned_room_type_id: SECOND_ROOM_ID });
   await expect(select).toHaveValue(SECOND_ROOM_ID);
+  await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
+  expect(roomMatchPosts(calls)).toHaveLength(1);
 });
 
 const markers = (page: Page) => page.locator(".roomrate-marker-dot");

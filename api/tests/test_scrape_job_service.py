@@ -777,7 +777,9 @@ def test_booking_runner_args_reuse_scout_cache_for_scheduled_jobs():
     assert args[args.index("--scout-cache-hours") + 1] == "12"
 
 
-def test_booking_runner_args_pass_room_catalog_matching_filters():
+def test_booking_runner_args_pass_meal_and_cancellation_but_never_a_room_name_filter():
+    """A search stores every room of every competitor (owner decision
+    2026-11-13): an older client's ``room_type`` must not narrow it."""
     runner = BookingScrapeJobRunner(timeout_seconds=10)
 
     args = runner._build_args(
@@ -792,7 +794,7 @@ def test_booking_runner_args_pass_room_catalog_matching_filters():
         )
     )
 
-    assert args[args.index("--room-name-query") + 1] == "Suite with Private Pool"
+    assert "--room-name-query" not in args
     assert args[args.index("--required-meal") + 1] == "Very good breakfast included"
     assert args[args.index("--required-free-cancellation") + 1] == "Yes"
 

@@ -405,6 +405,10 @@ class RoomRatesRepository:
                     rp.free_cancellation,
                     rp.price_total_eur,
                     COALESCE(p.amenities_cached, '') AS facilities,
+                    -- The room's own Booking facilities (pipe-separated, as
+                    -- the scraper flattened them); ``facilities`` above is
+                    -- the property-wide union. The matching agent reads both.
+                    rp.package_payload ->> 'facilities' AS room_facilities,
                     {rate_plan_cte_select}
                     rp.rooms_left
                 FROM roomrate_room_packages rp
@@ -445,6 +449,7 @@ class RoomRatesRepository:
                 rates.free_cancellation,
                 rates.price_total_eur,
                 rates.facilities,
+                rates.room_facilities,
                 {rate_plan_outer_select}
                 rates.rooms_left
             FROM rates

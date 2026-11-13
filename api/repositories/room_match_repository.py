@@ -1,12 +1,15 @@
 """Persistence for room-matching agent results and the per-run audit/quota.
 
-Spec 2026-09-29 Α.3. Match rows are only ever written as a full replacement
-of one ``(scrape_job_id, owned_room_type_id)`` scope — DELETE + INSERT inside
-one transaction — so readers never observe a half-replaced set. The agent-run
+Spec 2026-09-29 Α.3. Match rows are keyed per ``(scrape_job_id,
+owned_room_type_id)``. One matching run scores a job against every owned
+room type at once, so its rows are written as a full replacement of each
+scored room type's scope — DELETE + INSERT of all of them inside ONE
+transaction — and readers never observe a half-replaced set. The agent-run
 rows are the light audit trail («γιατί δεν βγήκε AI εκτίμηση») and the basis
 of the daily per-account run quota. A lease row (migration 20260930_0028)
-names the run scoring a scope right now, so a second caller never pays for a
-duplicate run of the same scope.
+names the run scoring a job right now, so a second caller never pays for a
+duplicate run; it is keyed on the job plus an anchor room type (the
+service picks the same one for every caller of the job).
 """
 
 from __future__ import annotations
@@ -48,55 +51,50 @@ class RoomMatchRepository:
             ).scalar()
         return int(value or 0)
 
-    def has_matches(
-        self,
-        account_id: uuid.UUID,
-        scrape_job_id: uuid.UUID,
-        owned_room_type_id: uuid.UUID,
-    ) -> bool:
-        """Whether agent rows already exist for this (job, owned room) scope.
+    def matched_room_type_ids(
+        self, account_id: uuid.UUID, scrape_job_id: uuid.UUID
+    ) -> set[uuid.UUID]:
+        """The owned room types that already hold agent rows for this job.
 
-        The automatic post-scrape trigger uses this for idempotency (spec
-        Α.1): an already-scored job is never re-billed automatically.
+        The automatic run after a search scores only the room types missing
+        here (spec Α.1 idempotency): an already-scored room type is never
+        re-billed automatically.
         """
         with get_engine(role="api").connect() as connection:
-            value = connection.execute(
+            rows = connection.execute(
                 text(
                     """
-                    SELECT 1
+                    SELECT DISTINCT owned_room_type_id
                     FROM roomrate_room_matches
                     WHERE account_id = :account_id
                       AND scrape_job_id = :scrape_job_id
-                      AND owned_room_type_id = :owned_room_type_id
-                    LIMIT 1
                     """
                 ),
-                {
-                    "account_id": account_id,
-                    "scrape_job_id": scrape_job_id,
-                    "owned_room_type_id": owned_room_type_id,
-                },
-            ).scalar()
-        return value is not None
+                {"account_id": account_id, "scrape_job_id": scrape_job_id},
+            ).mappings().all()
+        return {_as_uuid(row["owned_room_type_id"]) for row in rows}
 
-    def replace_matches(
+    def replace_job_matches(
         self,
         *,
         account_id: uuid.UUID,
         scrape_job_id: uuid.UUID,
-        owned_room_type_id: uuid.UUID,
         model_version: str,
-        matches: list[dict[str, Any]],
+        matches_by_room_type: dict[uuid.UUID, list[dict[str, Any]]],
     ) -> int:
-        """Replace every match row of one (job, owned room) scope atomically.
+        """Replace the rows of every given owned room type of one job atomically.
 
-        ``matches`` rows carry ``property_id``, ``room_type``, ``score``,
-        ``category_match``, ``reasoning`` and ``comparable`` (the agent's
-        substitute verdict; a row without one is stored NULL and readers
-        fall back to ``score >= 50``). An empty list simply clears the
-        scope (an honest zero-match rerun falls back to the statistical
-        scores on the read side). Returns the number of rows written.
+        Each key is an owned room type the run scored; its list (possibly
+        empty: an honest zero-match result falls back to the statistical
+        scores on the read side) replaces that room type's scope. Room
+        types not in the mapping keep their rows. Rows carry
+        ``property_id``, ``room_type``, ``score``, ``category_match``,
+        ``reasoning`` and ``comparable`` (a row without a verdict is stored
+        NULL and readers fall back to ``score >= 50``). One transaction for
+        all room types. Returns the number of rows written.
         """
+        if not matches_by_room_type:
+            return 0
         with get_engine(role="api").begin() as connection:
             connection.execute(
                 text(
@@ -104,16 +102,33 @@ class RoomMatchRepository:
                     DELETE FROM roomrate_room_matches
                     WHERE account_id = :account_id
                       AND scrape_job_id = :scrape_job_id
-                      AND owned_room_type_id = :owned_room_type_id
+                      AND owned_room_type_id = ANY(CAST(:owned_room_type_ids AS uuid[]))
                     """
                 ),
                 {
                     "account_id": account_id,
                     "scrape_job_id": scrape_job_id,
-                    "owned_room_type_id": owned_room_type_id,
+                    "owned_room_type_ids": [str(room_id) for room_id in matches_by_room_type],
                 },
             )
-            if not matches:
+            rows = [
+                {
+                    "id": uuid.uuid4(),
+                    "account_id": account_id,
+                    "scrape_job_id": scrape_job_id,
+                    "owned_room_type_id": owned_room_type_id,
+                    "property_id": match["property_id"],
+                    "room_type": match["room_type"],
+                    "score": match["score"],
+                    "category_match": match["category_match"],
+                    "reasoning": match.get("reasoning"),
+                    "comparable": match.get("comparable"),
+                    "model_version": model_version,
+                }
+                for owned_room_type_id, matches in matches_by_room_type.items()
+                for match in matches
+            ]
+            if not rows:
                 return 0
             connection.execute(
                 text(
@@ -130,24 +145,9 @@ class RoomMatchRepository:
                     )
                     """
                 ),
-                [
-                    {
-                        "id": uuid.uuid4(),
-                        "account_id": account_id,
-                        "scrape_job_id": scrape_job_id,
-                        "owned_room_type_id": owned_room_type_id,
-                        "property_id": match["property_id"],
-                        "room_type": match["room_type"],
-                        "score": match["score"],
-                        "category_match": match["category_match"],
-                        "reasoning": match.get("reasoning"),
-                        "comparable": match.get("comparable"),
-                        "model_version": model_version,
-                    }
-                    for match in matches
-                ],
+                rows,
             )
-        return len(matches)
+        return len(rows)
 
     def insert_run(
         self,
@@ -183,32 +183,6 @@ class RoomMatchRepository:
                 },
             )
 
-    def count_matches(
-        self,
-        account_id: uuid.UUID,
-        scrape_job_id: uuid.UUID,
-        owned_room_type_id: uuid.UUID,
-    ) -> int:
-        """How many agent rows the (job, owned room) scope holds right now."""
-        with get_engine(role="api").connect() as connection:
-            value = connection.execute(
-                text(
-                    """
-                    SELECT count(*)
-                    FROM roomrate_room_matches
-                    WHERE account_id = :account_id
-                      AND scrape_job_id = :scrape_job_id
-                      AND owned_room_type_id = :owned_room_type_id
-                    """
-                ),
-                {
-                    "account_id": account_id,
-                    "scrape_job_id": scrape_job_id,
-                    "owned_room_type_id": owned_room_type_id,
-                },
-            ).scalar()
-        return int(value or 0)
-
     def acquire_lease(
         self,
         *,
@@ -217,10 +191,10 @@ class RoomMatchRepository:
         owned_room_type_id: uuid.UUID,
         stale_after_seconds: float,
     ) -> uuid.UUID | None:
-        """Claim the in-flight lease of one (job, owned room) scope.
+        """Claim the in-flight lease of one job (keyed with its anchor room type).
 
         Returns the claiming run's token, or None while a live run holds the
-        scope. One statement: a new lease, or the takeover of a stale one
+        job. One statement: a new lease, or the takeover of a stale one
         (older than ``stale_after_seconds``: a run that died without
         releasing it). Two concurrent claims serialize on the primary key,
         so exactly one of them gets a token.
@@ -293,7 +267,7 @@ class RoomMatchRepository:
         owned_room_type_id: uuid.UUID,
         stale_after_seconds: float,
     ) -> bool:
-        """Whether a live (not stale) run is scoring the (job, owned room) scope."""
+        """Whether a live (not stale) run is scoring the job (anchor room type key)."""
         with get_engine(role="api").connect() as connection:
             value = connection.execute(
                 text(
@@ -347,3 +321,8 @@ class RoomMatchRepository:
                 .all()
             )
         return [dict(row) for row in rows]
+
+
+def _as_uuid(value: Any) -> uuid.UUID:
+    """Driver values come back as UUID (psycopg) or str (other drivers/fakes)."""
+    return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
