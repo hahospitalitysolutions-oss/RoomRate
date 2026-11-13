@@ -1,8 +1,9 @@
 /**
- * «Μόνο συγκρίσιμα» and the automatic agent run (owner decisions 2026-09-30):
- * the comparison set is chosen by the matching agent alone, non-comparable
- * rooms are hidden by default, and switching to another of the owner's rooms
- * runs the agent for it by itself — once per (job, room) per visit.
+ * «Μόνο συγκρίσιμα» and the automatic matching run (owner decisions
+ * 2026-09-30 and 2026-11-13): the comparison set is chosen by the matching
+ * agent alone, non-comparable rooms are hidden by default, ONE matching pass
+ * per job judges every room type of the owner — run by itself once per job
+ * per visit — and «Σύγκριση για» is a pure view filter.
  *
  * Hermetic: every endpoint is mocked with the wildcard FIRST (Playwright
  * matches LIFO, so each specific route below wins). Every read and every
@@ -81,7 +82,7 @@ const competitorRows = (source: "agent" | "statistical") => [{
 type ComparableMapOptions = {
   /** Which rooms already carry agent verdicts for the job; `/competitors/` answers agent rows for those. */
   judgedRooms?: Set<string>;
-  /** The agents POST answer: a run body, or an HTTP error status (429 = quota). */
+  /** The answer of a run that has rooms to judge: a run body, or an HTTP error status (429 = quota). */
   agentRun?: Record<string, unknown> | number;
   /** When set, the agents POST waits for this promise before answering. */
   agentGate?: { current: Promise<void> | null };
@@ -91,10 +92,12 @@ type ComparableMapOptions = {
   calls?: RecordedCall[];
 };
 
+const ALL_ROOMS = ROOM_TYPES.map((room) => room.id);
+
 async function mockComparableMap(page: Page, options: ComparableMapOptions = {}): Promise<void> {
   const {
-    judgedRooms = new Set<string>([ROOM_TYPE_ID]),
-    agentRun = { status: "completed", matches_written: 3, source: "agent" },
+    judgedRooms = new Set<string>(ALL_ROOMS),
+    agentRun = { status: "completed", matches_written: 6, room_types_matched: 2, source: "agent" },
     agentGate = { current: null },
     reads = [],
     calls = [],
@@ -121,10 +124,6 @@ async function mockComparableMap(page: Page, options: ComparableMapOptions = {})
     record(new URL(route.request().url()));
     return route.fulfill({ json: MARKET_SUMMARY });
   });
-  await page.route(`${API}/api/v1/market/amenities**`, (route) => {
-    record(new URL(route.request().url()));
-    return route.fulfill({ json: [] });
-  });
   await page.route(`${API}/api/v1/tracked/competitors**`, (route) =>
     route.fulfill({ json: { owned_property_id: OWNED_PROPERTY_ID, room_type_category: "double", competitors: [] } }));
   await page.route(`${API}/api/v1/competitors/**`, (route) => {
@@ -140,13 +139,19 @@ async function mockComparableMap(page: Page, options: ComparableMapOptions = {})
   await page.route(`${API}/api/v1/agents/room-matches`, async (route) => {
     recordCall(calls, route);
     await agentGate.current;
+    const body = route.request().postDataJSON() as { only_missing: boolean };
+    // The server's only_missing: every room type judged already is an instant skip.
+    if (body.only_missing && ALL_ROOMS.every((room) => judgedRooms.has(room))) {
+      return route.fulfill({ json: {
+        status: "skipped", matches_written: 0, room_types_matched: 2, skip_reason: "already_matched", source: "agent",
+      } });
+    }
     if (typeof agentRun === "number") {
       return route.fulfill({ status: agentRun, json: { detail: "Ημερήσιο όριο εκτιμήσεων agent" } });
     }
-    // A completed run leaves verdicts behind: the next read of that room is agent-scored.
-    const body = route.request().postDataJSON() as { owned_room_type_id: string };
+    // A completed pass leaves verdicts behind for EVERY room type of the job.
     if (agentRun["status"] === "completed") {
-      judgedRooms.add(body.owned_room_type_id);
+      ALL_ROOMS.forEach((room) => judgedRooms.add(room));
     }
     return route.fulfill({ json: agentRun });
   });
@@ -179,15 +184,19 @@ test("«Μόνο συγκρίσιμα» is on by default and off shows every roo
   await expect(cardFor(page, "Hotel Keira")).toHaveCount(1);
   await expect(cardFor(page, "Hotel Lotos")).toHaveCount(0);
   await expect.poll(() => readsOf(reads, "/market/summary").length).toBe(1);
-  for (const endpoint of ["/maps/competitors", "/market/summary", "/market/amenities"]) {
+  for (const endpoint of ["/maps/competitors", "/market/summary", "/competitors/"]) {
     const last = readsOf(reads, endpoint).at(-1)!;
     expect(last.get("comparable_only"), endpoint).toBe("true");
     expect(last.get("owned_room_type_id"), endpoint).toBe(ROOM_TYPE_ID);
     expect(last.has("include_similar"), endpoint).toBe(false);
+    expect(last.has("amenities"), endpoint).toBe(false);
   }
-  // The room already has agent verdicts for this job: nothing is run by itself.
-  await expect.poll(() => readsOf(reads, "/competitors/").length).toBe(1);
-  expect(roomMatchPosts(calls)).toHaveLength(0);
+  // The restored job gets its one automatic call; every room type is judged
+  // already and the screen shows the verdicts, so nothing is re-read.
+  await expect.poll(() => roomMatchPosts(calls).length).toBe(1);
+  expect(roomMatchPosts(calls)[0].body).toEqual({ scrape_job_id: JOB_ID, only_missing: true });
+  await expect(page.getByTestId("match-source-badge")).toHaveText("Εκτίμηση AI");
+  expect(readsOf(reads, "/competitors/")).toHaveLength(1);
 
   await toggle.uncheck();
   await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
@@ -195,58 +204,81 @@ test("«Μόνο συγκρίσιμα» is on by default and off shows every roo
   await expect(cardFor(page, "Hotel Mirto").getByTestId("not-comparable-chip")).toHaveText("Μη συγκρίσιμο");
   await expect(cardFor(page, "Hotel Keira").getByTestId("not-comparable-chip")).toHaveCount(0);
   await expect.poll(() => readsOf(reads, "/market/summary").length).toBe(2);
-  for (const endpoint of ["/maps/competitors", "/market/summary", "/market/amenities"]) {
+  for (const endpoint of ["/maps/competitors", "/market/summary"]) {
     const last = readsOf(reads, endpoint).at(-1)!;
     expect(last.get("comparable_only"), endpoint).toBe("false");
     expect(last.get("owned_room_type_id"), endpoint).toBe(ROOM_TYPE_ID);
   }
+  // A view change: no new matching run.
+  expect(roomMatchPosts(calls)).toHaveLength(1);
 });
 
-test("switching room re-reads with its id and runs the agent for it exactly once, then re-reads", async ({ page }) => {
+test("switching room is a pure view filter: it re-reads with the room's id and runs nothing", async ({ page }) => {
+  const reads: Array<{ path: string; query: URLSearchParams }> = [];
+  const calls: RecordedCall[] = [];
+  await mockComparableMap(page, { reads, calls });
+
+  await openMap(page);
+  await expect.poll(() => roomMatchPosts(calls).length).toBe(1);
+  await expect.poll(() => readsOf(reads, "/competitors/").length).toBe(1);
+  const markerReadsBefore = readsOf(reads, "/maps/competitors").length;
+
+  await roomSelect(page).selectOption(SECOND_ROOM_ID);
+  // Every read after the switch is for the new room: markers, summary and scores.
+  await expect.poll(() => readsOf(reads, "/maps/competitors").length).toBe(markerReadsBefore + 1);
+  for (const endpoint of ["/maps/competitors", "/market/summary", "/competitors/"]) {
+    await expect.poll(() => readsOf(reads, endpoint).at(-1)?.get("owned_room_type_id"), endpoint).toBe(SECOND_ROOM_ID);
+  }
+  // The job's one pass judged this room type too: its scores are the agent's at once.
+  await expect(page.getByTestId("match-source-badge")).toHaveText("Εκτίμηση AI");
+  await expect(cardFor(page, "Hotel Keira")).toContainText("88%");
+  await expect(page.getByTestId("auto-match-pending")).toHaveCount(0);
+
+  await roomSelect(page).selectOption(ROOM_TYPE_ID);
+  await expect.poll(() => readsOf(reads, "/maps/competitors").at(-1)?.get("owned_room_type_id")).toBe(ROOM_TYPE_ID);
+  await expect(page.locator(".header-actions").getByText("1 ανταγωνιστής")).toBeVisible();
+  // No search and no matching run for a room switch.
+  expect(roomMatchPosts(calls)).toHaveLength(1);
+});
+
+test("a job without verdicts gets one pass for every room type, pending on screen, then a re-read", async ({ page }) => {
   const reads: Array<{ path: string; query: URLSearchParams }> = [];
   const calls: RecordedCall[] = [];
   let releaseRun = () => {};
   const agentGate: { current: Promise<void> | null } = {
     current: new Promise<void>((resolve) => { releaseRun = resolve; }),
   };
-  await mockComparableMap(page, { reads, calls, agentGate });
+  await mockComparableMap(page, { reads, calls, agentGate, judgedRooms: new Set<string>() });
 
   await openMap(page);
-  await expect.poll(() => readsOf(reads, "/competitors/").length).toBe(1);
-  const markerReadsBefore = readsOf(reads, "/maps/competitors").length;
-
-  await roomSelect(page).selectOption(SECOND_ROOM_ID);
-  // Every read after the switch is for the new room.
-  await expect.poll(() => readsOf(reads, "/maps/competitors").length).toBe(markerReadsBefore + 1);
-  expect(readsOf(reads, "/maps/competitors").at(-1)?.get("owned_room_type_id")).toBe(SECOND_ROOM_ID);
-  expect(readsOf(reads, "/market/amenities").at(-1)?.get("owned_room_type_id")).toBe(SECOND_ROOM_ID);
-  // No verdicts for it yet: the agent runs by itself, pending on screen.
-  await expect(page.getByTestId("auto-match-pending")).toHaveText("Εκτίμηση AI για το δωμάτιο σε εξέλιξη…");
+  await expect(page.getByTestId("auto-match-pending"))
+    .toHaveText("Ταίριασμα AI για όλους τους τύπους δωματίων σας σε εξέλιξη…");
   await expect.poll(() => roomMatchPosts(calls).length).toBe(1);
-  expect(roomMatchPosts(calls)[0].body).toEqual({ scrape_job_id: JOB_ID, owned_room_type_id: SECOND_ROOM_ID });
-  // Its verdicts are in only once the run answers: nothing re-read yet.
-  expect(readsOf(reads, "/maps/competitors")).toHaveLength(markerReadsBefore + 1);
+  expect(roomMatchPosts(calls)[0].body).toEqual({ scrape_job_id: JOB_ID, only_missing: true });
+  // The statistical set stands until the verdicts are in.
+  await expect(page.getByTestId("match-source-badge")).toHaveText("Στατιστική εκτίμηση");
+  await expect(cardFor(page, "Hotel Keira")).toContainText("64%");
+  const markerReadsBefore = readsOf(reads, "/maps/competitors").length;
 
   releaseRun();
   await expect(page.getByTestId("auto-match-pending")).toHaveCount(0);
-  // The completed run re-reads the job for the same room.
-  await expect.poll(() => readsOf(reads, "/maps/competitors").length).toBe(markerReadsBefore + 2);
-  expect(readsOf(reads, "/maps/competitors").at(-1)?.get("owned_room_type_id")).toBe(SECOND_ROOM_ID);
+  // The completed pass re-reads the job for the room on screen.
+  await expect.poll(() => readsOf(reads, "/maps/competitors").length).toBe(markerReadsBefore + 1);
+  await expect(page.getByTestId("match-source-badge")).toHaveText("Εκτίμηση AI");
+  await expect(cardFor(page, "Hotel Keira")).toContainText("88%");
   await expect(page.getByTestId("auto-match-notice")).toHaveCount(0);
 
-  // Away and back again: the first room has verdicts, the second was already run.
-  await roomSelect(page).selectOption(ROOM_TYPE_ID);
-  await expect.poll(() => readsOf(reads, "/maps/competitors").at(-1)?.get("owned_room_type_id")).toBe(ROOM_TYPE_ID);
+  // The other room type was judged by the same pass: a switch shows its verdicts, posting nothing.
   await roomSelect(page).selectOption(SECOND_ROOM_ID);
-  await expect.poll(() => readsOf(reads, "/maps/competitors").at(-1)?.get("owned_room_type_id")).toBe(SECOND_ROOM_ID);
-  await expect(page.locator(".header-actions").getByText("1 ανταγωνιστής")).toBeVisible();
+  await expect.poll(() => readsOf(reads, "/competitors/").at(-1)?.get("owned_room_type_id")).toBe(SECOND_ROOM_ID);
+  await expect(page.getByTestId("match-source-badge")).toHaveText("Εκτίμηση AI");
   expect(roomMatchPosts(calls)).toHaveLength(1);
 });
 
 test("a failed automatic run shows the fallback notice and is never posted again", async ({ page }) => {
   const reads: Array<{ path: string; query: URLSearchParams }> = [];
   const calls: RecordedCall[] = [];
-  // No room judged yet: the first load itself runs the agent — and the run fails.
+  // No room judged yet: the first load itself runs the pass — and the run fails.
   await mockComparableMap(page, {
     reads, calls, judgedRooms: new Set<string>(),
     agentRun: { status: "error", matches_written: 0, source: "agent" },
@@ -257,23 +289,24 @@ test("a failed automatic run shows the fallback notice and is never posted again
     .toHaveText("Η εκτίμηση AI δεν είναι διαθέσιμη· εμφανίζεται η στατιστική.");
   await expect(page.getByTestId("auto-match-notice")).toHaveClass(/alert-error/);
   expect(roomMatchPosts(calls)).toHaveLength(1);
-  expect(roomMatchPosts(calls)[0].body).toEqual({ scrape_job_id: JOB_ID, owned_room_type_id: ROOM_TYPE_ID });
+  expect(roomMatchPosts(calls)[0].body).toEqual({ scrape_job_id: JOB_ID, only_missing: true });
   // The statistical screen stays: the comparable room is still listed.
   await expect(cardFor(page, "Hotel Keira")).toHaveCount(1);
 
-  // Re-reads of the same pair (the switch off and on) do not retry the run.
+  // Re-reads of the same job (the switch off and on, another room) do not retry the run.
   const toggle = page.getByTestId("comparable-toggle");
   await toggle.uncheck();
   await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
   await toggle.check();
   await expect(page.locator(".header-actions").getByText("1 ανταγωνιστής")).toBeVisible();
-  await expect.poll(() => readsOf(reads, "/market/summary").length).toBe(3);
+  await roomSelect(page).selectOption(SECOND_ROOM_ID);
+  await expect.poll(() => readsOf(reads, "/market/summary").length).toBe(4);
   expect(roomMatchPosts(calls)).toHaveLength(1);
 });
 
-test("a run still in progress elsewhere is a quiet notice, not the failure one", async ({ page }) => {
+test("a run still in progress past the server's waits is asked again, then a quiet notice", async ({ page }) => {
   const calls: RecordedCall[] = [];
-  // The search's own run still holds the room past the server's wait.
+  // The search's own run still holds the job past the server's wait, every time.
   await mockComparableMap(page, {
     calls, judgedRooms: new Set<string>(),
     agentRun: { status: "skipped", matches_written: 0, skip_reason: "in_progress", source: "agent" },
@@ -281,11 +314,10 @@ test("a run still in progress elsewhere is a quiet notice, not the failure one",
 
   await openMap(page);
   const notice = page.getByTestId("auto-match-notice");
-  await expect(notice).toHaveText(
-    "Η εκτίμηση AI για αυτό το δωμάτιο είναι ακόμη σε εξέλιξη· ανανεώστε τη σελίδα σε λίγο για να τη δείτε.",
-  );
+  await expect(notice).toHaveText("Το ταίριασμα AI είναι ακόμη σε εξέλιξη· ανανεώστε τη σελίδα σε λίγο για να το δείτε.");
   await expect(notice).not.toHaveClass(/alert-error/);
-  expect(roomMatchPosts(calls)).toHaveLength(1);
+  // The first answer plus two more asks: each waits up to 150 s on the server.
+  expect(roomMatchPosts(calls)).toHaveLength(3);
   await expect(cardFor(page, "Hotel Keira")).toHaveCount(1);
 });
 
@@ -297,12 +329,10 @@ test("the quota (429) is the same notice, without a retry", async ({ page }) => 
   await expect(page.getByTestId("auto-match-notice"))
     .toHaveText("Η εκτίμηση AI δεν είναι διαθέσιμη· εμφανίζεται η στατιστική.");
   await roomSelect(page).selectOption(SECOND_ROOM_ID);
-  await expect.poll(() => roomMatchPosts(calls).length).toBe(2);
   await roomSelect(page).selectOption(ROOM_TYPE_ID);
   await expect(page.locator(".header-actions").getByText("1 ανταγωνιστής")).toBeVisible();
-  // One run per room, each failing once: nothing is retried by itself.
-  expect(roomMatchPosts(calls).map((call) => (call.body as { owned_room_type_id: string }).owned_room_type_id))
-    .toEqual([ROOM_TYPE_ID, SECOND_ROOM_ID]);
+  // One run per job, failing once: nothing is retried by itself.
+  expect(roomMatchPosts(calls)).toHaveLength(1);
 });
 
 // ---------------------------------------------------------------- pricing

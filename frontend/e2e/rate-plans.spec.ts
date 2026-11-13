@@ -1,6 +1,7 @@
 /**
- * Rate plans (spec §5-§6): the same room's several prices on the map cards,
- * and the pricing page's like-for-like cancellation line.
+ * Rate plans (spec §5-§6): the map's price-origin footnote and the pricing
+ * page's like-for-like cancellation line. (The per-plan rows lived in the
+ * match list, which the 2026-11-13 matching rework removed.)
  *
  * Hermetic like map-round6.spec.ts: every endpoint either page calls is
  * mocked with a `**` glob, the wildcard FIRST (Playwright matches LIFO, so
@@ -186,8 +187,6 @@ function pricingResponse(scope: Record<string, unknown> | null): Record<string, 
 
 type RatePlansOptions = {
   recommendation?: Record<string, unknown>;
-  /** Every `/competitors/` (match list) read, so a test can await a RE-load. */
-  competitorReads?: string[];
 };
 
 /** Mock every endpoint the map and pricing pages call (the map-round6 list plus the pricing pair). */
@@ -205,13 +204,8 @@ async function mockRatePlansApi(page: Page, options: RatePlansOptions = {}): Pro
     route.fulfill({ json: { destination: "Faliraki", canonical: "faliraki", nearby: ["Ιξιά"] } }));
   await page.route(`${API}/api/v1/maps/own-property**`, (route) => route.fulfill({ json: OWN_PROPERTY }));
   await page.route(`${API}/api/v1/maps/competitors**`, (route) => route.fulfill({ json: MAP_MARKERS }));
-  await page.route(`${API}/api/v1/competitors/**`, (route) => {
-    options.competitorReads?.push(new URL(route.request().url()).pathname);
-    return route.fulfill({ json: COMPETITORS });
-  });
+  await page.route(`${API}/api/v1/competitors/**`, (route) => route.fulfill({ json: COMPETITORS }));
   await page.route(`${API}/api/v1/market/summary**`, (route) => route.fulfill({ json: MARKET_SUMMARY }));
-  // An empty facility list: the page falls back to its own twelve options.
-  await page.route(`${API}/api/v1/market/amenities**`, (route) => route.fulfill({ json: [] }));
   await page.route(`${API}/api/v1/market/price-history**`, (route) => route.fulfill({ json: PRICE_HISTORY }));
   await page.route(`${API}/api/v1/tracked/competitors**`, (route) =>
     route.fulfill({ json: { owned_property_id: OWNED_PROPERTY_ID, room_type_category: "double", competitors: [] } }));
@@ -235,112 +229,12 @@ async function mockRatePlansApi(page: Page, options: RatePlansOptions = {}): Pro
     route.fulfill({ json: options.recommendation ?? pricingResponse(null) }));
 }
 
-/** Restore the completed search and open the match list, where packages render. */
-async function openMatchedCards(page: Page): Promise<void> {
-  await page.setViewportSize({ width: 1280, height: 1400 });
-  await page.goto("/map");
-  await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
-  await page.locator(".match-controls .checkbox-row", { hasText: "Ταίριασμα με το δικό μου δωμάτιο" })
-    .locator("input[type=checkbox]").check();
-  await expect(page.locator(".matched-card")).toHaveCount(3);
-}
-
-test("a room with several rate plans collapses to a range and opens into labelled rows", async ({ page }) => {
-  await mockRatePlansApi(page);
-  await openMatchedCards(page);
-
-  const card = page.locator(".matched-card", { hasText: "Ξενοδοχείο Ωμέγα" });
-  // The range spans the EFFECTIVE prices: 87.5 (discounted) to 110 (no
-  // discounted price on the plan, so its main price counts). One format
-  // everywhere on the card: fractional keeps exactly two decimals, whole
-  // numbers keep none — the header min says 87,50 € too, never a rounded 88 €.
-  await expect(card.getByTestId("room-price-range")).toHaveText("από 87,50 € έως 110 €");
-  await expect(card).toContainText("87,50 €–110 €");
-  await expect(card.getByText("88 €")).toHaveCount(0);
-  // Collapsed: no plan rows, no chips yet.
-  await expect(card.getByTestId("rate-plan-list")).toHaveCount(0);
-  await expect(card.getByText("Genius")).toHaveCount(0);
-
-  await card.getByRole("button", { name: "Πλάνα τιμών" }).click();
-  const rows = card.getByTestId("rate-plan-row");
-  await expect(rows).toHaveCount(3);
-  // Genius plan: discounted price with its cents, every chip, the meals text.
-  await expect(rows.nth(0)).toContainText("87,50 €");
-  await expect(rows.nth(0).locator(".rate-plan-chip"))
-    .toHaveText(["Genius", "-12%", "Μη επιστρέψιμη", "Πληρωμή online"]);
-  await expect(rows.nth(0)).toContainText("Πρωινό");
-  // Free-cancellation plan without a discounted price: the main 110 shows.
-  await expect(rows.nth(1)).toContainText("110 €");
-  await expect(rows.nth(1).locator(".rate-plan-chip")).toHaveText(["Δωρεάν ακύρωση"]);
-  // Unknown cancellation type: no chip is invented; the meals text still shows.
-  await expect(rows.nth(2)).toContainText("104 €");
-  await expect(rows.nth(2).locator(".rate-plan-chip")).toHaveCount(0);
-  await expect(rows.nth(2)).toContainText("Ημιδιατροφή");
-
-  // The same button closes the list again.
-  await card.getByRole("button", { name: "Πλάνα τιμών" }).click();
-  await expect(card.getByTestId("rate-plan-list")).toHaveCount(0);
-});
-
-test("packages without rate-plan data render as plain rows, without range or chips", async ({ page }) => {
-  await mockRatePlansApi(page);
-  await openMatchedCards(page);
-
-  // Παλαιό has TWO packages of one room, but no rate-plan data (an old run):
-  // exactly today's rendering — one plain row per package, nothing collapsed.
-  const card = page.locator(".matched-card", { hasText: "Ξενοδοχείο Παλαιό" });
-  const rows = card.locator(".matched-packages .card-row");
-  await expect(rows).toHaveCount(2);
-  await expect(rows.nth(0)).toContainText("Standard Δίκλινο");
-  await expect(rows.nth(0)).toContainText("95 €");
-  await expect(rows.nth(1)).toContainText("120 €");
-  await expect(card.getByTestId("room-price-range")).toHaveCount(0);
-  await expect(card.getByRole("button", { name: "Πλάνα τιμών" })).toHaveCount(0);
-  await expect(card.locator(".rate-plan-chip")).toHaveCount(0);
-});
-
 test("the price-origin footnote appears exactly once under the results", async ({ page }) => {
   await mockRatePlansApi(page);
   await page.goto("/map");
   await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
 
   await expect(page.getByText("Τιμές επίσημης ιστοσελίδας (desktop, χωρίς σύνδεση)")).toHaveCount(1);
-});
-
-test("a lone package with a rate plan shows its discounted price and chips, without an expander", async ({ page }) => {
-  await mockRatePlansApi(page);
-  await openMatchedCards(page);
-
-  const card = page.locator(".matched-card", { hasText: "Βίλα Σελήνη" });
-  const row = card.getByTestId("single-plan-row");
-  // The guest-visible 126 renders — the pre-discount 140 main column never does.
-  await expect(row).toContainText("126 €");
-  await expect(card.getByText("140 €")).toHaveCount(0);
-  await expect(row.locator(".rate-plan-chip")).toHaveText(["Genius", "-10%", "Δωρεάν ακύρωση"]);
-  await expect(row).toContainText("Πρωινό");
-  // Nothing to collapse behind one plan: no range, no button.
-  await expect(card.getByTestId("room-price-range")).toHaveCount(0);
-  await expect(card.getByRole("button", { name: "Πλάνα τιμών" })).toHaveCount(0);
-});
-
-test("a new search lands with every plans list collapsed again", async ({ page }) => {
-  const competitorReads: string[] = [];
-  await mockRatePlansApi(page, { competitorReads });
-  await openMatchedCards(page);
-
-  const card = page.locator(".matched-card", { hasText: "Ξενοδοχείο Ωμέγα" });
-  await card.getByRole("button", { name: "Πλάνα τιμών" }).click();
-  await expect(card.getByTestId("rate-plan-list")).toBeVisible();
-  const readsBeforeSearch = competitorReads.length;
-
-  // Re-run the search from the «Φίλτρα» column, where «Ταίριασμα δωματίου» lives too.
-  await page.getByRole("button", { name: "Εύρεση ανταγωνιστών" }).click();
-
-  // Wait for the NEW match load to land, then check the re-rendered card:
-  // same hotel name, same room, but a fresh row set — it must start closed.
-  await expect.poll(() => competitorReads.length).toBeGreaterThan(readsBeforeSearch);
-  await expect(card.getByTestId("room-price-range")).toBeVisible();
-  await expect(card.getByTestId("rate-plan-list")).toHaveCount(0);
 });
 
 test("a matched cancellation class explains the like-for-like comparison", async ({ page }) => {

@@ -338,8 +338,7 @@ h3 {
 }
 
 /* Field labels: quiet sentence case over the control, not letter-spaced capitals. */
-label span,
-.amenity-list > span {
+label span {
   color: var(--ink-soft);
   display: block;
   font-size: 13px;
@@ -871,39 +870,6 @@ label span,
   font-weight: 700;
 }
 
-.amenity-list {
-  display: grid;
-  gap: 9px;
-  max-height: 280px;
-  overflow-y: auto;
-  padding-right: 4px;
-}
-
-.amenity-list-header {
-  align-items: center;
-  display: flex;
-  justify-content: space-between;
-}
-
-.amenity-list-header span {
-  margin-bottom: 0;
-}
-
-.amenity-list-header button {
-  background: transparent;
-  border: 0;
-  color: var(--sea);
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 700;
-  padding: 0;
-}
-
-.amenity-list-header button:disabled {
-  color: var(--disabled);
-  cursor: not-allowed;
-}
-
 .baseline-room {
   background: var(--surface-sunken);
   border: 1px solid var(--line);
@@ -1161,8 +1127,7 @@ label span,
 
 /* «Μη συγκρίσιμο» (owner decision 2026-09-30): only with «Μόνο συγκρίσιμα»
    off, and muted on purpose: the room is shown for context, not as a rival. */
-.competitor-card .category-chip.is-not-comparable,
-.rate-plan-chip.is-not-comparable {
+.competitor-card .category-chip.is-not-comparable {
   background: var(--background);
   border: 1px dashed var(--line);
   color: var(--muted);
@@ -2286,22 +2251,7 @@ label span,
   padding-top: 14px;
 }
 
-.match-controls input[type="range"] {
-  accent-color: var(--sea);
-  width: 100%;
-}
-
-/* Agents (spec Α.4): the agent's one-line justification under a package's match chip.
-   flex-basis 100% wraps it onto its own line inside the wrapping plan rows;
-   in the grid of plain package rows it simply becomes the next row. */
-.match-reasoning {
-  color: var(--muted);
-  flex-basis: 100%;
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-/* Agents (spec Α.4): the source badge over the match list, with the re-run button beside it. */
+/* Agents (spec Α.4): the match source badge, with the re-run button beside it. */
 .match-source-row {
   align-items: center;
   display: flex;
@@ -2310,147 +2260,13 @@ label span,
   justify-content: space-between;
 }
 
-.matched-list {
-  display: grid;
-  gap: 10px;
-}
-
-.matched-card {
-  align-items: flex-start;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  cursor: pointer;
-  display: flex;
-  gap: 12px;
-  padding: 14px;
-  transition: background-color 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
-}
-
-/* Same map ↔ list linking as the result cards below. */
-.matched-card:hover,
-.matched-card:focus-within {
-  border-color: var(--line-strong);
-  box-shadow: var(--shadow-card);
-}
-
-.matched-card.is-highlighted {
-  background: var(--sea-soft);
-  border-color: var(--sea);
-  box-shadow: 0 0 0 1px var(--sea);
-}
-
-.matched-body {
-  display: grid;
-  flex: 1;
-  gap: 8px;
-  min-width: 0;
-}
-
-/* Only the hotel name may break mid-word: «anywhere» on the whole body let
-   the room names shrink to one letter per line beside their price. */
-.matched-body > .card-row > strong {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.matched-body > small {
-  color: var(--muted);
-}
-
 /* The hotel name: «label span» makes the card body 600, so a bare <strong>
    resolved to 900 and the name stood out heavier than everything else. */
-.competitor-card strong,
-.matched-card strong {
+.competitor-card strong {
   color: var(--ink);
   font-size: 15px;
   font-weight: 700;
   line-height: 1.3;
-}
-
-.matched-packages {
-  border-top: 1px solid var(--line);
-  display: grid;
-  gap: 6px;
-  padding-top: 8px;
-}
-
-.matched-package-meta {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-  justify-content: flex-end;
-  margin-left: auto;
-  min-width: 0;
-}
-
-/* A room row: the name keeps a readable width, and the price/plans part
-   drops under it when the column is too narrow for both on one line. */
-.matched-packages > .card-row {
-  flex-wrap: wrap;
-  row-gap: 4px;
-}
-
-.matched-packages > .card-row > small {
-  flex: 1 1 140px;
-  min-width: 0;
-}
-
-/* Rate plans (spec §5): the opened list of one room's plans. */
-.plans-toggle {
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.rate-plan-list {
-  border-left: 2px solid var(--line);
-  display: grid;
-  gap: 6px;
-  padding: 2px 0 2px 10px;
-}
-
-.rate-plan-row {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.rate-plan-row .match-chip {
-  margin-left: auto;
-}
-
-.rate-plan-price {
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.rate-plan-chip {
-  background: var(--background);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
-  padding: 1px 8px;
-  white-space: nowrap;
-}
-
-/* A room's only plan: the strip sits where the plain row's price would, so it
-   packs to the right and drops the opened list's push-right on the score. */
-.single-plan-row {
-  flex: 1;
-  justify-content: flex-end;
-}
-
-.single-plan-row .match-chip {
-  margin-left: 0;
-}
-
-.rate-plan-meals {
-  color: var(--muted);
 }
 
 /* Rate plans (spec §5): the one-line origin of every price on the page. */
@@ -2854,8 +2670,8 @@ app-select-menu span {
 /* ------------------------------------------------------------------ */
 /* Checkboxes, switch and range: one look across the map page.         */
 /* ------------------------------------------------------------------ */
-.filters-sidebar input[type="checkbox"]:not(.switch-input),
-.results-sidebar input[type="checkbox"]:not(.switch-input) {
+.filters-sidebar input[type="checkbox"],
+.results-sidebar input[type="checkbox"] {
   appearance: none;
   background: var(--panel);
   border: 1.5px solid var(--line-strong);
@@ -2870,8 +2686,8 @@ app-select-menu span {
   width: 18px;
 }
 
-.filters-sidebar input[type="checkbox"]:not(.switch-input)::after,
-.results-sidebar input[type="checkbox"]:not(.switch-input)::after {
+.filters-sidebar input[type="checkbox"]::after,
+.results-sidebar input[type="checkbox"]::after {
   border: solid #fff;
   border-width: 0 2px 2px 0;
   content: "";
@@ -2882,77 +2698,15 @@ app-select-menu span {
   width: 5px;
 }
 
-.filters-sidebar input[type="checkbox"]:not(.switch-input):checked,
-.results-sidebar input[type="checkbox"]:not(.switch-input):checked {
+.filters-sidebar input[type="checkbox"]:checked,
+.results-sidebar input[type="checkbox"]:checked {
   background: var(--sea);
   border-color: var(--sea);
 }
 
-.filters-sidebar input[type="checkbox"]:not(.switch-input):checked::after,
-.results-sidebar input[type="checkbox"]:not(.switch-input):checked::after {
+.filters-sidebar input[type="checkbox"]:checked::after,
+.results-sidebar input[type="checkbox"]:checked::after {
   transform: rotate(45deg) scale(1);
-}
-
-.switch-input {
-  appearance: none;
-  background: var(--line-strong);
-  border-radius: 999px;
-  cursor: pointer;
-  flex-shrink: 0;
-  height: 26px;
-  margin: 0;
-  position: relative;
-  transition: background 160ms ease;
-  width: 46px;
-}
-
-.switch-input::after {
-  background: #fff;
-  border-radius: 50%;
-  box-shadow: 0 1px 3px rgb(29 43 51 / 25%);
-  content: "";
-  height: 20px;
-  left: 3px;
-  position: absolute;
-  top: 3px;
-  transition: transform 160ms ease;
-  width: 20px;
-}
-
-.switch-input:checked {
-  background: var(--sea);
-}
-
-.switch-input:checked::after {
-  transform: translateX(20px);
-}
-
-.match-controls input[type="range"] {
-  --fill: 0%;
-  appearance: none;
-  background: linear-gradient(to right, var(--sea) var(--fill), var(--line) var(--fill));
-  border-radius: 999px;
-  cursor: pointer;
-  height: 6px;
-  margin: 8px 0 4px;
-}
-
-.match-controls input[type="range"]::-webkit-slider-thumb {
-  appearance: none;
-  background: var(--panel);
-  border: 2px solid var(--sea);
-  border-radius: 50%;
-  box-shadow: 0 1px 4px rgb(11 93 122 / 30%);
-  height: 18px;
-  width: 18px;
-}
-
-.match-controls input[type="range"]::-moz-range-thumb {
-  background: var(--panel);
-  border: 2px solid var(--sea);
-  border-radius: 50%;
-  height: 14px;
-  width: 14px;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2975,7 +2729,6 @@ app-select-menu span {
 }
 
 .match-toggle-row {
-  cursor: pointer;
   gap: 12px;
 }
 
@@ -3014,22 +2767,8 @@ app-select-menu span {
   margin: 0;
 }
 
-.match-settings {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  display: grid;
-  gap: 14px;
-  padding: 12px 14px;
-}
-
-.match-range b {
-  color: var(--sea-strong);
-  font-variant-numeric: tabular-nums;
-}
-
 /* ------------------------------------------------------------------ */
-/* «Φίλτρα αναζήτησης»: grouped sections and facility pills.           */
+/* «Φίλτρα αναζήτησης»: grouped sections.                             */
 /* ------------------------------------------------------------------ */
 .filters-title-row h2,
 .filters-sidebar .filter-section-label {
@@ -3070,53 +2809,6 @@ app-select-menu span {
 
 .filters-sidebar .filter-group .roomrate-input {
   min-height: 40px;
-}
-
-.filters-sidebar .filter-group.amenity-list {
-  max-height: none;
-  overflow: visible;
-  padding-right: 14px;
-}
-
-.amenity-list-header .filter-section-label {
-  color: var(--ink);
-  font-family: var(--font-display);
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.amenity-pills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.amenity-pill {
-  background: var(--panel);
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  cursor: pointer;
-  gap: 8px;
-  padding: 6px 12px 6px 8px;
-  transition: background 120ms ease, border-color 120ms ease;
-}
-
-.amenity-pill:hover {
-  border-color: var(--sea);
-}
-
-.amenity-pill.is-checked {
-  background: var(--sea-soft);
-  border-color: var(--sea);
-}
-
-.amenity-pill.is-checked span {
-  color: var(--sea-strong);
-  font-weight: 600;
-}
-
-.amenity-pill span {
-  font-size: 13px !important;
 }
 
 .filters-sidebar .primary-button {

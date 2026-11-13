@@ -1627,6 +1627,8 @@ test("reaching 5/5 writes the stored hide flag for next time", async ({ page }) 
 
   await expect(page).toHaveURL(/\/map/);
   // 5/5: property, room, 2 runs (steps 3 + 5), 3 tracked (step 4) -> hides.
+  // Polled: a bare count of 0 already holds before the checklist first
+  // renders, so a one-shot read raced the write it is about.
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("roomrate_checklist_hidden:e2e-user"))).toBe("1");
   await expect(page.getByTestId("setup-checklist")).toHaveCount(0);
-  expect(await page.evaluate(() => localStorage.getItem("roomrate_checklist_hidden:e2e-user"))).toBe("1");
 });

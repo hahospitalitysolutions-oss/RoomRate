@@ -71,26 +71,26 @@ def run_room_matching(
     request: RoomMatchRunRequest,
     account: AccountContext = Depends(get_account_context),
     scrape_job_service: ScrapeJobService = Depends(get_scrape_job_service),
-    onboarding_repository: OnboardingRepository = Depends(get_onboarding_repository),
     service: RoomMatchingAgentService = Depends(get_room_matching_service),
 ) -> RoomMatchRunResponse:
-    """Run the AI room-matching agent for one (scrape job, owned room) scope.
+    """Run the AI room-matching agent for one scrape job, all room types at once.
 
-    Synchronous (spec 2026-09-29 Α.1): the UI's «Επανεκτίμηση ταιριάσματος»
-    button waits for the outcome. The run REPLACES any existing agent rows
-    for the scope — only the automatic post-scrape trigger is idempotent.
-    When another run is already scoring the scope (the post-scrape run the
-    map's automatic run would otherwise duplicate), this waits for that run
-    and answers with its rows instead of paying for a second one; still
+    One pass scores every competitor room of the job against EVERY active
+    room type of the job's property (owner decision 2026-11-13). The map
+    calls this right after a search with ``only_missing=true``: it scores
+    only the room types without rows yet, and when the post-scrape run is
+    already scoring the job it waits for that run and answers with its rows
+    instead of paying for a second one. «Νέο ταίριασμα» sends
+    ``only_missing=false`` and REPLACES every room type's rows. Still
     running after the wait is ``status: "skipped"`` with ``skip_reason:
     "in_progress"``. Agent failures come back as ``status: "error"`` with
     zero rows (never a 5xx, spec Α.5); a missing API key is ``status:
     "skipped"``; the daily per-account run quota is a 429 like the pricing
     endpoint.
 
-    Deliberately a plain ``def``: the blocking ``service.run`` holds the
-    worker thread up to the Anthropic timeout, so Starlette must run it in
-    the threadpool instead of the event loop.
+    Deliberately a plain ``def``: the blocking run holds the worker thread
+    up to the Anthropic timeout, so Starlette must run it in the threadpool
+    instead of the event loop.
     """
     job = scrape_job_service.get_job(account.account_id, request.scrape_job_id)
     if job is None:
@@ -100,15 +100,18 @@ def run_room_matching(
             status_code=409,
             detail="Scrape job is not completed yet; run matching once it finishes",
         )
-    owned_room = onboarding_repository.get_owned_room_type(
-        account.account_id, request.owned_room_type_id
-    )
-    if owned_room is None:
-        raise HTTPException(status_code=404, detail="Owned room type not found")
 
-    result = service.run(
-        account.account_id, job.id, owned_room, skip_if_existing=False
+    result = service.run_for_job(
+        account.account_id,
+        job,
+        only_missing=request.only_missing,
+        wait_for_run_in_flight=True,
     )
+    if result is None:
+        raise HTTPException(
+            status_code=409,
+            detail="The scrape job's property has no discovered room types to match against",
+        )
     if result.skip_reason == "quota_exceeded":
         raise HTTPException(
             status_code=429,
@@ -120,6 +123,7 @@ def run_room_matching(
     return RoomMatchRunResponse(
         status=result.status,
         matches_written=result.matches_written,
+        room_types_matched=result.room_types_matched,
         skip_reason=result.skip_reason,
     )
 

@@ -250,8 +250,11 @@ async function mockBackend(page: Page, options: MockOptions = {}): Promise<void>
     if (path === "/api/v1/scrape-jobs/" && method === "GET") {
       return json([COMPLETED_JOB]);
     }
-    if (path === "/api/v1/market/amenities") {
-      return json(["Free WiFi | Swimming pool | Breakfast"]);
+    // Every job on screen gets its automatic matching call: judged already.
+    if (path === "/api/v1/agents/room-matches" && method === "POST") {
+      return json({
+        status: "skipped", matches_written: 0, room_types_matched: 1, skip_reason: "already_matched", source: "agent",
+      });
     }
     if (path === "/api/v1/maps/competitors") {
       return json(MAP_MARKERS);
@@ -908,21 +911,24 @@ test.describe("data renders without a second click or manual refresh", () => {
     await mockMapbox(page);
     await interceptAlertSocket(page);
 
-    let releaseAmenities!: () => void;
-    const amenitiesGate = new Promise<void>((resolve) => (releaseAmenities = resolve));
-    let markAmenitiesRequested!: () => void;
-    const amenitiesRequested = new Promise<void>((resolve) => (markAmenitiesRequested = resolve));
-    let amenitiesSettled = false;
-    let amenityReads = 0;
-    await page.route(`${API}/api/v1/market/amenities**`, async (route) => {
-      amenityReads += 1;
-      if (amenityReads > 1) {
-        return route.fulfill({ json: ["Free WiFi | Swimming pool | Breakfast"] });
+    // The nearby defaults are what startup awaits before its reset: holding
+    // their read holds startup in exactly the window under test.
+    let releaseNearby!: () => void;
+    const nearbyGate = new Promise<void>((resolve) => (releaseNearby = resolve));
+    let markNearbyRequested!: () => void;
+    const nearbyRequested = new Promise<void>((resolve) => (markNearbyRequested = resolve));
+    let nearbySettled = false;
+    let nearbyReads = 0;
+    await page.route(`${API}/api/v1/onboarding/nearby-destinations**`, async (route) => {
+      const nearby = { destination: "Faliraki", canonical: "faliraki", nearby: [] as string[] };
+      nearbyReads += 1;
+      if (nearbyReads > 1) {
+        return route.fulfill({ json: nearby });
       }
-      markAmenitiesRequested();
-      await amenitiesGate;
-      amenitiesSettled = true;
-      return route.fulfill({ json: ["Free WiFi | Swimming pool | Breakfast"] });
+      markNearbyRequested();
+      await nearbyGate;
+      nearbySettled = true;
+      return route.fulfill({ json: nearby });
     });
     const newJob = await mockRunningSearchJob(page);
     const jobPosted = page.waitForRequest(
@@ -930,12 +936,12 @@ test.describe("data renders without a second click or manual refresh", () => {
     );
 
     await page.goto("/map");
-    await amenitiesRequested;
+    await nearbyRequested;
 
     await page.getByRole("button", { name: "Εύρεση ανταγωνιστών" }).click();
     await jobPosted;
-    expect(amenitiesSettled).toBe(false);
-    releaseAmenities();
+    expect(nearbySettled).toBe(false);
+    releaseNearby();
     await newJob.letSupersededChainSettle();
 
     const filters = page.locator(".filters-sidebar");
@@ -1063,71 +1069,6 @@ test.describe("data renders without a second click or manual refresh", () => {
       restoredStay.check_in,
       restoredStay.check_out,
     ]);
-  });
-
-  test("a facility ticked while a search runs lands on that search's own read", async ({ page }) => {
-    // A tick is "re-read the job on screen with the filter as it now stands",
-    // and mid-search there is no such job: findCompetitors cleared the job id,
-    // so reloadActiveJobForAmenities finds nothing and starts nothing — the
-    // running search is not superseded by a click on a checkbox. What carries
-    // the filter is the search's OWN read, which builds its params when the
-    // job completes, and that is the half that used to be dropped the moment a
-    // read was job-scoped: every read after a search is.
-    const newJob = { ...COMPLETED_JOB, id: NEW_JOB_ID };
-    const newMarkers = [{ ...MAP_MARKERS[1], hotel_name: "Hotel Gamma" }];
-    let newJobFinished = false;
-    let newJobPolls = 0;
-
-    await mockBackend(page);
-    await mockMapbox(page);
-    await interceptAlertSocket(page);
-
-    // LIFO: registered after mockBackend's wildcard, so these win.
-    await page.route(`${API}/api/v1/scrape-jobs/**`, (route) => {
-      const url = new URL(route.request().url());
-      if (route.request().method() === "POST") {
-        return route.fulfill({ json: { ...newJob, status: "queued", finished_at: null } });
-      }
-      if (url.pathname.endsWith(NEW_JOB_ID)) {
-        newJobPolls += 1;
-        return route.fulfill({
-          json: newJobFinished ? newJob : { ...newJob, status: "running", finished_at: null },
-        });
-      }
-      // The restored job's own reads stay on mockBackend's wildcard.
-      return route.fallback();
-    });
-    const markerQueries: URLSearchParams[] = [];
-    await page.route(`${API}/api/v1/maps/competitors**`, (route) => {
-      const query = new URL(route.request().url()).searchParams;
-      markerQueries.push(query);
-      return route.fulfill({ json: query.get("scrape_job_id") === NEW_JOB_ID ? newMarkers : MAP_MARKERS });
-    });
-
-    // Taller than the default 720: the facility list is the last thing in the
-    // filters sidebar, and at 720 it sits outside that sidebar's scroll clip,
-    // where a real click is swallowed.
-    await page.setViewportSize({ width: 1280, height: 1400 });
-    await page.goto("/map");
-    await expect(page.getByText("Hotel Alpha")).toBeVisible();
-    await page.getByRole("button", { name: "Εύρεση ανταγωνιστών" }).click();
-
-    // Provably mid-search — the job has been polled at least once — and only
-    // after the tick is it allowed to finish.
-    await expect.poll(() => newJobPolls).toBeGreaterThan(0);
-    await page.locator(".amenity-list .checkbox-row", { hasText: "Δωρεάν WiFi" })
-      .locator("input[type=checkbox]").check();
-    newJobFinished = true;
-
-    // The search paints its own rows, ticked checkbox and all.
-    await expect(page.getByText("Hotel Gamma")).toBeVisible();
-    const newJobReads = markerQueries.filter((query) => query.get("scrape_job_id") === NEW_JOB_ID);
-    expect(newJobReads.length).toBeGreaterThan(0);
-    expect(newJobReads[0].getAll("amenities")).toEqual(["Free WiFi"]);
-    // ...and the tick fired no read of its own: mid-search there was no job to
-    // re-read, so every filtered read belongs to the search itself.
-    const filteredReads = markerQueries.filter((query) => query.getAll("amenities").length > 0);
-    expect(filteredReads.every((query) => query.get("scrape_job_id") === NEW_JOB_ID)).toBe(true);
   });
 
   test("pricing page loads market history on load and a recommendation after one click", async ({
