@@ -1,7 +1,7 @@
 /**
  * The collapsible «Φίλτρα αναζήτησης» column of the map page: stay dates, the
- * hotel count, nearby areas, radius, facilities and the «Εύρεση
- * ανταγωνιστών» button with the search's own banners under it.
+ * hotel count, nearby areas, radius and the «Εύρεση ανταγωνιστών» button
+ * with the search's own banners under it.
  *
  * Presentational only: every value comes from the page and every change goes
  * back to it as an output, so the page stays the one owner of the search
@@ -14,8 +14,7 @@ import { Component, input, output } from "@angular/core";
 import { FormsModule } from "@angular/forms";
 
 import { IconComponent } from "../../components/icon.component";
-import type { OwnedPropertyRoomType } from "../../types/market";
-import { AmenityOption, MAX_NEARBY_DESTINATIONS, MapFilters } from "./map-page.constants";
+import { MAX_NEARBY_DESTINATIONS, MapFilters } from "./map-page.constants";
 
 export type MapFilterChange = { key: keyof MapFilters; value: string };
 
@@ -28,10 +27,15 @@ export type MapFilterChange = { key: keyof MapFilters; value: string };
       <h2>Φίλτρα αναζήτησης</h2>
       <button class="panel-toggle-button" type="button" (click)="collapseRequest.emit()">Απόκρυψη</button>
     </div>
-    <!-- The room itself is chosen at the top of the results column («Σύγκριση για»); a new search runs for it. -->
-    <div *ngIf="baselineRoom()" class="baseline-room">
-      <strong>{{ baselineRoom()?.room_type }}</strong>
-      <small>Το RoomRate ταιριάζει δωμάτια ανταγωνιστών με παρόμοια ονόματα και την ίδια κανονικοποιημένη κατηγορία.</small>
+    <!--
+      A search is for the whole property (owner decision 2026-11-13): it
+      stores every room of every competitor, and the AI matches them with all
+      the owner's room types. «Σύγκριση για», at the top of the results
+      column, only picks which room type's results are shown.
+    -->
+    <div class="baseline-room" data-testid="search-scope-note">
+      <strong>Όλοι οι τύποι δωματίων σας</strong>
+      <small>Η αναζήτηση φέρνει όλα τα δωμάτια των ανταγωνιστών και το AI τα ταιριάζει με κάθε τύπο δωματίου σας.</small>
     </div>
     <div class="filter-group">
     <div class="filter-section-label"><app-icon name="map-pin" [size]="16"></app-icon>Περιοχή</div>
@@ -95,19 +99,6 @@ export type MapFilterChange = { key: keyof MapFilters; value: string };
     </div>
     </div>
 
-    <div class="filter-group amenity-list">
-      <div class="amenity-list-header">
-        <span class="filter-section-label"><app-icon name="check" [size]="16"></app-icon>Δημοφιλέστερες παροχές</span>
-        <button type="button" [disabled]="!selectedAmenities().size" (click)="amenitiesClear.emit()">Καθαρισμός</button>
-      </div>
-      <div class="amenity-pills">
-        <label *ngFor="let amenity of amenities()" class="checkbox-row amenity-pill" [class.is-checked]="selectedAmenities().has(amenity.value)">
-          <input type="checkbox" [checked]="selectedAmenities().has(amenity.value)" (change)="amenityToggle.emit(amenity.value)">
-          <span>{{ amenity.label }}</span>
-        </label>
-      </div>
-    </div>
-
     <button class="primary-button" type="button" [disabled]="searching()" (click)="findRequest.emit()">
       {{ searching() ? "Γίνεται αναζήτηση" : "Εύρεση ανταγωνιστών" }}
     </button>
@@ -127,14 +118,10 @@ export type MapFilterChange = { key: keyof MapFilters; value: string };
 export class MapFiltersSidebarComponent {
   readonly maxNearbyDestinations = MAX_NEARBY_DESTINATIONS;
 
-  /** The owner's room a new search runs for, or null before one is known. */
-  readonly baselineRoom = input<OwnedPropertyRoomType | null>(null);
   readonly filters = input.required<MapFilters>();
   readonly nearbyDestinations = input.required<string[]>();
   readonly nearbyDraft = input.required<string>();
   readonly canAddNearbyDestination = input.required<boolean>();
-  readonly amenities = input.required<AmenityOption[]>();
-  readonly selectedAmenities = input.required<ReadonlySet<string>>();
   /** A search is being started or polled: the button waits for it. */
   readonly searching = input.required<boolean>();
   readonly message = input.required<string>();
@@ -149,8 +136,6 @@ export class MapFiltersSidebarComponent {
   readonly nearbyDraftChange = output<string>();
   readonly nearbyAdd = output<void>();
   readonly nearbyRemove = output<string>();
-  readonly amenityToggle = output<string>();
-  readonly amenitiesClear = output<void>();
   readonly findRequest = output<void>();
 
   change(key: keyof MapFilters, value: string): void {

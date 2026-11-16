@@ -243,19 +243,25 @@ export type Competitor = {
 };
 
 /**
- * Agents (spec Α.1): manual re-run of the room-matching agent for one
- * (completed job, reference room) pair. 429 when the daily quota is spent.
+ * Agents (spec Α.1, reworked 2026-11-13): one room-matching pass over a
+ * completed job for EVERY room type of the property. `only_missing` scores
+ * only the room types without verdicts yet (the automatic call after a
+ * search); false replaces them all («Ξανά ταίριασμα»). 429 when the daily
+ * quota is spent.
  */
 export type RoomMatchRunRequest = {
   scrape_job_id: string;
-  owned_room_type_id: string;
+  only_missing: boolean;
 };
 
 export type RoomMatchRunResponse = {
   status: "completed" | "error" | "skipped";
   matches_written: number;
-  // Skips only: "in_progress" means another run is still scoring this room
-  // (its rows appear on a later read); "no_api_key" means AI is off.
+  /** Owned room types holding verdicts for the job after the call. */
+  room_types_matched?: number;
+  // Skips only: "in_progress" means another run is still scoring this job
+  // (its rows appear on a later read); "already_matched" means every room
+  // type already has verdicts; "no_api_key" means AI is off.
   skip_reason?: string | null;
   source: "agent";
 };

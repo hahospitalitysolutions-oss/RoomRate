@@ -1,9 +1,11 @@
 """Tests for the room-matching agent service (spec 2026-09-29 Μέρος Α).
 
-The Anthropic client is always faked (mirroring the real
-``messages.parse`` surface of the installed SDK 0.115.0); no test performs
-network I/O. Every failure path must end in an ``error`` audit row and ZERO
-match rows — never an exception to the caller (spec Α.5).
+One pass per job scores every competitor room against ALL the owner's room
+types (owner decision 2026-11-13). The Anthropic client is always faked
+(mirroring the real ``messages.parse`` surface of the installed SDK
+0.115.0); no test performs network I/O. Every failure path must end in an
+``error`` audit row and ZERO match rows — never an exception to the caller
+(spec Α.5).
 """
 
 from __future__ import annotations
@@ -17,18 +19,24 @@ from uuid import UUID
 import anthropic
 import pytest
 
-from api.schemas.agents import RoomMatchCandidate, RoomMatchProposal
+from api.schemas.agents import RoomMatchCandidate, RoomMatchProposal, RoomMatchScore
 from api.services.room_matching_agent import (
     ROOM_MATCHING_SYSTEM_PROMPT,
     RoomMatchingAgentService,
     _build_agent_chunks,
+    _chunk_size,
+    _lease_anchor,
+    _validated_matches,
 )
 
 
 ACCOUNT_ID = UUID("00000000-0000-0000-0000-000000000001")
 JOB_ID = UUID("00000000-0000-0000-0000-000000000777")
 OWNED_PROPERTY_ID = UUID("00000000-0000-0000-0000-000000000456")
-ROOM_TYPE_ID = UUID("00000000-0000-0000-0000-000000000abc")
+# The selected room type sorts AFTER the triple, so the lease anchor (the
+# smallest id) is not simply "the first room".
+DOUBLE_ID = UUID("00000000-0000-0000-0000-000000000abc")
+TRIPLE_ID = UUID("00000000-0000-0000-0000-000000000aaa")
 PROPERTY_A = UUID("00000000-0000-0000-0000-0000000000f1")
 PROPERTY_B = UUID("00000000-0000-0000-0000-0000000000f2")
 
@@ -94,9 +102,11 @@ class _FakeClient:
 
 
 class FakeMatchRepository:
-    def __init__(self, runs_today=0, existing=False, count_error=None, replace_error=None):
+    """In-memory match store keyed per (job, owned room type)."""
+
+    def __init__(self, runs_today=0, matched=(), count_error=None, replace_error=None):
         self.runs_today = runs_today
-        self.existing = existing
+        self.matched = set(matched)
         self.count_error = count_error
         self.replace_error = replace_error
         self.replace_calls = []
@@ -108,14 +118,19 @@ class FakeMatchRepository:
             raise self.count_error
         return self.runs_today
 
-    def has_matches(self, account_id, scrape_job_id, owned_room_type_id):
-        return self.existing
+    def matched_room_type_ids(self, account_id, scrape_job_id):
+        return set(self.matched)
 
-    def replace_matches(self, **kwargs):
+    def replace_job_matches(self, **kwargs):
         if self.replace_error is not None:
             raise self.replace_error
         self.replace_calls.append(kwargs)
-        return len(kwargs["matches"])
+        for room_id, rows in kwargs["matches_by_room_type"].items():
+            if rows:
+                self.matched.add(room_id)
+            else:
+                self.matched.discard(room_id)
+        return sum(len(rows) for rows in kwargs["matches_by_room_type"].values())
 
     def insert_run(self, **kwargs):
         if self.insert_run_error is not None:
@@ -134,13 +149,18 @@ class FakeRatesRepository:
 
 
 class FakeOnboardingRepository:
-    def __init__(self, selected_room_type=None):
-        self.selected_room_type = selected_room_type
+    def __init__(self, rooms=None, selected=None):
+        self.rooms = rooms if rooms is not None else []
+        self.selected = selected
         self.calls = []
 
+    def list_room_types(self, account_id, owned_property_id):
+        self.calls.append(("list", account_id, owned_property_id))
+        return [dict(room) for room in self.rooms]
+
     def get_selected_room_type(self, account_id, owned_property_id):
-        self.calls.append((account_id, owned_property_id))
-        return self.selected_room_type
+        self.calls.append(("selected", account_id, owned_property_id))
+        return self.selected
 
 
 # ---------------------------------------------------------------------------
@@ -148,9 +168,9 @@ class FakeOnboardingRepository:
 # ---------------------------------------------------------------------------
 
 
-def _owned_room(**overrides) -> dict:
+def _double_room(**overrides) -> dict:
     room = {
-        "id": ROOM_TYPE_ID,
+        "id": DOUBLE_ID,
         "owned_property_id": OWNED_PROPERTY_ID,
         "room_type": "Double Room with Sea View",
         "room_type_category": "double",
@@ -163,15 +183,42 @@ def _owned_room(**overrides) -> dict:
     return room
 
 
+def _triple_room(**overrides) -> dict:
+    room = {
+        "id": TRIPLE_ID,
+        "owned_property_id": OWNED_PROPERTY_ID,
+        "room_type": "Triple Room",
+        "room_type_category": "triple",
+        "sample_price_per_night_eur": 120.0,
+        "sample_meals": None,
+        "sample_free_cancellation": None,
+        "sample_facilities": None,
+    }
+    room.update(overrides)
+    return room
+
+
+def _owned_rooms() -> list[dict]:
+    """The selected double first, then the triple (as ``owned_rooms`` orders them)."""
+    return [_double_room(), _triple_room()]
+
+
 def _job_rows() -> list[dict]:
     """Two competitor properties; property A sells the same room in 2 plans."""
     return [
         {
             "property_id": PROPERTY_A,
             "hotel_name": "Aegean View",
+            "property_type": "Hotel",
+            "stars": 4,
+            "review_score": 8.7,
+            "review_count": 412,
+            "facilities": "Pool|Parking|WiFi",
             "room_type": "Double Room Sea View",
             "room_type_category": "double",
             "room_attributes": {"capacity": 2, "view": "sea"},
+            "room_facilities": "Air conditioning|Balcony|Sea view|Air conditioning",
+            "rooms_left": 3,
             "price_per_night_eur": 90.0,
             "discounted_price_per_night_eur": 81.0,
             "cancellation_type": "free",
@@ -181,9 +228,16 @@ def _job_rows() -> list[dict]:
         {
             "property_id": PROPERTY_A,
             "hotel_name": "Aegean View",
+            "property_type": "Hotel",
+            "stars": 4,
+            "review_score": 8.7,
+            "review_count": 412,
+            "facilities": "Pool|Parking|WiFi",
             "room_type": "Double Room Sea View",
             "room_type_category": "double",
             "room_attributes": {"capacity": 2, "view": "sea"},
+            "room_facilities": "Air conditioning|Balcony|Sea view",
+            "rooms_left": 0,
             "price_per_night_eur": 110.0,
             "discounted_price_per_night_eur": None,
             "cancellation_type": "non_refundable",
@@ -205,18 +259,25 @@ def _job_rows() -> list[dict]:
     ]
 
 
-def _candidate(**overrides) -> RoomMatchCandidate:
-    # c=0 is Aegean's "Double Room Sea View" (same category ranks first);
-    # c=1 is Blue Bay's "Suite with Garden View".
-    values = {
-        "c": 0,
-        "score": 88,
-        "category_match": "same",
-        "reasoning": "Ίδια κατηγορία, ίδια θέα, ίδια χωρητικότητα.",
-        "comparable": True,
-    }
-    values.update(overrides)
-    return RoomMatchCandidate(**values)
+def _verdicts(*pairs) -> list[RoomMatchScore]:
+    """``(r, score, comparable)`` tuples -> the per-room-type verdicts."""
+    return [RoomMatchScore(r=r, score=score, comparable=comparable) for r, score, comparable in pairs]
+
+
+def _candidate(c=0, scores=None, reasoning="Αντιστοιχεί στο δίκλινο: ίδια θέα και χωρητικότητα."):
+    # c=0 is Aegean's "Double Room Sea View" (in a reference pool: ranks
+    # first); c=1 is Blue Bay's "Suite with Garden View".
+    if scores is None:
+        scores = _verdicts((0, 88, True), (1, 30, False))
+    return RoomMatchCandidate(c=c, scores=scores, reasoning=reasoning)
+
+
+def _proposal(*candidates) -> RoomMatchProposal:
+    return RoomMatchProposal(matches=list(candidates) or [_candidate()])
+
+
+def _client_for(proposal) -> _FakeClient:
+    return _FakeClient(result=_FakeParseResult(proposal))
 
 
 def _service(
@@ -238,7 +299,8 @@ def _service(
         factory = lambda: client  # noqa: E731
     service = RoomMatchingAgentService(
         match_repository=repository,
-        onboarding_repository=onboarding_repository or FakeOnboardingRepository(),
+        onboarding_repository=onboarding_repository
+        or FakeOnboardingRepository(rooms=[_triple_room(), _double_room()], selected=_double_room()),
         rates_repository_factory=lambda account_id: rates,
         api_key=api_key,
         model="claude-sonnet-5-5",
@@ -254,15 +316,14 @@ def _run(service, **overrides):
     kwargs = {
         "account_id": ACCOUNT_ID,
         "scrape_job_id": JOB_ID,
-        "owned_room": _owned_room(),
+        "owned_rooms": _owned_rooms(),
     }
     kwargs.update(overrides)
     return service.run(**kwargs)
 
 
-# ---------------------------------------------------------------------------
-# Skip paths (no LLM call, no rows, one ``skipped`` audit row with the reason)
-# ---------------------------------------------------------------------------
+def _stored(repository, room_id, call=0) -> list[dict]:
+    return repository.replace_calls[call]["matches_by_room_type"][room_id]
 
 
 def _skipped_row(reason: str) -> dict:
@@ -273,6 +334,11 @@ def _skipped_row(reason: str) -> dict:
         "model": "claude-sonnet-5-5",
         "error_message": reason,
     }
+
+
+# ---------------------------------------------------------------------------
+# Skip paths (no LLM call, no rows, one ``skipped`` audit row with the reason)
+# ---------------------------------------------------------------------------
 
 
 def test_no_api_key_skips_without_building_a_client():
@@ -307,31 +373,44 @@ def test_quota_reached_skips_with_quota_reason_and_a_skipped_audit_row():
     assert repository.run_rows == [_skipped_row("quota_exceeded")]
 
 
-def test_existing_rows_skip_only_when_asked():
-    repository = FakeMatchRepository(existing=True)
-    proposal = RoomMatchProposal(matches=[_candidate()])
-    client = _FakeClient(result=_FakeParseResult(proposal))
+def test_only_missing_skips_when_every_room_type_is_matched_and_a_full_run_replaces():
+    repository = FakeMatchRepository(matched={DOUBLE_ID, TRIPLE_ID})
+    client = _client_for(_proposal())
     service, _, _ = _service(match_repository=repository, client=client)
 
-    auto = _run(service, skip_if_existing=True)
-    manual = _run(service, skip_if_existing=False)
+    auto = _run(service, only_missing=True)
+    manual = _run(service, only_missing=False)
 
-    # The automatic post-scrape trigger is idempotent (spec Α.1)...
+    # The automatic runs are idempotent (spec Α.1) — and a no-op leaves no
+    # audit row (the map asks once per visit)...
     assert auto.status == "skipped"
     assert auto.skip_reason == "already_matched"
-    assert repository.run_rows[0] == _skipped_row("already_matched")
-    # ...while the manual «Επανεκτίμηση» replaces the rows.
+    assert auto.room_types_matched == 2
+    assert repository.run_rows[0]["status"] == "ok"
+    # ...while «Νέο ταίριασμα» replaces every room type's rows.
     assert manual.status == "completed"
-    assert len(repository.replace_calls) == 1
+    assert set(repository.replace_calls[0]["matches_by_room_type"]) == {DOUBLE_ID, TRIPLE_ID}
+
+
+def test_only_missing_scores_just_the_room_types_without_rows():
+    repository = FakeMatchRepository(matched={DOUBLE_ID})
+    client = _client_for(_proposal(_candidate(scores=_verdicts((0, 70, True)))))
+    service, _, _ = _service(match_repository=repository, client=client)
+
+    result = _run(service, only_missing=True)
+
+    payload = json.loads(client.messages.parse_kwargs["messages"][0]["content"])
+    # Only the triple is offered — as r=0 of THIS call — and only its rows move.
+    assert [room["room_type"] for room in payload["reference_rooms"]] == ["Triple Room"]
+    assert set(repository.replace_calls[0]["matches_by_room_type"]) == {TRIPLE_ID}
+    assert result.status == "completed"
+    assert result.room_types_matched == 2
 
 
 def test_quota_check_failure_serves_unmetered():
     """Quota tracking being down must not block the run (pricing idiom)."""
     repository = FakeMatchRepository(count_error=RuntimeError("quota table down"))
-    proposal = RoomMatchProposal(matches=[_candidate()])
-    service, _, _ = _service(
-        match_repository=repository, client=_FakeClient(result=_FakeParseResult(proposal))
-    )
+    service, _, _ = _service(match_repository=repository, client=_client_for(_proposal()))
 
     result = _run(service)
 
@@ -339,39 +418,38 @@ def test_quota_check_failure_serves_unmetered():
 
 
 # ---------------------------------------------------------------------------
-# Happy path
+# Happy path: one pass, rows for every room type, one audit row
 # ---------------------------------------------------------------------------
 
 
-def test_happy_path_writes_matches_and_an_ok_audit_row():
-    proposal = RoomMatchProposal(
-        matches=[
-            _candidate(),
-            _candidate(
-                c=1,
-                score=35,
-                category_match="similar",
-                reasoning="Σουίτα με θέα κήπο, διαφορετική κατηγορία.",
-            ),
-        ]
+def test_one_pass_writes_rows_for_every_room_type_and_one_ok_audit_row():
+    proposal = _proposal(
+        _candidate(c=0, scores=_verdicts((0, 88, True), (1, 25, False))),
+        _candidate(
+            c=1,
+            scores=_verdicts((0, 35, False), (1, 81, True)),
+            reasoning="Σουίτα 3 ατόμων: αντιστοιχεί στο τρίκλινο.",
+        ),
     )
-    client = _FakeClient(result=_FakeParseResult(proposal))
+    client = _client_for(proposal)
     service, repository, _ = _service(client=client)
 
     result = _run(service)
 
+    # ONE model call covers both room types.
+    assert len(client.messages.calls) == 1
     assert result.status == "completed"
-    assert result.matches_written == 2
+    assert result.matches_written == 4
+    assert result.room_types_matched == 2
+    assert len(repository.replace_calls) == 1
     replace = repository.replace_calls[0]
     assert replace["account_id"] == ACCOUNT_ID
     assert replace["scrape_job_id"] == JOB_ID
-    assert replace["owned_room_type_id"] == ROOM_TYPE_ID
     assert replace["model_version"] == "claude-sonnet-5-5"
-    stored = {(match["property_id"], match["room_type"]) for match in replace["matches"]}
-    assert stored == {
-        (PROPERTY_A, "Double Room Sea View"),
-        (PROPERTY_B, "Suite with Garden View"),
-    }
+    double = {(m["room_type"], m["score"], m["comparable"]) for m in _stored(repository, DOUBLE_ID)}
+    triple = {(m["room_type"], m["score"], m["comparable"]) for m in _stored(repository, TRIPLE_ID)}
+    assert double == {("Double Room Sea View", 88, True), ("Suite with Garden View", 35, False)}
+    assert triple == {("Double Room Sea View", 25, False), ("Suite with Garden View", 81, True)}
     assert repository.run_rows == [
         {
             "account_id": ACCOUNT_ID,
@@ -383,9 +461,20 @@ def test_happy_path_writes_matches_and_an_ok_audit_row():
     ]
 
 
+def test_category_match_is_derived_per_room_type_not_asked_of_the_model():
+    service, repository, _ = _service(client=_client_for(_proposal()))
+
+    _run(service)
+
+    double = {m["room_type"]: m["category_match"] for m in _stored(repository, DOUBLE_ID)}
+    triple = {m["room_type"]: m["category_match"] for m in _stored(repository, TRIPLE_ID)}
+    assert double == {"Double Room Sea View": "same"}
+    assert triple == {"Double Room Sea View": "similar"}
+    assert "category_match" not in RoomMatchCandidate.model_json_schema()["properties"]
+
+
 def test_call_shape_is_minimal_and_the_system_prompt_is_greek():
-    proposal = RoomMatchProposal(matches=[_candidate()])
-    client = _FakeClient(result=_FakeParseResult(proposal))
+    client = _client_for(_proposal())
     service, _, _ = _service(client=client)
 
     _run(service)
@@ -399,12 +488,11 @@ def test_call_shape_is_minimal_and_the_system_prompt_is_greek():
     assert kwargs["system"] == ROOM_MATCHING_SYSTEM_PROMPT
     assert "ελληνικά" in kwargs["system"]
     assert "120" in kwargs["system"]
+    assert "ΟΛΟΥΣ τους τύπους δωματίων" in kwargs["system"]
 
 
-def test_each_call_uses_8k_output_the_matching_timeout_and_a_single_retry():
-    """Sizing fix: one 8192-token call / 30 s / 2 retries failed a real job."""
-    proposal = RoomMatchProposal(matches=[_candidate()])
-    client = _FakeClient(result=_FakeParseResult(proposal))
+def test_each_call_uses_16k_output_the_matching_timeout_and_a_single_retry():
+    client = _client_for(_proposal())
     service, _, _ = _service(client=client, timeout_seconds=77.5)
 
     _run(service)
@@ -425,17 +513,196 @@ def test_matching_service_wiring_uses_the_matching_timeout(monkeypatch):
     assert service.timeout_seconds == 95.0
 
 
+def test_input_payload_carries_every_room_type_hotel_facts_and_room_facilities():
+    client = _client_for(_proposal())
+    service, _, rates = _service(client=client)
+
+    _run(service)
+
+    payload = json.loads(client.messages.parse_kwargs["messages"][0]["content"])
+    references = payload["reference_rooms"]
+    assert [(room["r"], room["room_type"]) for room in references] == [
+        (0, "Double Room with Sea View"),
+        (1, "Triple Room"),
+    ]
+    double = references[0]
+    assert double["room_type_category"] == "double"
+    assert double["sample_price_per_night_eur"] == 95.0
+    assert double["facilities"] == ["AC", "WiFi", "Balcony"]
+    assert double["meals"] == "Πρωινό"
+    assert references[1]["max_persons"] == 3
+    assert references[1]["facilities"] == []
+
+    # Hotels once per chunk under h; ids never reach the model.
+    assert payload["hotels"] == [
+        {
+            "h": 0,
+            "name": "Aegean View",
+            "property_type": "Hotel",
+            "stars": 4.0,
+            "review_score": 8.7,
+            "review_count": 412,
+            "facilities": ["Pool", "Parking", "WiFi"],
+        },
+        {"h": 1, "name": "Blue Bay"},
+    ]
+    candidates = payload["candidates"]
+    # The two plans of the same room collapse into ONE candidate.
+    assert [(cand["c"], cand["h"], cand["room_type"]) for cand in candidates] == [
+        (0, 0, "Double Room Sea View"),
+        (1, 1, "Suite with Garden View"),
+    ]
+    assert all("property_id" not in cand for cand in candidates)
+    room = candidates[0]
+    assert room["max_persons"] == 2
+    assert room["room_facts"] == {"view": "sea"}
+    # The room's own Booking facilities, de-duplicated.
+    assert room["room_facilities"] == ["Air conditioning", "Balcony", "Sea view"]
+    assert room["rooms_left"] == 3
+    plans = room["plans"]
+    assert plans["price_min_eur"] == 90.0
+    assert plans["price_max_eur"] == 110.0
+    assert plans["discounted_price_min_eur"] == 81.0
+    assert plans["cancellation_types"] == ["free", "non_refundable"]
+    assert plans["meals_options"] == ["Ημιδιατροφή", "Πρωινό"]
+    assert plans["has_genius_discount"] is True
+    assert plans["package_count"] == 2
+    assert "room_facilities" not in candidates[1]
+
+    # The scrape job scopes the read; the own property is excluded and
+    # singles stay out (no owned single room).
+    assert str(rates.last_filters.scrape_job_id) == str(JOB_ID)
+    assert str(rates.last_filters.owned_property_id) == str(OWNED_PROPERTY_ID)
+    assert rates.last_filters.include_similar is True
+    assert rates.last_filters.room_type_category == "double"
+
+
+def test_an_owned_single_room_brings_single_rooms_into_the_pool():
+    single = _double_room(id=UUID(int=5), room_type="Single Room", room_type_category="single")
+    service, _, rates = _service(client=_client_for(_proposal()))
+
+    _run(service, owned_rooms=[_double_room(), single])
+
+    assert rates.last_filters.room_type_category == "single"
+    assert rates.last_filters.include_similar is True
+
+
+# ---------------------------------------------------------------------------
+# owned_rooms / run_for_job: every active room type, the selected one first
+# ---------------------------------------------------------------------------
+
+
+def _job(job_type="competitor_search", owned_property_id=OWNED_PROPERTY_ID):
+    return SimpleNamespace(id=JOB_ID, job_type=job_type, owned_property_id=owned_property_id)
+
+
+def test_owned_rooms_lists_every_room_type_with_the_selected_one_first():
+    onboarding = FakeOnboardingRepository(
+        rooms=[_triple_room(), _double_room(), {"room_type": "No id"}, _double_room()],
+        selected=_double_room(),
+    )
+    service, _, _ = _service(onboarding_repository=onboarding)
+
+    rooms = service.owned_rooms(ACCOUNT_ID, OWNED_PROPERTY_ID)
+
+    assert [room["id"] for room in rooms] == [DOUBLE_ID, TRIPLE_ID]
+
+
+def test_run_for_completed_job_scores_every_room_type_in_one_pass():
+    client = _client_for(_proposal())
+    service, repository, _ = _service(client=client)
+
+    result = service.run_for_completed_job(ACCOUNT_ID, _job())
+
+    assert result.status == "completed"
+    assert len(client.messages.calls) == 1
+    payload = json.loads(client.messages.parse_kwargs["messages"][0]["content"])
+    assert [room["room_type"] for room in payload["reference_rooms"]] == [
+        "Double Room with Sea View",
+        "Triple Room",
+    ]
+    assert set(repository.replace_calls[0]["matches_by_room_type"]) == {DOUBLE_ID, TRIPLE_ID}
+
+
+def test_run_for_completed_job_is_idempotent_over_existing_rows():
+    repository = FakeMatchRepository(matched={DOUBLE_ID, TRIPLE_ID})
+    factory = _RaisingFactory()
+    service, _, _ = _service(match_repository=repository, client_factory=factory)
+
+    result = service.run_for_completed_job(ACCOUNT_ID, _job())
+
+    assert factory.called is False
+    assert result.status == "skipped"
+    assert result.skip_reason == "already_matched"
+
+
+def test_run_for_completed_job_without_key_skips_before_any_lookup():
+    onboarding = FakeOnboardingRepository(rooms=_owned_rooms(), selected=_double_room())
+    service, _, _ = _service(api_key="", onboarding_repository=onboarding)
+
+    result = service.run_for_completed_job(ACCOUNT_ID, _job())
+
+    assert result.status == "skipped"
+    assert result.skip_reason == "no_api_key"
+    assert onboarding.calls == []
+    assert service.match_repository.run_rows == [_skipped_row("no_api_key")]
+
+
+def test_run_for_completed_job_without_room_types_returns_none():
+    onboarding = FakeOnboardingRepository(rooms=[{"room_type": "No id"}], selected=None)
+    service, repository, _ = _service(onboarding_repository=onboarding)
+
+    assert service.run_for_completed_job(ACCOUNT_ID, _job()) is None
+    assert repository.run_rows == []
+
+
+def test_run_for_completed_job_without_an_owned_property_returns_none():
+    service, repository, _ = _service()
+
+    assert service.run_for_completed_job(ACCOUNT_ID, _job(owned_property_id=None)) is None
+    assert repository.run_rows == []
+
+
+def test_a_job_without_a_selected_room_type_still_scores_every_room_type():
+    onboarding = FakeOnboardingRepository(rooms=_owned_rooms(), selected=None)
+    service, repository, _ = _service(
+        onboarding_repository=onboarding, client=_client_for(_proposal())
+    )
+
+    result = service.run_for_job(ACCOUNT_ID, _job(), only_missing=False, wait_for_run_in_flight=True)
+
+    assert result.status == "completed"
+    assert set(repository.replace_calls[0]["matches_by_room_type"]) == {DOUBLE_ID, TRIPLE_ID}
+
+
+def test_more_room_types_than_the_ceiling_score_the_first_ten(caplog):
+    rooms = [_double_room()] + [
+        _triple_room(id=UUID(int=100 + n), room_type=f"Room {n}") for n in range(11)
+    ]
+    client = _client_for(_proposal())
+    service, repository, _ = _service(client=client)
+
+    with caplog.at_level("WARNING"):
+        _run(service, owned_rooms=rooms)
+
+    payload = json.loads(client.messages.parse_kwargs["messages"][0]["content"])
+    assert len(payload["reference_rooms"]) == 10
+    assert payload["reference_rooms"][0]["room_type"] == "Double Room with Sea View"
+    assert len(repository.replace_calls[0]["matches_by_room_type"]) == 10
+    assert any("reference ceiling reached" in record.message for record in caplog.records)
+
+
 # ---------------------------------------------------------------------------
 # Candidate selection: EVERY room is offered (600-room safety ceiling only)
 # ---------------------------------------------------------------------------
 
 
 def _large_job_rows() -> list[dict]:
-    """400 rooms: 50 properties x (2 same-category + 6 cheaper similar rooms).
+    """400 rooms: 50 properties x (2 double-pool + 6 cheaper suite rooms).
 
-    Similar prices are unique (50 + 6*i + j) so the rank is exact: every
-    same-category room first (despite higher prices), then the similar
-    rooms cheapest first. All 400 are offered — no per-property cap.
+    Suite prices are unique (50 + 6*i + j) so the rank is exact: every
+    room in a reference pool first (despite higher prices), then the rest
+    cheapest first. All 400 are offered — no per-property cap.
     """
     rows = []
     for i in range(50):
@@ -464,12 +731,12 @@ def _large_job_rows() -> list[dict]:
 
 
 def _ceiling_job_rows() -> list[dict]:
-    """700 rooms: 70 properties x (3 same-category + 6 priced + 1 unpriced similar).
+    """700 rooms: 70 properties x (3 double + 6 priced + 1 unpriced suite).
 
-    Same-category rooms are the DEAREST and similar prices are unique
-    (50 + 6*i + j), so the 600 kept are exact: all 210 same-category rooms,
-    then the 390 cheapest similar ones (properties 0-64); the 30 dearest
-    priced and all 70 unpriced similar rooms fall past the ceiling.
+    Double rooms are the DEAREST and suite prices are unique, so the 600
+    kept are exact: all 210 doubles, then the 390 cheapest suites
+    (properties 0-64); the 30 dearest priced and all 70 unpriced suites fall
+    past the ceiling.
     """
     rows = []
     for i in range(70):
@@ -505,8 +772,6 @@ def _ceiling_job_rows() -> list[dict]:
 
 
 def test_every_room_type_of_a_property_is_offered_without_a_per_property_cap():
-    # 7 room types of ONE property: all 7 are candidates (the old cap was 4),
-    # same category first despite the higher price, then cheapest similar.
     rows = [
         {
             "property_id": PROPERTY_A,
@@ -518,7 +783,7 @@ def test_every_room_type_of_a_property_is_offered_without_a_per_property_cap():
         for n in range(7)
     ]
 
-    chunks = _build_agent_chunks(_owned_room(), rows)
+    chunks = _build_agent_chunks([_double_room()], rows)
 
     assert len(chunks) == 1
     assert [identity["room_type"] for identity in chunks[0].identities] == [
@@ -527,26 +792,36 @@ def test_every_room_type_of_a_property_is_offered_without_a_per_property_cap():
     assert [cand["c"] for cand in chunks[0].payload["candidates"]] == list(range(7))
 
 
-def test_all_400_rooms_are_offered_same_category_first():
-    chunks = _build_agent_chunks(_owned_room(), _large_job_rows())
+def test_rooms_in_the_pool_of_any_room_type_rank_first():
+    rows = [
+        {"property_id": PROPERTY_A, "hotel_name": "A", "room_type": "Suite", "room_type_category": "suite", "price_per_night_eur": 50.0},
+        {"property_id": PROPERTY_A, "hotel_name": "A", "room_type": "Triple", "room_type_category": "triple", "price_per_night_eur": 300.0},
+        {"property_id": PROPERTY_B, "hotel_name": "B", "room_type": "Twin", "room_type_category": "twin", "price_per_night_eur": 200.0},
+    ]
+
+    chunks = _build_agent_chunks(_owned_rooms(), rows)
+
+    # Twin is in the double's pool, Triple is the triple's own category.
+    assert [identity["room_type"] for identity in chunks[0].identities] == ["Twin", "Triple", "Suite"]
+
+
+def test_all_400_rooms_are_offered_pool_rooms_first():
+    chunks = _build_agent_chunks([_double_room()], _large_job_rows())
 
     offered = [identity["room_type"] for chunk in chunks for identity in chunk.identities]
     assert len(chunks) == 10
     assert len(offered) == len(set(offered)) == 400
-    # Every same-category room first, despite higher prices; then the rest.
     assert set(offered[:100]) == {f"Double Room {i}-{k}" for i in range(50) for k in range(2)}
     assert set(offered[100:]) == {f"Suite {i}-{j}" for i in range(50) for j in range(6)}
 
 
 def test_safety_ceiling_keeps_the_600_most_relevant_of_700_rooms(caplog):
     with caplog.at_level("WARNING"):
-        chunks = _build_agent_chunks(_owned_room(), _ceiling_job_rows())
+        chunks = _build_agent_chunks([_double_room()], _ceiling_job_rows())
 
     offered = [identity["room_type"] for chunk in chunks for identity in chunk.identities]
     assert len(chunks) == 15
     assert len(offered) == len(set(offered)) == 600
-    # Same category first despite the highest prices, then the cheapest
-    # similar rooms; unknown prices rank last, so they are what falls off.
     assert set(offered[:210]) == {f"Double Room {i}-{k}" for i in range(70) for k in range(3)}
     assert set(offered[210:]) == {f"Suite {i}-{j}" for i in range(65) for j in range(6)}
     assert not any(name.startswith("Studio") for name in offered)
@@ -556,16 +831,26 @@ def test_safety_ceiling_keeps_the_600_most_relevant_of_700_rooms(caplog):
 def test_candidate_selection_is_independent_of_row_order():
     rows = _large_job_rows()
 
-    forward = _build_agent_chunks(_owned_room(), rows)
-    backward = _build_agent_chunks(_owned_room(), list(reversed(rows)))
+    forward = _build_agent_chunks(_owned_rooms(), rows)
+    backward = _build_agent_chunks(_owned_rooms(), list(reversed(rows)))
 
     assert [(c.payload, c.identities) for c in forward] == [
         (c.payload, c.identities) for c in backward
     ]
 
 
+def test_the_chunk_shrinks_with_the_number_of_room_types():
+    # ~160 (candidate, room type) verdicts per call, 16 to 40 candidates.
+    assert [_chunk_size(n) for n in (1, 2, 4, 5, 8, 10, 12)] == [40, 40, 40, 32, 20, 16, 16]
+    rooms = [_triple_room(id=UUID(int=100 + n), room_type=f"Room {n}") for n in range(8)]
+
+    chunks = _build_agent_chunks(rooms, _large_job_rows())
+
+    assert [len(chunk.identities) for chunk in chunks] == [20] * 20
+
+
 # ---------------------------------------------------------------------------
-# Chunked parallel calls (at most 40 candidates per call, up to 8 workers)
+# Chunked parallel calls (up to 8 workers)
 # ---------------------------------------------------------------------------
 
 
@@ -583,7 +868,7 @@ def _record_pool_sizes(monkeypatch) -> list:
 
 
 def _echo_responder(fail_when_first_room=None):
-    """Score every candidate of a chunk, echoing ``hotel|room`` as reasoning.
+    """Score every candidate against every room type, echoing ``hotel|room``.
 
     The echo lets a test prove the index round-trip: each stored row's
     reasoning must name the very room it was stored under. A chunk whose
@@ -591,7 +876,9 @@ def _echo_responder(fail_when_first_room=None):
     """
 
     def respond(kwargs):
-        candidates = json.loads(kwargs["messages"][0]["content"])["candidates"]
+        payload = json.loads(kwargs["messages"][0]["content"])
+        candidates = payload["candidates"]
+        hotels = {hotel["h"]: hotel["name"] for hotel in payload["hotels"]}
         if candidates[0]["room_type"] == fail_when_first_room:
             raise anthropic.APITimeoutError(request=None)
         return _FakeParseResult(
@@ -599,10 +886,10 @@ def _echo_responder(fail_when_first_room=None):
                 matches=[
                     RoomMatchCandidate(
                         c=candidate["c"],
-                        score=60,
-                        category_match="similar",
-                        reasoning=f"{candidate['hotel_name']}|{candidate['room_type']}",
-                        comparable=True,
+                        scores=_verdicts(
+                            *((room["r"], 60, True) for room in payload["reference_rooms"])
+                        ),
+                        reasoning=f"{hotels[candidate['h']]}|{candidate['room_type']}",
                     )
                     for candidate in candidates
                 ]
@@ -629,27 +916,29 @@ def test_400_candidates_run_as_10_chunks_on_8_workers_with_per_chunk_indexing(mo
     payloads = [json.loads(call["messages"][0]["content"]) for call in calls]
     assert [len(payload["candidates"]) for payload in payloads] == [40] * 10
     for call, payload in zip(calls, payloads):
-        # c is the position inside the chunk's own list, restarting at 0.
+        # c and h are positions inside the chunk's own lists, restarting at 0.
         assert [cand["c"] for cand in payload["candidates"]] == list(
             range(len(payload["candidates"]))
         )
-        assert payload["reference_room"]["room_type"] == "Double Room with Sea View"
+        assert [hotel["h"] for hotel in payload["hotels"]] == list(range(len(payload["hotels"])))
+        assert len(payload["reference_rooms"]) == 2
         assert call["max_tokens"] == 16_000
         assert call["system"] == ROOM_MATCHING_SYSTEM_PROMPT
-    offered = [(cand["hotel_name"], cand["room_type"]) for p in payloads for cand in p["candidates"]]
-    assert len(set(offered)) == 400
 
     assert result.status == "completed"
-    assert result.matches_written == 400
-    for match in repository.replace_calls[0]["matches"]:
-        assert match["reasoning"] == f"{_hotel_of(match['property_id'])}|{match['room_type']}"
+    # 400 rooms x 2 room types.
+    assert result.matches_written == 800
+    for room_id in (DOUBLE_ID, TRIPLE_ID):
+        rows = _stored(repository, room_id)
+        assert len(rows) == 400
+        for match in rows:
+            assert match["reasoning"] == f"{_hotel_of(match['property_id'])}|{match['room_type']}"
     assert repository.run_rows[0]["status"] == "ok"
     assert repository.run_rows[0]["error_message"] is None
 
 
 def test_a_failed_chunk_keeps_only_its_rooms_statistical_and_the_run_is_ok():
-    # Deterministic rank: chunk 2 = the same-category rooms of properties
-    # 20-39, so its first candidate is "Double Room 20-0".
+    # Deterministic rank: chunk 2 = the double rooms of properties 20-39.
     client = _FakeClient(respond=_echo_responder(fail_when_first_room="Double Room 20-0"))
     service, repository, _ = _service(rows=_large_job_rows(), client=client)
 
@@ -657,11 +946,12 @@ def test_a_failed_chunk_keeps_only_its_rooms_statistical_and_the_run_is_ok():
 
     assert len(client.messages.calls) == 10
     assert result.status == "completed"
-    assert result.matches_written == 360
-    written = {match["room_type"] for match in repository.replace_calls[0]["matches"]}
+    assert result.matches_written == 720
     lost = {f"Double Room {i}-{k}" for i in range(20, 40) for k in range(2)}
-    assert written.isdisjoint(lost)
-    assert "Double Room 19-1" in written and "Double Room 40-0" in written
+    for room_id in (DOUBLE_ID, TRIPLE_ID):
+        written = {match["room_type"] for match in _stored(repository, room_id)}
+        assert written.isdisjoint(lost)
+        assert "Double Room 19-1" in written and "Double Room 40-0" in written
     # ONE audit row for the whole run: ok, naming the failed chunk.
     assert len(repository.run_rows) == 1
     run = repository.run_rows[0]
@@ -684,7 +974,7 @@ def test_every_chunk_failing_is_one_error_run_without_rows():
 
 
 # ---------------------------------------------------------------------------
-# Fractional scores round half-up instead of failing the run
+# Validation of model output
 # ---------------------------------------------------------------------------
 
 
@@ -694,113 +984,58 @@ def test_fractional_scores_round_half_up_and_clamp_instead_of_failing():
     raw = json.dumps(
         {
             "matches": [
-                {**_candidate().model_dump(), "score": 87.5},
-                {**_candidate().model_dump(), "c": 1, "score": 100.5},
+                {"c": 0, "reasoning": "x", "scores": [{"r": 0, "score": 87.5, "comparable": True}]},
+                {"c": 1, "reasoning": "y", "scores": [{"r": 0, "score": 100.5, "comparable": True}]},
             ]
         }
     )
     proposal = RoomMatchProposal.model_validate_json(raw)
-    assert [candidate.score for candidate in proposal.matches] == [88, 101]
-    assert RoomMatchCandidate(**{**_candidate().model_dump(), "score": 88.5}).score == 89
+    assert [candidate.scores[0].score for candidate in proposal.matches] == [88, 101]
+    assert RoomMatchScore(r=0, score=88.5, comparable=True).score == 89
 
-    client = _FakeClient(result=_FakeParseResult(proposal))
-    service, repository, _ = _service(client=client)
+    service, repository, _ = _service(client=_client_for(proposal))
 
     result = _run(service)
 
     assert result.status == "completed"
-    scores = [match["score"] for match in repository.replace_calls[0]["matches"]]
-    assert scores == [88, 100]
-
-
-def test_input_payload_carries_reference_room_and_plan_summaries():
-    proposal = RoomMatchProposal(matches=[_candidate()])
-    client = _FakeClient(result=_FakeParseResult(proposal))
-    service, _, rates = _service(client=client)
-
-    _run(service)
-
-    payload = json.loads(client.messages.parse_kwargs["messages"][0]["content"])
-    reference = payload["reference_room"]
-    assert reference["room_type"] == "Double Room with Sea View"
-    assert reference["room_type_category"] == "double"
-    assert reference["sample_price_per_night_eur"] == 95.0
-    assert reference["facilities"] == "AC|WiFi|Balcony"
-
-    # The two plans of the same room collapse into ONE candidate; the
-    # same-category room ranks first, and each shows its index c.
-    candidates = payload["candidates"]
-    assert [(cand["c"], cand["hotel_name"], cand["room_type"]) for cand in candidates] == [
-        (0, "Aegean View", "Double Room Sea View"),
-        (1, "Blue Bay", "Suite with Garden View"),
-    ]
-    # Ids never reach the model: it answers by index only.
-    assert all("property_id" not in cand for cand in candidates)
-    room = candidates[0]
-    assert room["max_persons"] == 2
-    plans = room["plans"]
-    assert plans["price_min_eur"] == 90.0
-    assert plans["price_max_eur"] == 110.0
-    assert plans["discounted_price_min_eur"] == 81.0
-    assert plans["cancellation_types"] == ["free", "non_refundable"]
-    assert plans["has_genius_discount"] is True
-    assert plans["package_count"] == 2
-
-    # The scrape job scopes the read; the own property is excluded.
-    assert str(rates.last_filters.scrape_job_id) == str(JOB_ID)
-    assert str(rates.last_filters.owned_property_id) == str(OWNED_PROPERTY_ID)
-    assert rates.last_filters.include_similar is True
-    assert rates.last_filters.room_type_category == "double"
-
-
-# ---------------------------------------------------------------------------
-# Validation of model output
-# ---------------------------------------------------------------------------
+    assert [match["score"] for match in _stored(repository, DOUBLE_ID)] == [88, 100]
 
 
 def test_out_of_range_indices_are_dropped_with_a_warning_and_scores_clamped(caplog):
-    proposal = RoomMatchProposal(
-        matches=[
-            _candidate(score=150),  # clamps to 100
-            _candidate(c=2),  # past the 2-candidate chunk: dropped
-            _candidate(c=-1),  # negative: dropped, never wraps to the last room
-        ]
+    proposal = _proposal(
+        _candidate(scores=_verdicts((0, 150, True), (2, 90, True), (-1, 90, True))),
+        _candidate(c=2),  # past the 2-candidate chunk: dropped
+        _candidate(c=-1),  # negative: dropped, never wraps to the last room
     )
-    client = _FakeClient(result=_FakeParseResult(proposal))
-    service, repository, _ = _service(client=client)
+    service, repository, _ = _service(client=_client_for(proposal))
 
     with caplog.at_level("WARNING"):
         result = _run(service)
 
     assert result.status == "completed"
     assert result.matches_written == 1
-    matches = repository.replace_calls[0]["matches"]
-    assert len(matches) == 1
-    assert matches[0]["score"] == 100
+    assert [match["score"] for match in _stored(repository, DOUBLE_ID)] == [100]
+    # A room type the model left out keeps the statistical score.
+    assert _stored(repository, TRIPLE_ID) == []
     assert any("unknown candidate index" in record.message for record in caplog.records)
+    assert any("room-type index" in record.message for record in caplog.records)
 
 
 def test_index_mapping_round_trips_to_the_exact_stored_identity():
     rows = _job_rows()
     rows[0] = {**rows[0], "room_type": "  Double Room Sea View "}
-    proposal = RoomMatchProposal(
-        matches=[
-            _candidate(c=1, score=35, category_match="similar"),
-            _candidate(c=0, score=90),
-            _candidate(c=40, score=99),  # out of range for this chunk: dropped
-            _candidate(c=1, score=10),  # repeated index: first one wins
-        ]
+    proposal = _proposal(
+        _candidate(c=1, scores=_verdicts((0, 35, False))),
+        _candidate(c=0, scores=_verdicts((0, 90, True))),
+        _candidate(c=40, scores=_verdicts((0, 99, True))),  # out of range: dropped
+        _candidate(c=1, scores=_verdicts((0, 10, True))),  # repeated: first one wins
     )
-    client = _FakeClient(result=_FakeParseResult(proposal))
-    service, repository, _ = _service(rows=rows, client=client)
+    service, repository, _ = _service(rows=rows, client=_client_for(proposal))
 
     result = _run(service)
 
     assert result.matches_written == 2
-    stored = [
-        (match["property_id"], match["room_type"], match["score"])
-        for match in repository.replace_calls[0]["matches"]
-    ]
+    stored = [(m["property_id"], m["room_type"], m["score"]) for m in _stored(repository, DOUBLE_ID)]
     # The index maps back to the input's exact identity (UUID object, the
     # stored spelling trimmed), so the read-side join always hits.
     assert stored == [
@@ -809,29 +1044,55 @@ def test_index_mapping_round_trips_to_the_exact_stored_identity():
     ]
 
 
-def test_duplicate_candidates_keep_the_first_row():
-    proposal = RoomMatchProposal(matches=[_candidate(score=80), _candidate(score=60)])
-    client = _FakeClient(result=_FakeParseResult(proposal))
-    service, repository, _ = _service(client=client)
-
-    result = _run(service)
-
-    assert result.matches_written == 1
-    assert repository.replace_calls[0]["matches"][0]["score"] == 80
-
-
-def test_negative_scores_clamp_to_zero_and_reasoning_is_trimmed_to_120():
-    proposal = RoomMatchProposal(
-        matches=[_candidate(score=-5, reasoning="α" * 300)]
-    )
-    client = _FakeClient(result=_FakeParseResult(proposal))
-    service, repository, _ = _service(client=client)
+def test_a_repeated_room_type_verdict_keeps_the_first():
+    proposal = _proposal(_candidate(scores=_verdicts((0, 80, True), (0, 20, False))))
+    service, repository, _ = _service(client=_client_for(proposal))
 
     _run(service)
 
-    match = repository.replace_calls[0]["matches"][0]
+    assert [(m["score"], m["comparable"]) for m in _stored(repository, DOUBLE_ID)] == [(80, True)]
+
+
+def test_negative_scores_clamp_to_zero_and_reasoning_is_trimmed_to_120():
+    proposal = _proposal(_candidate(scores=_verdicts((0, -5, False)), reasoning="α" * 300))
+    service, repository, _ = _service(client=_client_for(proposal))
+
+    _run(service)
+
+    match = _stored(repository, DOUBLE_ID)[0]
     assert match["score"] == 0
     assert len(match["reasoning"]) == 120
+
+
+def test_validated_matches_carry_the_verdict_per_room_type():
+    proposal = _proposal(
+        _candidate(c=0, scores=_verdicts((0, 85, False), (1, 77, True))),
+        _candidate(c=1, scores=_verdicts((1, 30, False))),
+    )
+    identities = [
+        {"property_id": PROPERTY_A, "room_type": "Junior Suite", "room_type_category": "suite"},
+        {"property_id": PROPERTY_B, "room_type": "Double Room", "room_type_category": "double"},
+    ]
+
+    validated = _validated_matches(proposal, identities, _owned_rooms())
+
+    assert [(m["room_type"], m["score"], m["comparable"]) for m in validated[DOUBLE_ID]] == [
+        ("Junior Suite", 85, False),
+    ]
+    assert [(m["room_type"], m["score"], m["comparable"]) for m in validated[TRIPLE_ID]] == [
+        ("Junior Suite", 77, True),
+        ("Double Room", 30, False),
+    ]
+
+
+def test_the_prompt_defines_the_comparable_verdict():
+    assert "comparable" in ROOM_MATCHING_SYSTEM_PROMPT
+    assert "Σουίτα, διαμέρισμα, βίλα" in ROOM_MATCHING_SYSTEM_PROMPT
+
+
+def test_the_comparable_field_is_required_in_the_structured_output():
+    assert "comparable" in RoomMatchScore.model_json_schema()["required"]
+    assert {"c", "scores", "reasoning"} <= set(RoomMatchCandidate.model_json_schema()["required"])
 
 
 # ---------------------------------------------------------------------------
@@ -867,10 +1128,7 @@ def test_api_timeout_yields_error_and_never_raises():
 
 def test_persistence_failure_yields_an_error_audit():
     repository = FakeMatchRepository(replace_error=RuntimeError("db down"))
-    proposal = RoomMatchProposal(matches=[_candidate()])
-    service, _, _ = _service(
-        match_repository=repository, client=_FakeClient(result=_FakeParseResult(proposal))
-    )
+    service, _, _ = _service(match_repository=repository, client=_client_for(_proposal()))
 
     result = _run(service)
 
@@ -882,16 +1140,13 @@ def test_persistence_failure_yields_an_error_audit():
 def test_audit_write_failure_is_swallowed():
     repository = FakeMatchRepository()
     repository.insert_run_error = RuntimeError("audit table down")
-    proposal = RoomMatchProposal(matches=[_candidate()])
-    service, _, _ = _service(
-        match_repository=repository, client=_FakeClient(result=_FakeParseResult(proposal))
-    )
+    service, _, _ = _service(match_repository=repository, client=_client_for(_proposal()))
 
     result = _run(service)
 
     # The matches were written; only the audit row was lost (logged).
     assert result.status == "completed"
-    assert result.matches_written == 1
+    assert result.matches_written == 2
 
 
 def test_no_candidate_rows_completes_with_zero_without_an_llm_call():
@@ -903,9 +1158,8 @@ def test_no_candidate_rows_completes_with_zero_without_an_llm_call():
     assert factory.called is False
     assert result.status == "completed"
     assert result.matches_written == 0
-    # The scope is still cleared (replace-all semantics) and the run audited.
-    assert len(repository.replace_calls) == 1
-    assert repository.replace_calls[0]["matches"] == []
+    # Every room type's scope is still cleared (replace-all) and the run audited.
+    assert repository.replace_calls[0]["matches_by_room_type"] == {DOUBLE_ID: [], TRIPLE_ID: []}
     assert repository.run_rows[0]["status"] == "ok"
 
 
@@ -913,7 +1167,7 @@ def test_rows_without_property_id_cannot_be_candidates():
     """Legacy-source rows carry no property_id, so nothing can be stored."""
     factory = _RaisingFactory()
     rows = [{**_job_rows()[0], "property_id": None}]
-    service, repository, _ = _service(rows=rows, client_factory=factory)
+    service, _, _ = _service(rows=rows, client_factory=factory)
 
     result = _run(service)
 
@@ -923,122 +1177,9 @@ def test_rows_without_property_id_cannot_be_candidates():
 
 
 # ---------------------------------------------------------------------------
-# run_for_completed_job (the post-scrape auto trigger)
-# ---------------------------------------------------------------------------
-
-
-def _job(job_type="competitor_search", owned_property_id=OWNED_PROPERTY_ID):
-    return SimpleNamespace(id=JOB_ID, job_type=job_type, owned_property_id=owned_property_id)
-
-
-def test_run_for_completed_job_resolves_the_selected_room_and_skips_existing():
-    onboarding = FakeOnboardingRepository(selected_room_type=_owned_room())
-    proposal = RoomMatchProposal(matches=[_candidate()])
-    service, repository, _ = _service(
-        onboarding_repository=onboarding,
-        client=_FakeClient(result=_FakeParseResult(proposal)),
-    )
-
-    result = service.run_for_completed_job(ACCOUNT_ID, _job())
-
-    assert onboarding.calls == [(ACCOUNT_ID, OWNED_PROPERTY_ID)]
-    assert result.status == "completed"
-    assert repository.replace_calls[0]["owned_room_type_id"] == ROOM_TYPE_ID
-
-
-def test_run_for_completed_job_is_idempotent_over_existing_rows():
-    onboarding = FakeOnboardingRepository(selected_room_type=_owned_room())
-    repository = FakeMatchRepository(existing=True)
-    factory = _RaisingFactory()
-    service, _, _ = _service(
-        match_repository=repository,
-        onboarding_repository=onboarding,
-        client_factory=factory,
-    )
-
-    result = service.run_for_completed_job(ACCOUNT_ID, _job())
-
-    assert factory.called is False
-    assert result.status == "skipped"
-    assert result.skip_reason == "already_matched"
-
-
-def test_run_for_completed_job_without_key_skips_before_any_lookup():
-    onboarding = FakeOnboardingRepository(selected_room_type=_owned_room())
-    service, _, _ = _service(api_key="", onboarding_repository=onboarding)
-
-    result = service.run_for_completed_job(ACCOUNT_ID, _job())
-
-    assert result.status == "skipped"
-    assert result.skip_reason == "no_api_key"
-    assert onboarding.calls == []
-    assert service.match_repository.run_rows == [_skipped_row("no_api_key")]
-
-
-def test_run_for_completed_job_without_a_selected_room_returns_none():
-    onboarding = FakeOnboardingRepository(selected_room_type=None)
-    service, repository, _ = _service(onboarding_repository=onboarding)
-
-    assert service.run_for_completed_job(ACCOUNT_ID, _job()) is None
-    assert repository.run_rows == []
-
-
-def test_run_for_completed_job_without_an_owned_property_returns_none():
-    service, repository, _ = _service()
-
-    assert service.run_for_completed_job(ACCOUNT_ID, _job(owned_property_id=None)) is None
-    assert repository.run_rows == []
-
-
-def test_run_for_completed_job_tolerates_a_selected_room_without_an_id():
-    """A stale fake/legacy row without ``id`` cannot key match rows."""
-    onboarding = FakeOnboardingRepository(selected_room_type={"room_type": "Double"})
-    service, repository, _ = _service(onboarding_repository=onboarding)
-
-    assert service.run_for_completed_job(ACCOUNT_ID, _job()) is None
-    assert repository.run_rows == []
-
-
-# ---------------------------------------------------------------------------
-# The comparable verdict (owner decision 2026-09-30)
-# ---------------------------------------------------------------------------
-
-
-def test_the_prompt_defines_the_comparable_verdict():
-    assert "comparable" in ROOM_MATCHING_SYSTEM_PROMPT
-    assert "Σουίτα, διαμέρισμα, βίλα" in ROOM_MATCHING_SYSTEM_PROMPT
-
-
-def test_the_comparable_field_is_required_in_the_structured_output():
-    assert "comparable" in RoomMatchCandidate.model_json_schema()["required"]
-
-
-def test_validated_matches_carry_the_verdict_to_persistence():
-    from api.services.room_matching_agent import _validated_matches
-
-    proposal = RoomMatchProposal(
-        matches=[
-            _candidate(c=0, score=85, comparable=False),
-            _candidate(c=1, score=30, comparable=True),
-        ]
-    )
-    identities = [
-        {"property_id": PROPERTY_A, "room_type": "Junior Suite"},
-        {"property_id": PROPERTY_B, "room_type": "Double Room"},
-    ]
-
-    validated = _validated_matches(proposal, identities)
-
-    assert [(row["room_type"], row["score"], row["comparable"]) for row in validated] == [
-        ("Junior Suite", 85, False),
-        ("Double Room", 30, True),
-    ]
-
-
-# ---------------------------------------------------------------------------
-# One run per (job, owned room): the lease (review fix 2026-09-30). The map's
-# automatic run must never pay for a duplicate of the post-scrape run that is
-# still waiting on the model for the same scope.
+# One run per job: the lease (review fix 2026-09-30). The map's call right
+# after a search must never pay for a duplicate of the post-scrape run that
+# is still waiting on the model for the same job.
 # ---------------------------------------------------------------------------
 
 LEASE_HOLDER = UUID("00000000-0000-0000-0000-00000000c0de")
@@ -1048,13 +1189,13 @@ class LeasingMatchRepository(FakeMatchRepository):
     """Adds the lease store. ``held_polls``: lease checks that still see the other run."""
 
     def __init__(
-        self, *, busy=False, held_polls=0, rows_after_wait=0, existing_after_claim=False, **kwargs
+        self, *, busy=False, held_polls=0, matched_after_wait=(), matched_after_claim=(), **kwargs
     ):
         super().__init__(**kwargs)
         self.busy = busy
         self.held_polls = held_polls
-        self.rows_after_wait = rows_after_wait
-        self.existing_after_claim = existing_after_claim
+        self.matched_after_wait = set(matched_after_wait)
+        self.matched_after_claim = set(matched_after_claim)
         self.acquire_calls = []
         self.release_calls = []
         self.claimed = False
@@ -1064,6 +1205,7 @@ class LeasingMatchRepository(FakeMatchRepository):
         if self.busy:
             return None
         self.claimed = True
+        self.matched |= self.matched_after_claim
         return LEASE_HOLDER
 
     def release_lease(self, **kwargs):
@@ -1073,13 +1215,8 @@ class LeasingMatchRepository(FakeMatchRepository):
         if self.held_polls > 0:
             self.held_polls -= 1
             return True
+        self.matched |= self.matched_after_wait
         return False
-
-    def count_matches(self, account_id, scrape_job_id, owned_room_type_id):
-        return self.rows_after_wait
-
-    def has_matches(self, account_id, scrape_job_id, owned_room_type_id):
-        return self.existing or (self.claimed and self.existing_after_claim)
 
 
 class FakeClock:
@@ -1110,10 +1247,14 @@ def _leased_service(repository, *, client=None, client_factory=None, clock=None,
     return service, clock
 
 
-def test_a_run_holds_the_scope_lease_and_releases_it():
+def test_the_lease_anchor_is_the_smallest_room_type_id_for_every_caller():
+    assert _lease_anchor(_owned_rooms()) == TRIPLE_ID
+    assert _lease_anchor(list(reversed(_owned_rooms()))) == TRIPLE_ID
+
+
+def test_a_run_holds_the_job_lease_and_releases_it():
     repository = LeasingMatchRepository()
-    proposal = RoomMatchProposal(matches=[_candidate()])
-    service, _ = _leased_service(repository, client=_FakeClient(result=_FakeParseResult(proposal)))
+    service, _ = _leased_service(repository, client=_client_for(_proposal()))
 
     result = _run(service)
 
@@ -1122,7 +1263,7 @@ def test_a_run_holds_the_scope_lease_and_releases_it():
         {
             "account_id": ACCOUNT_ID,
             "scrape_job_id": JOB_ID,
-            "owned_room_type_id": ROOM_TYPE_ID,
+            "owned_room_type_id": TRIPLE_ID,
             "stale_after_seconds": service.lease_seconds,
         }
     ]
@@ -1130,7 +1271,7 @@ def test_a_run_holds_the_scope_lease_and_releases_it():
         {
             "account_id": ACCOUNT_ID,
             "scrape_job_id": JOB_ID,
-            "owned_room_type_id": ROOM_TYPE_ID,
+            "owned_room_type_id": TRIPLE_ID,
             "holder": LEASE_HOLDER,
         }
     ]
@@ -1147,12 +1288,12 @@ def test_the_lease_is_released_when_the_run_fails():
     assert [call["holder"] for call in repository.release_calls] == [LEASE_HOLDER]
 
 
-def test_the_post_scrape_run_skips_while_another_run_holds_the_scope():
+def test_the_post_scrape_run_skips_while_another_run_holds_the_job():
     repository = LeasingMatchRepository(busy=True)
     factory = _RaisingFactory()
     service, clock = _leased_service(repository, client_factory=factory)
 
-    result = _run(service, skip_if_existing=True)
+    result = _run(service, only_missing=True, wait_for_run_in_flight=False)
 
     assert factory.called is False
     assert result.status == "skipped"
@@ -1163,17 +1304,19 @@ def test_the_post_scrape_run_skips_while_another_run_holds_the_scope():
 
 
 def test_the_endpoint_waits_for_the_run_in_flight_instead_of_paying_twice():
-    repository = LeasingMatchRepository(busy=True, held_polls=2, rows_after_wait=5)
+    repository = LeasingMatchRepository(
+        busy=True, held_polls=2, matched_after_wait={DOUBLE_ID, TRIPLE_ID}
+    )
     factory = _RaisingFactory()
     service, clock = _leased_service(repository, client_factory=factory)
 
-    result = _run(service, skip_if_existing=False)
+    result = _run(service, only_missing=True, wait_for_run_in_flight=True)
 
     # No model call, no rewrite: the other run's rows are the answer.
     assert factory.called is False
     assert repository.replace_calls == []
     assert result.status == "completed"
-    assert result.matches_written == 5
+    assert result.room_types_matched == 2
     assert clock.sleeps == [3.0, 3.0]
     # Nothing ran here: no audit row, no quota unit, no lease to release.
     assert repository.run_rows == []
@@ -1182,7 +1325,9 @@ def test_the_endpoint_waits_for_the_run_in_flight_instead_of_paying_twice():
 
 def test_the_wait_is_bounded_and_reports_in_progress():
     repository = LeasingMatchRepository(busy=True, held_polls=10**6)
-    service, clock = _leased_service(repository, client_factory=_RaisingFactory(), max_wait_seconds=10.0)
+    service, clock = _leased_service(
+        repository, client_factory=_RaisingFactory(), max_wait_seconds=10.0
+    )
 
     result = _run(service)
 
@@ -1193,7 +1338,7 @@ def test_the_wait_is_bounded_and_reports_in_progress():
 
 
 def test_a_run_in_flight_that_left_no_rows_reads_as_an_error():
-    repository = LeasingMatchRepository(busy=True, held_polls=1, rows_after_wait=0)
+    repository = LeasingMatchRepository(busy=True, held_polls=1)
     service, _ = _leased_service(repository, client_factory=_RaisingFactory())
 
     result = _run(service)
@@ -1202,13 +1347,13 @@ def test_a_run_in_flight_that_left_no_rows_reads_as_an_error():
     assert result.matches_written == 0
 
 
-def test_the_post_scrape_run_rechecks_the_rows_once_it_holds_the_lease():
+def test_only_missing_rechecks_the_rows_once_it_holds_the_lease():
     """The previous holder finished between the first check and the claim."""
-    repository = LeasingMatchRepository(existing_after_claim=True)
+    repository = LeasingMatchRepository(matched_after_claim={DOUBLE_ID, TRIPLE_ID})
     factory = _RaisingFactory()
     service, _ = _leased_service(repository, client_factory=factory)
 
-    result = _run(service, skip_if_existing=True)
+    result = _run(service, only_missing=True, wait_for_run_in_flight=False)
 
     assert factory.called is False
     assert result.skip_reason == "already_matched"
@@ -1223,8 +1368,7 @@ def test_an_unavailable_lease_store_runs_unleased():
             raise RuntimeError('relation "roomrate_agent_leases" does not exist')
 
     repository = NoLeaseTable()
-    proposal = RoomMatchProposal(matches=[_candidate()])
-    service, _ = _leased_service(repository, client=_FakeClient(result=_FakeParseResult(proposal)))
+    service, _ = _leased_service(repository, client=_client_for(_proposal()))
 
     result = _run(service)
 
@@ -1235,6 +1379,7 @@ def test_an_unavailable_lease_store_runs_unleased():
 def test_the_lease_outlives_the_longest_possible_run():
     service, _, _ = _service(timeout_seconds=120.0)
 
-    # 600 candidates = 15 chunks = 2 waves of 8 parallel calls, each up to
-    # 120 s with its one retry, plus 120 s of database time.
-    assert service.lease_seconds == 2 * 2 * 120.0 + 120.0
+    # 600 candidates at the smallest chunk (16, for 10 room types) = 38
+    # chunks = 5 waves of 8 parallel calls, each up to 120 s with its one
+    # retry, plus 120 s of database time.
+    assert service.lease_seconds == 5 * 2 * 120.0 + 120.0

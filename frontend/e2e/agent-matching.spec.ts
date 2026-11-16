@@ -1,10 +1,11 @@
 /**
- * Agents, Μέρος Α.4 (spec 2026-09-29): the source badge over the match list,
- * the per-package reasoning line and the manual «Επανεκτίμηση ταιριάσματος»
- * run. Hermetic: every endpoint is mocked with the wildcard FIRST (Playwright
- * matches LIFO, so each specific route below wins). Fixture values are
- * deliberately non-default (scores 62/48 vs 91/57, prices 73/58, review 8.7):
- * a passing assertion proves the value came from here.
+ * Agents, Μέρος Α.4 (spec 2026-09-29, reworked 2026-11-13): the «Ταίριασμα
+ * δωματίου» card keeps only the source badge and «Ξανά ταίριασμα», which
+ * re-runs the matching for EVERY room type of the job; the scores show on the
+ * result cards. Hermetic: every endpoint is mocked with the wildcard FIRST
+ * (Playwright matches LIFO, so each specific route below wins). Fixture
+ * values are deliberately non-default (scores 62/48 vs 91/57, prices 73/58,
+ * review 8.7): a passing assertion proves the value came from here.
  */
 import { expect, Page, test } from "@playwright/test";
 
@@ -68,12 +69,7 @@ const MARKET_SUMMARY = {
   avg_review_score: 8.3, rooms_left_total: 6,
 };
 
-/**
- * The two matched hotels of every /competitors/ read. Ourania's only package
- * carries a rate plan, so its reasoning renders inside the plan strip;
- * Pelagos has none, so its reasoning renders under the plain row — the two
- * markup paths of spec Α.4. Statistical rows carry match_reasoning null.
- */
+/** The two matched hotels of every /competitors/ read; statistical rows carry match_reasoning null. */
 const matchedRows = (source: "agent" | "statistical") => [
   {
     hotel_name: "Hotel Ourania", city: "Faliraki", address: "", property_type: "hotel",
@@ -108,16 +104,21 @@ const matchedRows = (source: "agent" | "statistical") => [
   },
 ];
 
-const COMPLETED_RUN = { status: "completed", matches_written: 2, source: "agent" };
+const COMPLETED_RUN = { status: "completed", matches_written: 4, room_types_matched: 2, source: "agent" };
+// The page's automatic call (only_missing) for a restored job whose room
+// types were all judged already.
+const ALREADY_MATCHED = {
+  status: "skipped", matches_written: 0, room_types_matched: 2, skip_reason: "already_matched", source: "agent",
+};
 
 type AgentMatchingOptions = {
   /** false = empty job list, nothing restored: no completed job on screen. */
   restorable?: boolean;
   /** The answer to every /competitors/ read; swap `current` mid-test to change the NEXT read. */
   matchRows?: { current: unknown[] };
-  /** The agents POST answer: a run body, or an HTTP error status (429 = quota). */
+  /** The «Ξανά ταίριασμα» answer: a run body, or an HTTP error status (429 = quota). */
   agentRun?: { current: Record<string, unknown> | number };
-  /** When set, the agents POST waits for this promise before answering (pending-state assertions). */
+  /** When set, the button's POST waits for this promise before answering (pending-state assertions). */
   agentGate?: { current: Promise<void> | null };
   /** Every scrape-jobs and agents call (the POST payload lives here). */
   calls?: RecordedCall[];
@@ -149,19 +150,10 @@ async function mockAgentMatching(page: Page, options: AgentMatchingOptions = {})
   await page.route(`${API}/api/v1/maps/own-property**`, (route) => route.fulfill({ json: null }));
   await page.route(`${API}/api/v1/maps/competitors**`, (route) => route.fulfill({ json: MAP_MARKERS }));
   await page.route(`${API}/api/v1/market/summary**`, (route) => route.fulfill({ json: MARKET_SUMMARY }));
-  await page.route(`${API}/api/v1/market/amenities**`, (route) => route.fulfill({ json: [] }));
   await page.route(`${API}/api/v1/tracked/competitors**`, (route) =>
     route.fulfill({ json: { owned_property_id: OWNED_PROPERTY_ID, room_type_category: "double", competitors: [] } }));
   await page.route(`${API}/api/v1/competitors/**`, (route) => {
-    const query = new URL(route.request().url()).searchParams;
-    // The page's automatic-run probe (no score floor, comparable_only=false)
-    // is told the job already has agent verdicts for this room, so no
-    // automatic run joins these manual-button scenarios — that run is
-    // comparable.spec.ts's subject. Only the match list's reads are counted.
-    if (!query.has("min_match_score")) {
-      return route.fulfill({ json: matchedRows("agent") });
-    }
-    matchReads.push(query);
+    matchReads.push(new URL(route.request().url()).searchParams);
     return route.fulfill({ json: matchRows.current });
   });
   await page.route(`${API}/api/v1/scrape-jobs/**`, (route) => {
@@ -171,9 +163,14 @@ async function mockAgentMatching(page: Page, options: AgentMatchingOptions = {})
     }
     return restorable ? route.fulfill({ json: COMPLETED_JOB }) : route.fulfill({ status: 404, json: { detail: "not found" } });
   });
-  // The manual agent re-run (the POST under test); recorded so its body can be asserted.
+  // The automatic call (only_missing) is told every room type is judged
+  // already — that run is comparable.spec.ts's subject; the button's POST
+  // (only_missing false) answers with `agentRun`.
   await page.route(`${API}/api/v1/agents/room-matches`, async (route) => {
     recordCall(calls, route);
+    if (route.request().postDataJSON()?.only_missing) {
+      return route.fulfill({ json: ALREADY_MATCHED });
+    }
     await agentGate.current;
     const answer = agentRun.current;
     return typeof answer === "number"
@@ -182,59 +179,80 @@ async function mockAgentMatching(page: Page, options: AgentMatchingOptions = {})
   });
 }
 
-const matchToggle = (page: Page) =>
-  page.locator(".match-controls .checkbox-row", { hasText: "Ταίριασμα με το δικό μου δωμάτιο" })
-    .locator("input[type=checkbox]");
 const badge = (page: Page) => page.getByTestId("match-source-badge");
 const reassess = (page: Page) => page.getByTestId("reassess-button");
-const matchedCardFor = (page: Page, hotel: string) => page.locator(".matched-card", { hasText: hotel });
+const cardFor = (page: Page, hotel: string) => page.locator(".competitor-card", { hasText: hotel });
+const buttonPosts = (calls: RecordedCall[]) =>
+  calls.filter((call) => call.method === "POST" && call.path === "/api/v1/agents/room-matches"
+    && !(call.body as { only_missing?: boolean } | undefined)?.only_missing);
 
-async function openMatchList(page: Page): Promise<void> {
-  // Tall enough that the match controls at the foot of the results column are clickable.
+/** Open the map on the restored job and wait for its automatic call to settle. */
+async function openMap(page: Page, calls: RecordedCall[], matchReads: URLSearchParams[], reads: number): Promise<void> {
+  // Tall enough that the match card at the foot of the «Φίλτρα» column is clickable.
   await page.setViewportSize({ width: 1280, height: 1400 });
   await page.goto("/map");
   await expect(page.locator(".header-actions").getByText("2 ανταγωνιστές")).toBeVisible();
-  await matchToggle(page).check();
+  await expect.poll(() => calls.filter((call) => call.path === "/api/v1/agents/room-matches").length).toBe(1);
+  // A statistical screen re-reads once after "already_matched" (its read may
+  // predate the verdicts); an agent screen does not.
+  await expect.poll(() => matchReads.length).toBe(reads);
 }
 
-test("statistical rows earn the statistical badge and render no reasoning line", async ({ page }) => {
-  await mockAgentMatching(page);
+test("the card keeps only the badge and the re-run: no switch, score slider or sort", async ({ page }) => {
+  const calls: RecordedCall[] = [];
+  const matchReads: URLSearchParams[] = [];
+  await mockAgentMatching(page, { matchRows: { current: matchedRows("agent") }, calls, matchReads });
 
-  await openMatchList(page);
-  await expect(badge(page)).toHaveText("Στατιστική εκτίμηση");
-  await expect(matchedCardFor(page, "Hotel Ourania")).toContainText("62%");
-  await expect(matchedCardFor(page, "Hotel Pelagos")).toContainText("48%");
-  // match_reasoning is null on every statistical row: not one line is invented.
-  await expect(page.getByTestId("match-reasoning")).toHaveCount(0);
+  await openMap(page, calls, matchReads, 1);
+  const card = page.locator(".filters-sidebar .match-controls");
+  await expect(card).toContainText("Ταίριασμα δωματίου");
+  await expect(card).toContainText("για όλους τους τύπους δωματίων σας");
+  await expect(card.locator("input")).toHaveCount(0);
+  await expect(card.locator("select, app-select-menu")).toHaveCount(0);
+  await expect(page.locator(".matched-card")).toHaveCount(0);
+  await expect(reassess(page)).toHaveText("Ξανά ταίριασμα");
+  // The scores read has no floor and the best match first.
+  expect(matchReads[0].get("min_match_score")).toBe("0");
+  expect(matchReads[0].get("sort")).toBe("match");
+  expect(matchReads[0].get("match_room")).toBe("true");
 });
 
-test("agent rows earn the AI badge and each package renders its own reasoning line", async ({ page }) => {
-  await mockAgentMatching(page, { matchRows: { current: matchedRows("agent") } });
+test("statistical rows earn the statistical badge and their scores on the result cards", async ({ page }) => {
+  const calls: RecordedCall[] = [];
+  const matchReads: URLSearchParams[] = [];
+  await mockAgentMatching(page, { calls, matchReads });
 
-  await openMatchList(page);
+  await openMap(page, calls, matchReads, 2);
+  await expect(badge(page)).toHaveText("Στατιστική εκτίμηση");
+  await expect(cardFor(page, "Hotel Ourania")).toContainText("62%");
+  await expect(cardFor(page, "Hotel Pelagos")).toContainText("48%");
+});
+
+test("agent rows earn the AI badge and their scores on the result cards", async ({ page }) => {
+  const calls: RecordedCall[] = [];
+  const matchReads: URLSearchParams[] = [];
+  await mockAgentMatching(page, { matchRows: { current: matchedRows("agent") }, calls, matchReads });
+
+  await openMap(page, calls, matchReads, 1);
   await expect(badge(page)).toHaveText("Εκτίμηση AI");
-  await expect(matchedCardFor(page, "Hotel Ourania")).toContainText("91%");
-  // One line per package, in card order: Ourania's inside the rate-plan strip
-  // (its package carries a plan), Pelagos's under the plain row.
-  await expect(page.getByTestId("match-reasoning")).toHaveText([OURANIA_REASONING, PELAGOS_REASONING]);
-  // The strip itself is intact around the line: the guest-visible plan price is still there.
-  await expect(page.getByTestId("single-plan-row")).toContainText(/69\s€/);
+  await expect(cardFor(page, "Hotel Ourania")).toContainText("91%");
+  await expect(cardFor(page, "Hotel Pelagos")).toContainText("57%");
 });
 
 test("a read that mixes the two sources earns the partial AI badge", async ({ page }) => {
   // Ourania scored by the agent, Pelagos statistically — one legitimate read, two sources.
+  const calls: RecordedCall[] = [];
+  const matchReads: URLSearchParams[] = [];
   const mixedRows = [matchedRows("agent")[0], matchedRows("statistical")[1]];
-  await mockAgentMatching(page, { matchRows: { current: mixedRows } });
+  await mockAgentMatching(page, { matchRows: { current: mixedRows }, calls, matchReads });
 
-  await openMatchList(page);
+  await openMap(page, calls, matchReads, 1);
   await expect(badge(page)).toHaveText("Εκτίμηση AI (μερική)");
-  await expect(matchedCardFor(page, "Hotel Ourania")).toContainText("91%");
-  await expect(matchedCardFor(page, "Hotel Pelagos")).toContainText("48%");
-  // Only the agent-scored package explains itself; the statistical row invents nothing.
-  await expect(page.getByTestId("match-reasoning")).toHaveText([OURANIA_REASONING]);
+  await expect(cardFor(page, "Hotel Ourania")).toContainText("91%");
+  await expect(cardFor(page, "Hotel Pelagos")).toContainText("48%");
 });
 
-test("the button posts the pair on screen, shows its pending state and the re-read flips scores and badge", async ({ page }) => {
+test("the button re-runs the whole job, shows its pending state and the re-read flips scores and badge", async ({ page }) => {
   const calls: RecordedCall[] = [];
   const matchReads: URLSearchParams[] = [];
   const matchRows = { current: matchedRows("statistical") as unknown[] };
@@ -244,16 +262,15 @@ test("the button posts the pair on screen, shows its pending state and the re-re
   };
   await mockAgentMatching(page, { matchRows, agentGate, calls, matchReads });
 
-  await openMatchList(page);
+  await openMap(page, calls, matchReads, 2);
   await expect(badge(page)).toHaveText("Στατιστική εκτίμηση");
-  await expect(matchedCardFor(page, "Hotel Ourania")).toContainText("62%");
+  await expect(cardFor(page, "Hotel Ourania")).toContainText("62%");
 
   const button = reassess(page);
-  await expect(button).toHaveText("Επανεκτίμηση ταιριάσματος");
   await expect(button).toBeEnabled();
   await button.click();
   // The POST is held by the gate: the pending state is what is on screen.
-  await expect(button).toHaveText("Εκτίμηση σε εξέλιξη…");
+  await expect(button).toHaveText("Ταίριασμα σε εξέλιξη…");
   await expect(button).toBeDisabled();
 
   // The completed run replaced the rows on the server: the re-read serves agent rows.
@@ -261,23 +278,21 @@ test("the button posts the pair on screen, shows its pending state and the re-re
   releaseRun();
 
   await expect(badge(page)).toHaveText("Εκτίμηση AI");
-  await expect(matchedCardFor(page, "Hotel Ourania")).toContainText("91%");
-  await expect(page.getByTestId("match-reasoning")).toHaveText([OURANIA_REASONING, PELAGOS_REASONING]);
-  await expect(button).toHaveText("Επανεκτίμηση ταιριάσματος");
+  await expect(cardFor(page, "Hotel Ourania")).toContainText("91%");
+  await expect(button).toHaveText("Ξανά ταίριασμα");
   await expect(button).toBeEnabled();
   await expect(page.getByTestId("reassess-notice")).toHaveCount(0);
 
-  // Exactly the pair on screen rode in the POST body.
-  const posted = calls.find((call) => call.method === "POST" && call.path === "/api/v1/agents/room-matches");
-  expect(posted?.body).toEqual({ scrape_job_id: JOB_ID, owned_room_type_id: ROOM_TYPE_ID });
-  // The flip came from a fresh match read of the same job, not from a different read.
-  expect(matchReads.length).toBeGreaterThanOrEqual(2);
+  // The whole job rode in the POST body: every room type is replaced, not only the one on screen.
+  expect(buttonPosts(calls).map((call) => call.body)).toEqual([{ scrape_job_id: JOB_ID, only_missing: false }]);
+  // The flip came from a fresh read of the same job.
+  expect(matchReads.length).toBe(3);
   const lastRead = matchReads.at(-1)!;
-  expect(lastRead.get("match_room")).toBe("true");
   expect(lastRead.get("scrape_job_id")).toBe(JOB_ID);
+  expect(lastRead.get("owned_room_type_id")).toBe(ROOM_TYPE_ID);
 });
 
-test("a failed run raises the fallback notice and the statistical list keeps working", async ({ page }) => {
+test("a failed run raises the fallback notice and the scores on screen stand", async ({ page }) => {
   const calls: RecordedCall[] = [];
   const matchReads: URLSearchParams[] = [];
   // status "error" writes nothing (spec Α.5); 429 is the spent daily quota.
@@ -285,33 +300,26 @@ test("a failed run raises the fallback notice and the statistical list keeps wor
     { current: { status: "error", matches_written: 0, source: "agent" } };
   await mockAgentMatching(page, { agentRun, calls, matchReads });
 
-  await openMatchList(page);
-  await expect(matchedCardFor(page, "Hotel Ourania")).toContainText("62%");
-  expect(matchReads.length).toBe(1);
+  await openMap(page, calls, matchReads, 2);
+  await expect(cardFor(page, "Hotel Ourania")).toContainText("62%");
 
   await reassess(page).click();
   await expect(page.getByTestId("reassess-notice"))
     .toHaveText("Η εκτίμηση AI δεν είναι διαθέσιμη· εμφανίζεται η στατιστική.");
   // The failure changed nothing on screen: badge, cards and button all stand.
   await expect(badge(page)).toHaveText("Στατιστική εκτίμηση");
-  await expect(matchedCardFor(page, "Hotel Ourania")).toContainText("62%");
-  await expect(page.getByTestId("match-reasoning")).toHaveCount(0);
-  await expect(reassess(page)).toHaveText("Επανεκτίμηση ταιριάσματος");
+  await expect(cardFor(page, "Hotel Ourania")).toContainText("62%");
+  await expect(reassess(page)).toHaveText("Ξανά ταίριασμα");
   await expect(reassess(page)).toBeEnabled();
   // No pointless re-read either: a failed run cannot have changed the rows.
-  expect(matchReads.length).toBe(1);
+  expect(matchReads.length).toBe(2);
 
   // The quota path (429) raises the same sentence.
   agentRun.current = 429;
   await reassess(page).click();
   await expect(page.getByTestId("reassess-notice"))
     .toHaveText("Η εκτίμηση AI δεν είναι διαθέσιμη· εμφανίζεται η στατιστική.");
-
-  // The list keeps working: a sort change still re-reads and re-renders.
-  await page.locator(".match-controls select").selectOption({ label: "Τιμή" });
-  await expect.poll(() => matchReads.length).toBe(2);
-  expect(matchReads.at(-1)?.get("sort")).toBe("price");
-  await expect(matchedCardFor(page, "Hotel Pelagos")).toContainText("48%");
+  expect(buttonPosts(calls)).toHaveLength(2);
 });
 
 test("a re-run still in progress elsewhere says so quietly and re-reads nothing", async ({ page }) => {
@@ -322,17 +330,14 @@ test("a re-run still in progress elsewhere says so quietly and re-reads nothing"
   };
   await mockAgentMatching(page, { agentRun, calls, matchReads });
 
-  await openMatchList(page);
-  await expect(matchedCardFor(page, "Hotel Ourania")).toContainText("62%");
+  await openMap(page, calls, matchReads, 2);
 
   await reassess(page).click();
   const notice = page.getByTestId("reassess-notice");
-  await expect(notice).toHaveText(
-    "Η εκτίμηση AI για αυτό το δωμάτιο είναι ακόμη σε εξέλιξη· ανανεώστε τη σελίδα σε λίγο για να τη δείτε.",
-  );
+  await expect(notice).toHaveText("Το ταίριασμα AI είναι ακόμη σε εξέλιξη· ανανεώστε τη σελίδα σε λίγο για να το δείτε.");
   await expect(notice).not.toHaveClass(/alert-error/);
   await expect(reassess(page)).toBeEnabled();
-  expect(matchReads.length).toBe(1);
+  expect(matchReads.length).toBe(2);
 });
 
 test("without a completed job on screen the button is disabled", async ({ page }) => {
@@ -344,7 +349,6 @@ test("without a completed job on screen the button is disabled", async ({ page }
   await expect(page.getByText("Δεν έχετε τρέξει ακόμη αναζήτηση")).toBeVisible();
   // «Ταίριασμα δωματίου» sits under the filters in the «Φίλτρα» column.
   await expect(page.locator(".filters-sidebar .match-controls")).toBeVisible();
-  await matchToggle(page).check();
   await expect(badge(page)).toHaveText("Στατιστική εκτίμηση");
   await expect(reassess(page)).toBeDisabled();
 });

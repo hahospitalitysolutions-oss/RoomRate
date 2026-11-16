@@ -28,9 +28,9 @@ import {
  * The scraper's own account of a run that DID write rows.
  *
  * Non-default on purpose: a job with no summary at all cannot tell an empty
- * screen caused by the read-time facility filter from one the scrape itself
- * produced, so the scenario that asserts the difference has to state the "rows
- * were written" half rather than lean on a missing payload.
+ * screen caused by a read-time filter from one the scrape itself produced, so
+ * a scenario that asserts the difference has to state the "rows were written"
+ * half rather than lean on a missing payload.
  */
 const ROWS_WERE_WRITTEN_SUMMARY = {
   version: 1,
@@ -39,25 +39,6 @@ const ROWS_WERE_WRITTEN_SUMMARY = {
   filter_counts: { single_rooms: { before: 5, after: 4 }, capacity: { before: 4, after: 3 } },
   rows_written: 3,
 };
-
-/**
- * The same account for a run that wrote NOTHING, and the other half of the
- * truth above.
- *
- * `rows_written: 0` is the one shape where the read-time facility filter
- * cannot be what emptied the screen — there were no rows for it to drop — and
- * the single-rooms stage says what really did. Mirrors the fixture above field
- * for field so the two differ only in the numbers the component reasons about.
- */
-const NOTHING_WAS_WRITTEN_SUMMARY = {
-  version: 1,
-  rows_seen: 4,
-  filter_counts: { single_rooms: { before: 4, after: 0 } },
-  rows_written: 0,
-};
-
-/** The 500 a filtered re-read answers with in the scenario that fails one. */
-const FILTERED_READ_FAILURE = "Η ανάγνωση των αποτελεσμάτων απέτυχε.";
 
 const PROP_ALPHA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const PROP_BETA = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
@@ -293,21 +274,9 @@ test("saving tracked competitors ticks the checklist step without a reload", asy
   await expect(page.getByTestId("checklist-progress")).toHaveText("4 από 5 βήματα");
 });
 
-test("a facility filter reads in Greek and travels to the backend in English", async ({ page }) => {
-  // The checkbox text and the `amenities` query value used to be one English
-  // string. Round 5.1 split them (`{ value, label }`) because translating the
-  // shared string would have quietly matched nothing on the backend — an empty
-  // result set, not an error. This pins both halves in one scenario: the label
-  // the hotelier reads is Greek, and the value that leaves the browser is the
-  // untouched Booking facility name.
-  //
-  // `restorable: true` (the default) is load-bearing, and it used to be the
-  // opposite: this pin was written around a page with NO job on screen, because
-  // buildMarkerParams appended the filter only to reads that were not scoped to
-  // a scrape job. That premise WAS the bug — every read after a search is
-  // job-scoped, so the facility checkboxes reached the backend nowhere the
-  // hotelier could see. A restored job is the page's normal state, and both of
-  // its reads have to carry the filter while staying scoped to the job.
+test("the filters column has no facility filter and no read sends one", async ({ page }) => {
+  // «Δημοφιλέστερες παροχές» is gone (owner decision 2026-11-13): the search
+  // stores every room and the matching agent weighs the facilities itself.
   const markerReads: URLSearchParams[] = [];
   const summaryReads: URLSearchParams[] = [];
   await mockMapPage(page);
@@ -323,220 +292,18 @@ test("a facility filter reads in Greek and travels to the backend in English", a
     return route.fulfill({ json: MARKET_SUMMARY });
   });
 
-  // Taller than the default 720px: the facility list and the room-matching
-  // controls are the LAST things in their sidebars, and at 720 they sit
-  // outside their scroll container's clip, where a real click is swallowed by
-  // the sidebar. The scenario is about the value/label split, not about
-  // scrolling, so it gives itself the room to click for real.
-  await page.setViewportSize({ width: 1280, height: 1400 });
   await page.goto("/map");
   await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
-
-  const wifi = page.locator(".amenity-list .checkbox-row", { hasText: "Δωρεάν WiFi" });
-  await expect(wifi).toBeVisible();
-  // No English left on the control the user is reading.
-  await expect(page.locator(".amenity-list")).not.toContainText("Free WiFi");
-
-  // The restore's own reads carried no filter; everything asserted below is
-  // about the reads the tick itself causes.
-  //
-  // The marker read is already in: the count above cannot be on screen without
-  // it. The summary read is fired and forgotten (loadMarketSummary is not
-  // awaited), so it is waited FOR rather than assumed — a baseline captured at
-  // 0 would be beaten by the restore's own summary read landing late, and the
-  // "the tick re-read the summary too" assertion below would pass without the
-  // tick having done anything.
-  const markersBeforeTick = markerReads.length;
   await expect.poll(() => summaryReads.length).toBe(1);
-  const summariesBeforeTick = summaryReads.length;
-  await wifi.locator("input[type=checkbox]").check();
 
-  // A tick the page never re-reads for is a dead control: the rows on screen
-  // are the unfiltered ones until both job-scoped reads run again.
-  await expect.poll(() => markerReads.length).toBeGreaterThan(markersBeforeTick);
-  await expect.poll(() => summaryReads.length).toBeGreaterThan(summariesBeforeTick);
-  for (const read of [markerReads.at(-1)!, summaryReads.at(-1)!]) {
-    // What leaves the browser is the Booking facility name, never the label.
-    expect(read.getAll("amenities")).toEqual(["Free WiFi"]);
-    // ...and it travels ON the job-scoped read rather than instead of it.
+  const sidebar = page.locator(".filters-sidebar");
+  await expect(sidebar).not.toContainText("Δημοφιλέστερες παροχές");
+  await expect(sidebar).not.toContainText("Δωρεάν WiFi");
+  await expect(page.locator(".amenity-list")).toHaveCount(0);
+  for (const read of [...markerReads, ...summaryReads]) {
+    expect(read.has("amenities")).toBe(false);
     expect(read.get("scrape_job_id")).toBe(JOB_ID);
   }
-});
-
-test("a facility filter that hides every row says so instead of blaming the search", async ({ page }) => {
-  // The facility checkboxes are a READ filter: the job's rows are all still
-  // there, and the user's own tick is what empties the screen. Answering that
-  // with «Δεν βρέθηκαν συγκρίσιμα δωμάτια» blames the market for the user's
-  // click, and the other-category wording blames their room catalog — both send
-  // them to re-run an Apify-costing search that would return exactly the same
-  // rows. The job's summary says 3 rows were written, so neither is true here.
-  //
-  // Two rooms in the catalog because the dropdown is the third control that
-  // moves the facility selection — the two checkbox handlers re-read the job,
-  // and it did not (see the change of room below).
-  const amenityReads: URLSearchParams[] = [];
-  await mockMapPage(page, {
-    resultSummary: ROWS_WERE_WRITTEN_SUMMARY,
-    roomCatalog: [DOUBLE_ROOM, SUITE_ROOM],
-  });
-  await mockMapbox(page);
-  // The backend applies `amenities` when the rows are READ, so one and the same
-  // completed job answers with rows or with nothing, by the filter alone.
-  await page.route(`${API}/api/v1/maps/competitors**`, (route) => {
-    const filtered = new URL(route.request().url()).searchParams.getAll("amenities").length > 0;
-    return route.fulfill({ json: filtered ? [] : MAP_MARKERS });
-  });
-  // Recorded so the room change below is waited FOR, not waited after: it is
-  // the one step whose correct outcome is "nothing on screen moves", and a
-  // bare assertion would pass before the handler had even run.
-  await page.route(`${API}/api/v1/market/amenities**`, (route) => {
-    amenityReads.push(new URL(route.request().url()).searchParams);
-    return route.fulfill({ json: [] });
-  });
-
-  await page.setViewportSize({ width: 1280, height: 1400 });
-  await page.goto("/map");
-  await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
-
-  // A search of the user's own, because the banner this scenario also pins
-  // belongs to one: the restore leaves a different banner up, and that one is
-  // true whatever the filter does. The mocked job comes back already
-  // completed, so the click is one step, not a poll.
-  const banner = page.locator(".filters-sidebar .alert:not(.alert-error)");
-  await page.getByRole("button", { name: "Εύρεση ανταγωνιστών" }).click();
-  await expect(banner).toContainText("Όλα τα αποτελέσματα εμφανίζονται στον χάρτη");
-
-  const wifi = page.locator(".amenity-list .checkbox-row", { hasText: "Δωρεάν WiFi" })
-    .locator("input[type=checkbox]");
-  await wifi.check();
-
-  const results = page.locator(".results-sidebar");
-  await expect(results).toContainText("Τα φίλτρα παροχών κρύβουν όλα τα αποτελέσματα");
-  // Neither of the two answers this state used to give: nothing found, or
-  // every offer cut by the scraper's own stages (Round 6: single rooms, capacity).
-  await expect(results).not.toContainText("Δεν βρέθηκαν συγκρίσιμα δωμάτια");
-  await expect(results).not.toContainText("όλες όμως για");
-  // The map is where the user is looking, and it says the same thing.
-  await expect(page.locator(".map-empty-state")).toContainText("Τα φίλτρα παροχών κρύβουν όλα τα αποτελέσματα");
-  // The banner is the third place the same screen is described, and it used to
-  // go on claiming the opposite: only the map filter ever refreshed it, so
-  // «Όλα τα αποτελέσματα εμφανίζονται στον χάρτη» stayed up over an empty map.
-  await expect(banner).toContainText("τα φίλτρα παροχών δεν αφήνουν κανένα στον χάρτη");
-  await expect(banner).not.toContainText("Όλα τα αποτελέσματα εμφανίζονται στον χάρτη");
-
-  // Changing the room used to wipe the ticks without re-reading the rows they
-  // filter: the boxes went blank while the screen kept showing the FILTERED
-  // (empty) result set, so this job — 3 rows written, by its own summary —
-  // answered «Δεν βρέθηκαν συγκρίσιμα δωμάτια» and sent the user to re-run an
-  // Apify-costing search for rows that were already there.
-  const amenityReadsBeforeRoomChange = amenityReads.length;
-  await page.getByTestId("room-select").selectOption({ label: "Junior Suite (suite)" });
-  await expect.poll(() => amenityReads.length).toBeGreaterThan(amenityReadsBeforeRoomChange);
-  await expect(wifi).toBeChecked();
-  await expect(results).toContainText("Τα φίλτρα παροχών κρύβουν όλα τα αποτελέσματα");
-  await expect(results).not.toContainText("Δεν βρέθηκαν συγκρίσιμα δωμάτια");
-
-  // The way out is one click from the message itself, and it really brings the
-  // rows back — the filter is undone on the backend read, not just on screen.
-  await results.getByRole("button", { name: "Καθαρισμός φίλτρων παροχών" }).click();
-  await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
-  await expect(results).not.toContainText("Τα φίλτρα παροχών κρύβουν όλα τα αποτελέσματα");
-  await expect(cardCheckbox(page, "Hotel Alpha")).toBeVisible();
-  // ...and the banner comes back with them, from the same mechanism.
-  await expect(banner).toContainText("Όλα τα αποτελέσματα εμφανίζονται στον χάρτη");
-});
-
-test("a filtered re-read that fails is the read's error, never the filter's doing", async ({ page }) => {
-  // A failed re-read leaves exactly the shape the amenity branch recognises:
-  // ticks on screen, no rows, and the job still behind them. setError only
-  // moves the RESULTS status to "error" — so, ungated, the map answered a 500
-  // with «Τα φίλτρα παροχών κρύβουν όλα τα αποτελέσματα» and sent the user to
-  // untick boxes while the real failure sat in the sidebar beside it.
-  await mockMapPage(page, { resultSummary: ROWS_WERE_WRITTEN_SUMMARY });
-  await mockMapbox(page);
-  await page.route(`${API}/api/v1/maps/competitors**`, (route) => {
-    const filtered = new URL(route.request().url()).searchParams.getAll("amenities").length > 0;
-    return filtered
-      ? route.fulfill({ status: 500, json: { detail: FILTERED_READ_FAILURE } })
-      : route.fulfill({ json: MAP_MARKERS });
-  });
-
-  await page.setViewportSize({ width: 1280, height: 1400 });
-  await page.goto("/map");
-  await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
-  await page.locator(".amenity-list .checkbox-row", { hasText: "Δωρεάν WiFi" })
-    .locator("input[type=checkbox]").check();
-
-  // The error slot is where the failure is reported, and it appearing is also
-  // what holds everything below: it is written by the catch of the very read
-  // the assertions are about.
-  await expect(page.locator(".filters-sidebar .alert-error")).toContainText(FILTERED_READ_FAILURE);
-  // The map says nothing about facilities: the filter did not empty this
-  // screen, a failed read did, and there is nothing to untick that would help.
-  await expect(page.locator(".map-empty-state")).not.toContainText("Τα φίλτρα παροχών κρύβουν");
-  await expect(page.locator(".results-sidebar")).not.toContainText("Καθαρισμός φίλτρων παροχών");
-});
-
-test("a filter tick on a job that wrote nothing keeps the scrape's own answer", async ({ page }) => {
-  // The other side of the same line. `rows_written: 0` is the one summary the
-  // facility filter cannot be blamed for: the scrape wrote no rows, so none
-  // were dropped when they were read back, and the single-rooms stage says what
-  // really happened. Mutating that half of amenityFilterHidesEverything to
-  // `true` makes a tick claim the filter did it — blaming the user's click for
-  // a market that only had single rooms.
-  const filteredSummaryReads: URLSearchParams[] = [];
-  await mockMapPage(page, { markerRows: [], resultSummary: NOTHING_WAS_WRITTEN_SUMMARY });
-  await mockMapbox(page);
-  await page.route(`${API}/api/v1/market/summary**`, (route) => {
-    const params = new URL(route.request().url()).searchParams;
-    if (params.getAll("amenities").length) {
-      filteredSummaryReads.push(params);
-    }
-    return route.fulfill({ json: MARKET_SUMMARY });
-  });
-
-  await page.setViewportSize({ width: 1280, height: 1400 });
-  await page.goto("/map");
-  const results = page.locator(".results-sidebar");
-  await expect(results).toContainText("Βρέθηκαν 4 προσφορές για μονόκλινα δωμάτια");
-  await page.locator(".amenity-list .checkbox-row", { hasText: "Δωρεάν WiFi" })
-    .locator("input[type=checkbox]").check();
-
-  // Held on the re-read the tick causes: the summary read is the LAST thing
-  // loadMarkers starts, so once a FILTERED one has gone out the post-tick
-  // screen is the one being read — no timer, and no way to assert the pre-tick
-  // render by accident.
-  await expect.poll(() => filteredSummaryReads.length).toBeGreaterThan(0);
-
-  await expect(results).toContainText("Βρέθηκαν 4 προσφορές για μονόκλινα δωμάτια");
-  await expect(results).not.toContainText("Τα φίλτρα παροχών κρύβουν όλα τα αποτελέσματα");
-  await expect(results.getByRole("button", { name: "Καθαρισμός φίλτρων παροχών" })).toHaveCount(0);
-  await expect(page.locator(".map-empty-state")).not.toContainText("Τα φίλτρα παροχών κρύβουν");
-});
-
-test("a search run with the filter on says so instead of blaming the exclusion", async ({ page }) => {
-  // findCompetitors writes the banner itself, and its own "nothing came back"
-  // sentence blames the own-property exclusion — which is not what emptied
-  // this screen. Same contradiction as the banner above, reached from the
-  // other side: the user reacts to an empty filtered screen by pressing Find.
-  await mockMapPage(page, { resultSummary: ROWS_WERE_WRITTEN_SUMMARY });
-  await mockMapbox(page);
-  await page.route(`${API}/api/v1/maps/competitors**`, (route) => {
-    const filtered = new URL(route.request().url()).searchParams.getAll("amenities").length > 0;
-    return route.fulfill({ json: filtered ? [] : MAP_MARKERS });
-  });
-
-  await page.setViewportSize({ width: 1280, height: 1400 });
-  await page.goto("/map");
-  await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
-  await page.locator(".amenity-list .checkbox-row", { hasText: "Δωρεάν WiFi" })
-    .locator("input[type=checkbox]").check();
-  await expect(page.locator(".results-sidebar")).toContainText("Τα φίλτρα παροχών κρύβουν όλα τα αποτελέσματα");
-
-  await page.getByRole("button", { name: "Εύρεση ανταγωνιστών" }).click();
-  const banner = page.locator(".filters-sidebar .alert:not(.alert-error)");
-  await expect(banner).toContainText("τα φίλτρα παροχών δεν αφήνουν κανένα στον χάρτη");
-  await expect(banner).not.toContainText("αφού εξαιρέθηκε το δικό σας κατάλυμα");
 });
 
 test.describe("the auto-picked room says so and goes through the service", () => {

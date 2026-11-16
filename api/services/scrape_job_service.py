@@ -270,9 +270,10 @@ class BookingScrapeJobRunner:
         ]
         if command.room_type_category:
             args.extend(["--room-type-category", command.room_type_category])
-        room_name_query = str(filters_payload.get("room_type") or "").strip()
-        if room_name_query:
-            args.extend(["--room-name-query", room_name_query])
+        # No room-name filter (owner decision 2026-11-13): a search stores
+        # EVERY room of every competitor, and the matching agent then judges
+        # each one against all the owner's room types. An older client's
+        # ``filters_payload.room_type`` is ignored on purpose.
         required_meal = str(filters_payload.get("meals") or "").strip()
         if required_meal:
             args.extend(["--required-meal", required_meal])
@@ -737,10 +738,11 @@ class ScrapeJobService:
     def _run_room_matching(self, account_id: uuid.UUID, job: ScrapeJobResponse) -> None:
         """Trigger AI room matching for a completed competitor scrape.
 
-        Strictly best-effort (spec 2026-09-29 Α.1/Α.5): a failure here must
-        never change the job's status or run_job's return value. The matcher
-        itself is idempotent per (job, selected room) and skips silently
-        without an API key.
+        One pass over EVERY room type of the job's property. Strictly
+        best-effort (spec 2026-09-29 Α.1/Α.5): a failure here must never
+        change the job's status or run_job's return value. The matcher
+        itself is idempotent per (job, room type) and skips silently without
+        an API key.
         """
         if self.room_matcher is None:
             return

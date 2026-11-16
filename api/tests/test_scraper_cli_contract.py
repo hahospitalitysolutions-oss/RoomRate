@@ -49,7 +49,8 @@ def test_competitor_job_with_nearby_areas_and_radius_parses_into_the_scraper_con
     assert (config.origin_lat, config.origin_lng) == (36.339597, 28.202631)
     assert (config.adults, config.children, config.rooms) == (3, 1, 2)
     assert config.room_type_category == "twin"
-    assert config.room_name_query == "Δίκλινο Δωμάτιο με Μπαλκόνι"
+    # The search stores every room: the payload's room name never narrows it.
+    assert config.room_name_query is None
     assert config.scout_cache_hours == 2  # manual: a hotel list up to 2 h old, prices always live
 
 
