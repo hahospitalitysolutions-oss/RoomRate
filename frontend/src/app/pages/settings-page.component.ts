@@ -127,7 +127,7 @@ function athensHourToUtc(hourAthens: number): number {
           <div class="alert">
             Όταν είναι ενεργή, το RoomRate ελέγχει μόνο του τις τιμές των ανταγωνιστών σας σε
             τακτά διαστήματα. Έτσι βλέπετε πώς κινείται η αγορά από μέρα σε μέρα και οι προτάσεις
-            τιμής γίνονται πιο αξιόπιστες. Κάθε έλεγχος έχει μικρό κόστος — συνήθως αρκεί μία
+            τιμής γίνονται πιο αξιόπιστες. Κάθε έλεγχος έχει μικρό κόστος, οπότε συνήθως αρκεί μία
             φορά την ημέρα.
           </div>
 
@@ -205,7 +205,7 @@ function athensHourToUtc(hourAthens: number): number {
             Δημιουργήστε κανόνες για όλο τον λογαριασμό, για αυξήσεις, μειώσεις ή και τις δύο
             κατευθύνσεις των τιμών των ανταγωνιστών.
           </p>
-          <form class="three-cols" (ngSubmit)="createRule()">
+          <form class="three-cols alert-rule-form" (ngSubmit)="createRule()">
             <label>
               <span>Όριο μεταβολής (%)</span>
               <input class="roomrate-input" type="number" name="alert_threshold" min="0.1" max="100" step="0.1" [ngModel]="ruleForm().threshold_pct" (ngModelChange)="updateRuleForm('threshold_pct', $event)">
@@ -301,7 +301,9 @@ function athensHourToUtc(hourAthens: number): number {
     </main>
   `,
   styles: [`
-    .danger-button { background: var(--danger); color: #fff; border: none; border-radius: 0.375rem; padding: 0.5rem 0.9rem; cursor: pointer; }
+    /* Same size as the buttons beside it; outlined, so the risky action never outweighs the safe one. */
+    .danger-button { background: transparent; color: var(--danger); border: 1px solid var(--danger-line); border-radius: var(--radius); font-size: 15px; font-weight: 700; min-height: 46px; padding: 11px 18px; cursor: pointer; }
+    .danger-button:hover:not(:disabled) { background: var(--danger-soft); }
     .danger-button:disabled { opacity: 0.5; cursor: not-allowed; }
     .setup-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
     .delete-confirm { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.75rem; max-width: 28rem; }

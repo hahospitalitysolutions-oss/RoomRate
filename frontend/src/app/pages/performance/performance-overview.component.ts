@@ -1,6 +1,7 @@
 /**
- * «Επισκόπηση» (A4): the period's KPIs with the change from last year and the
- * market median, bookings vs ADR by month, revenue by channel and by country.
+ * «Επισκόπηση» (A4): the period's KPIs with the change from last year, bookings
+ * vs ADR by month, revenue by channel and by country. The market comparison
+ * lives on «Αγορά» (pages/map/market-history.component.ts), not here.
  */
 import { CommonModule } from "@angular/common";
 import { ChangeDetectionStrategy, Component, computed, inject, input, output } from "@angular/core";
@@ -13,7 +14,6 @@ import { CATEGORY_COLORS, type ChartItem, type ChartSeries } from "../../compone
 import {
   formatChangePct,
   formatCount,
-  formatDays,
   formatEuroCents,
   formatPct,
   formatPts,
@@ -127,6 +127,7 @@ export class PerformanceOverviewComponent {
     const trend = (value: number | null | undefined) =>
       value == null ? null : value > 0 ? "up" : value < 0 ? "down" : "flat";
     const before = (pick: (k: PerformanceKpis) => string) => (lastYear ? pick(lastYear) : null);
+    // Six cards, one row: nights, length of stay and lead time have their own tabs.
     return [
       {
         id: "occupancy",
@@ -146,7 +147,7 @@ export class PerformanceOverviewComponent {
         change: delta?.adr_pct != null ? formatChangePct(delta.adr_pct) : null,
         trend: trend(delta?.adr_pct),
         lastYear: before((k) => formatEuroCents(k.adr_eur)),
-        note: summary.market_median_eur !== null ? `Διάμεσος αγοράς: ${formatEuroCents(summary.market_median_eur)}` : null,
+        note: null,
       },
       {
         id: "revpar",
@@ -169,16 +170,7 @@ export class PerformanceOverviewComponent {
         note: kpis.commission_eur > 0 ? `Προμήθειες: ${formatEuroCents(kpis.commission_eur)}` : null,
       },
       plain("bookings", "Κρατήσεις", formatCount(kpis.bookings), before((k) => formatCount(k.bookings))),
-      plain(
-        "nights",
-        "Νύχτες που πουλήθηκαν",
-        formatCount(kpis.room_nights_sold),
-        before((k) => formatCount(k.room_nights_sold)),
-        kpis.room_nights_available !== null ? `από ${formatCount(kpis.room_nights_available)} διαθέσιμες` : null,
-      ),
       plain("cancellations", "Ακυρώσεις", formatPct(kpis.cancellations_pct), before((k) => formatPct(k.cancellations_pct))),
-      plain("length-of-stay", "Μέση διαμονή", nights(kpis.avg_length_of_stay), before((k) => nights(k.avg_length_of_stay))),
-      plain("lead-time", "Κράτηση πριν την άφιξη", formatDays(kpis.avg_lead_time_days), before((k) => formatDays(k.avg_lead_time_days))),
     ];
   });
 
@@ -192,9 +184,6 @@ export class PerformanceOverviewComponent {
     ];
     if (months.some((month) => month.last_year?.adr_eur != null)) {
       lines.push({ label: "ADR πέρυσι", values: months.map((month) => month.last_year?.adr_eur ?? null), color: "terracotta", format: "euro", dashed: true });
-    }
-    if (months.some((month) => month.market_median_eur !== null)) {
-      lines.push({ label: "Διάμεσος αγοράς", values: months.map((month) => month.market_median_eur), color: "sun", format: "euro", dashed: true });
     }
     return {
       ...monthAxis(months.map((month) => month.month)),
@@ -241,8 +230,4 @@ export class PerformanceOverviewComponent {
 
 function plain(id: string, label: string, value: string, lastYear: string | null, note: string | null = null): KpiCard {
   return { id, label, value, missing: null, change: null, trend: null, lastYear, note };
-}
-
-function nights(value: number | null): string {
-  return value == null ? "—" : `${new Intl.NumberFormat("el-GR", { maximumFractionDigits: 1 }).format(value)} νύχτες`;
 }

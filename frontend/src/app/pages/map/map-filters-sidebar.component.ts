@@ -46,7 +46,7 @@ export type MapFilterChange = { key: keyof MapFilters; value: string };
     </div>
     <div class="filter-group">
     <div class="filter-section-label"><app-icon name="bed" [size]="16"></app-icon>Ημερομηνίες διαμονής</div>
-    <div class="two-cols">
+    <div class="two-cols date-pair">
       <label>
         <span>Άφιξη</span>
         <input class="roomrate-input" type="date" [ngModel]="filters().check_in" (ngModelChange)="change('check_in', $event)">

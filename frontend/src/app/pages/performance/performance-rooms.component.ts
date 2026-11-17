@@ -42,7 +42,6 @@ import { PerformanceLoader } from "./performance-loader";
                 <th scope="col">Κρατήσεις</th>
                 <th scope="col">Νύχτες</th>
                 <th scope="col">Ακυρώσεις</th>
-                <th scope="col">Αγορά</th>
               </tr>
             </thead>
             <tbody>
@@ -66,7 +65,6 @@ import { PerformanceLoader } from "./performance-loader";
                 <td>{{ row.bookings }}</td>
                 <td>{{ row.nights }}</td>
                 <td>{{ row.cancellations }}</td>
-                <td>{{ row.market }}</td>
               </tr>
             </tbody>
           </table>
@@ -157,7 +155,6 @@ export class PerformanceRoomsComponent {
     bookings: formatCount(type.bookings),
     nights: formatCount(type.room_nights_sold),
     cancellations: formatPct(type.cancellations_pct),
-    market: formatEuroCents(type.market_median_eur),
   })));
 
   readonly revenueItems = computed<ChartItem[]>(() => this.types().map((type, index) => ({

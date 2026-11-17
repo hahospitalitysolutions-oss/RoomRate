@@ -23,6 +23,7 @@ import { Component, computed, input, output, signal } from "@angular/core";
 import { RouterLink } from "@angular/router";
 
 import { EmptyStateComponent } from "../../components/empty-state.component";
+import { MarketHistoryComponent } from "./market-history.component";
 import type { CompetitorMapMarker, MarketSummary } from "../../types/market";
 import { formatDistance, formatEuro } from "./competitor-format";
 import {
@@ -38,7 +39,6 @@ import {
   HotelComparisonRow,
   LadderDot,
   OwnReference,
-  ownSourceLabel,
   pricePosition,
 } from "./market-comparison";
 import type { LoadingState } from "./map-page.constants";
@@ -48,7 +48,7 @@ export type DashboardScope = "all" | "selected";
 @Component({
   selector: "section[appMarketDashboard]",
   standalone: true,
-  imports: [CommonModule, RouterLink, EmptyStateComponent],
+  imports: [CommonModule, RouterLink, EmptyStateComponent, MarketHistoryComponent],
   template: `
     <header class="dashboard-head">
       <div>
@@ -107,42 +107,29 @@ export type DashboardScope = "all" | "selected";
 
       <!-- The headline comparisons: the market's figure, the owner's, and the gap in words. -->
       <div class="versus-grid" data-testid="dashboard-kpis" [class.is-refreshing]="status() === 'loading' || summaryStatus() === 'loading'">
+        <article class="versus-card is-own-card" data-testid="kpi-own">
+          <h3>Η τιμή σας</h3>
+          <strong class="versus-value">{{ formatOptionalEuro(ownReference().price) }}</strong>
+          <p class="versus-gap muted">{{ ownSourceShort(ownReference().source) }}</p>
+        </article>
         <article class="versus-card" data-testid="kpi-median">
-          <h3>Διάμεση τιμή ανά βράδυ</h3>
-          <dl>
-            <div><dt>Αγορά</dt><dd>{{ formatOptionalEuro(aggregate()?.median) }}</dd></div>
-            <div class="is-own"><dt>Εσείς</dt><dd>{{ formatOptionalEuro(ownReference().price) }}</dd></div>
-          </dl>
-          <p *ngIf="compareLabel(ownReference().price, aggregate()?.median ?? null) as gap" class="versus-gap">{{ gap }} από τη διάμεση</p>
+          <h3>Διάμεση αγοράς</h3>
+          <strong class="versus-value">{{ formatOptionalEuro(aggregate()?.median) }}</strong>
+          <p *ngIf="compareLabel(ownReference().price, aggregate()?.median ?? null) as gap" class="versus-gap">Εσείς: {{ gap }}</p>
         </article>
         <article class="versus-card" data-testid="kpi-average">
-          <h3>Μέση τιμή ανά βράδυ</h3>
-          <dl>
-            <div><dt>Αγορά</dt><dd>{{ formatOptionalEuro(aggregate()?.avg) }}</dd></div>
-            <div class="is-own"><dt>Εσείς</dt><dd>{{ formatOptionalEuro(ownReference().price) }}</dd></div>
-          </dl>
-          <p *ngIf="compareLabel(ownReference().price, aggregate()?.avg ?? null) as gap" class="versus-gap">{{ gap }} από τον μέσο όρο</p>
+          <h3>Μέση αγοράς</h3>
+          <strong class="versus-value">{{ formatOptionalEuro(aggregate()?.avg) }}</strong>
+          <p *ngIf="compareLabel(ownReference().price, aggregate()?.avg ?? null) as gap" class="versus-gap">Εσείς: {{ gap }}</p>
         </article>
         <article class="versus-card" data-testid="kpi-range">
-          <h3>Εύρος τιμών</h3>
-          <dl>
-            <div><dt>Αγορά</dt><dd>{{ formatOptionalEuro(aggregate()?.min) }} – {{ formatOptionalEuro(aggregate()?.max) }}</dd></div>
-            <div class="is-own"><dt>Εσείς</dt><dd>{{ formatOptionalEuro(ownReference().price) }}</dd></div>
-          </dl>
+          <h3>Εύρος αγοράς</h3>
+          <strong class="versus-value">{{ formatOptionalEuro(aggregate()?.min) }} – {{ formatOptionalEuro(aggregate()?.max) }}</strong>
           <p *ngIf="position()" class="versus-gap">{{ formatPricePosition(position()) }}</p>
         </article>
-        <article class="versus-card" data-testid="kpi-rating">
-          <h3>Βαθμολογία επισκεπτών</h3>
-          <dl>
-            <div><dt>Αγορά</dt><dd>{{ formatRating(aggregate()?.avgReview) }}</dd></div>
-            <div class="is-own"><dt>Εσείς</dt><dd>—</dd></div>
-          </dl>
-          <p class="versus-gap muted">Η δική σας βαθμολογία δεν συλλέγεται ακόμη.</p>
-        </article>
       </div>
-      <p class="muted pricing-hint dashboard-source">
-        {{ ownSourceLabel(ownReference().source) }}<ng-container *ngIf="ownReference().roomLabel"> · {{ ownReference().roomLabel }}</ng-container>.
-        {{ aggregate()?.basis === "summary" ? "Αγορά: η «Σύνοψη αγοράς» της αναζήτησης." : "Αγορά: η φθηνότερη τιμή κάθε επιλεγμένου καταλύματος." }}
+      <p *ngIf="effectiveScope() === 'selected'" class="muted pricing-hint dashboard-source">
+        Αγορά: η φθηνότερη τιμή κάθε επιλεγμένου καταλύματος.
       </p>
 
       <!-- «Κλίμακα τιμών»: every hotel on one price axis, the owner and the median as reference marks. -->
@@ -263,6 +250,9 @@ export type DashboardScope = "all" | "selected";
         </table>
       </div>
     </ng-container>
+
+    <!-- The season so far: the owner's average price against the market, from their own bookings. -->
+    <app-market-history></app-market-history>
   `,
 })
 export class MarketDashboardComponent {
@@ -326,7 +316,8 @@ export class MarketDashboardComponent {
       return "Τα στοιχεία των ανταγωνιστών δίπλα στα δικά σας, μετά από κάθε αναζήτηση.";
     }
     const aggregate = this.aggregate();
-    const distance = aggregate?.avgDistanceKm != null ? ` · μέση απόσταση ${formatDistance(aggregate.avgDistanceKm)}` : "";
+    const distance = (aggregate?.avgDistanceKm != null ? ` · μέση απόσταση ${formatDistance(aggregate.avgDistanceKm)}` : "")
+      + (aggregate?.avgReview != null ? ` · μέση βαθμολογία ${formatRating(aggregate.avgReview)}` : "");
     if (this.effectiveScope() === "selected") {
       const count = this.selectedHotels().length;
       return `${count} από ${total} ${total === 1 ? "κατάλυμα" : "καταλύματα"} επιλεγμένα${distance}`;
@@ -353,7 +344,11 @@ export class MarketDashboardComponent {
   readonly formatRating = formatRating;
   readonly formatSignedEuro = formatSignedEuro;
   readonly compareLabel = compareLabel;
-  readonly ownSourceLabel = ownSourceLabel;
+  ownSourceShort(source: OwnReference["source"]): string {
+    if (source === "booking_live") return "Στο Booking, για αυτές τις ημερομηνίες";
+    if (source === "onboarding_sample") return "Τιμή αναφοράς από την εγγραφή";
+    return "Δεν υπάρχει ακόμη τιμή σας";
+  }
 
   diffFor(hotel: HotelComparisonRow): { value: number; label: string; widthPct: number } | null {
     const own = this.ownReference().price;

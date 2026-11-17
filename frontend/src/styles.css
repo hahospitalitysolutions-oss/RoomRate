@@ -2205,7 +2205,8 @@ label span {
   }
 }
 
-.settings-form {
+.settings-form,
+.property-section {
   display: grid;
   gap: 16px;
   max-width: 640px;
@@ -3061,6 +3062,28 @@ app-select-menu span {
   font-weight: 600;
 }
 
+.versus-value {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+/* The owner's own card: the map's terracotta as a rule on the left, not as coloured text. */
+.versus-card.is-own-card {
+  border-left: 3px solid var(--terracotta);
+  padding-left: 12px;
+}
+
+.versus-card.is-own-card h3 {
+  color: var(--terracotta-ink);
+}
+
+/* «Η τιμή σας και η αγορά»: its figures sit in the dashboard's own grid. */
+app-market-history {
+  display: contents;
+}
+
 .versus-gap {
   color: var(--ink-soft);
   font-size: 13px;
@@ -3425,9 +3448,11 @@ app-select-menu span {
 }
 
 /* The drill-down's page is wider than the pricing column the history chart was drawn for. */
+/* width: auto margins in a grid cell would otherwise shrink the chart to a thumbnail. */
 .competitor-detail .history-scroll {
   margin: 0 auto;
   max-width: 760px;
+  width: 100%;
 }
 
 .detail-history-note {
@@ -4531,5 +4556,78 @@ app-performance-rooms-form,
   .performance-closure-row label,
   .performance-settings-row label {
     flex: 1 1 100%;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Phone header: brand, bell and sign-out on one row, the four pages  */
+/* on the next as one unbroken row, the status chips under them.       */
+/* ------------------------------------------------------------------ */
+@media (max-width: 640px) {
+  .app-topbar {
+    gap: 8px;
+  }
+
+  .app-topbar .header-actions {
+    display: contents;
+  }
+
+  .app-topbar app-notification-bell {
+    margin-left: auto;
+  }
+
+  .app-topbar .header-nav {
+    flex: 1 1 100%;
+    flex-wrap: nowrap;
+    justify-content: space-between;
+    order: 10;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .header-actions .header-nav-link {
+    font-size: 14px;
+    padding: 8px 10px;
+  }
+
+  .app-topbar .status-chip {
+    order: 11;
+  }
+}
+
+/* The two dates side by side cut «06/01/2030» in the narrow desktop sidebar: stacked there. */
+.date-pair {
+  container-type: inline-size;
+}
+
+@container (max-width: 250px) {
+  .date-pair > label {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Four columns fit a phone: no sideways scroll, long room names wrap. */
+.performance-table.is-compact {
+  min-width: 0;
+}
+
+.performance-table.is-compact tbody th {
+  white-space: normal;
+}
+
+@media (max-width: 640px) {
+  /* «Προγραμματισμένες» no longer splits mid-word on a phone. */
+  .map-header h1 {
+    font-size: 27px;
+    overflow-wrap: break-word;
+  }
+
+  /* Threshold and direction side by side, the add button under them at full width. */
+  .alert-rule-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .alert-rule-form .primary-button {
+    grid-column: 1 / -1;
   }
 }

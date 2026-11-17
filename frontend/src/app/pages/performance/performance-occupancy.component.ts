@@ -133,9 +133,6 @@ export class PerformanceOccupancyComponent {
     if (!this.inventoryMissing()) {
       lines.push({ label: "RevPAR", values: months.map((month) => month.revpar_eur), color: "terracotta", format: "euro" });
     }
-    if (months.some((month) => month.market_median_eur !== null)) {
-      lines.push({ label: "Διάμεσος αγοράς", values: months.map((month) => month.market_median_eur), color: "sun", format: "euro", dashed: true });
-    }
     return { ...monthAxis(months.map((month) => month.month)), lines, notes: months.map(closedNote) };
   });
 

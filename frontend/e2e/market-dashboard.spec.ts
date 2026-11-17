@@ -4,6 +4,8 @@
  * per-competitor drill-down route. Hermetic: every endpoint is mocked, the
  * wildcard first (Playwright matches LIFO, so the specific routes win).
  */
+import { readFileSync } from "node:fs";
+
 import { expect, Page, test } from "@playwright/test";
 
 import { API, CURRENT_USER, JOB_ID, mockMapbox, OWNED_PROPERTY_ID, ROOM_TYPE_ID, seedBrowserState } from "./helpers";
@@ -149,18 +151,20 @@ test("market vs us: the summary's figures beside the owner's price", async ({ pa
   await mockMarket(page);
   await page.goto("/map");
 
+  // The owner's price once, in its own card; the market cards carry the gap only.
+  await expect(page.getByTestId("kpi-own")).toContainText("90 €");
   const median = page.getByTestId("kpi-median");
   await expect(median).toContainText("110 €");
-  await expect(median).toContainText("90 €");
+  await expect(median).not.toContainText("90 €");
   // 90 against 110: 18% cheaper.
-  await expect(median).toContainText("18% φθηνότερα από τη διάμεση");
+  await expect(median).toContainText("Εσείς: 18% φθηνότερα");
   await expect(page.getByTestId("kpi-average")).toContainText("118 €");
   await expect(page.getByTestId("kpi-range")).toContainText("55 € – 210 €");
   // One of the three hotels on screen undercuts 90 €.
   await expect(page.getByTestId("kpi-range")).toContainText("Φθηνότερα από εσάς: 1 από 3 καταλύματα");
-  // The owner's own rating is not collected: a dash, never a fake number.
-  await expect(page.getByTestId("kpi-rating")).toContainText("8,6");
-  await expect(page.getByTestId("kpi-rating")).toContainText("δεν συλλέγεται ακόμη");
+  // The market's rating is context, not a comparison (the owner's own is not collected): it sits in the hint.
+  await expect(page.getByTestId("kpi-rating")).toHaveCount(0);
+  await expect(page.getByTestId("dashboard-scope-hint")).toContainText("μέση βαθμολογία 8,6");
   await expect(page.getByTestId("dashboard-scope-hint")).toContainText("12 καταλύματα της αγοράς");
 
   // One row per hotel, the cheapest package: Alpha at 60 €, 30 € under the owner.
@@ -271,4 +275,36 @@ test("the dashboard fits a phone-width screen without sideways scrolling", async
   await expect(page.getByTestId("kpi-median")).toBeVisible();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(1);
+});
+
+/** The «Απόδοση» calls answer their samples (public/mock/performance/), or the given status. */
+async function mockPerformance(page: Page, status = "status"): Promise<void> {
+  await page.route(`${API}/api/v1/performance/**`, (route) => {
+    const name = new URL(route.request().url()).pathname.split("/performance/")[1];
+    return route.fulfill({ json: JSON.parse(readFileSync(`public/mock/performance/${name === "status" ? status : name}.json`, "utf-8")) });
+  });
+}
+
+test("the season so far: the owner's average price against the market's, by month and by room type", async ({ page }) => {
+  await mockMarket(page);
+  await mockPerformance(page);
+  await page.goto("/map");
+
+  const months = page.getByTestId("market-history-months");
+  await expect(months).toContainText("Η μέση τιμή σας και η αγορά, ανά μήνα");
+  // The sample's ADR sits 6–15 € under the market's median every month: 7,17 € on average.
+  await expect(months).toContainText("7,17 € κάτω από την αγορά");
+  await expect(months.getByRole("group", { name: /Αύγουστος 2026: Εσείς \(ADR\) 141,00\s€, Διάμεση αγοράς 156,00\s€/ })).toBeAttached();
+  const rooms = page.getByTestId("market-history-rooms");
+  await expect(rooms.locator("tbody tr")).toHaveCount(4);
+  await expect(rooms.locator("tbody tr").first()).toContainText("Δίκλινο με θέα θάλασσα");
+});
+
+test("without uploaded bookings the season comparison is one line pointing to «Απόδοση»", async ({ page }) => {
+  await mockMarket(page);
+  await mockPerformance(page, "status-empty");
+  await page.goto("/map");
+
+  await expect(page.getByTestId("market-history-empty").getByRole("link", { name: "Απόδοση" })).toHaveAttribute("href", "/performance");
+  await expect(page.getByTestId("market-history-months")).toHaveCount(0);
 });

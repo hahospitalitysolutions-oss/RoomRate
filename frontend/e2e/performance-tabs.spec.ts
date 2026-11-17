@@ -36,14 +36,15 @@ function lastQuery(calls: Request[], endpoint: string): URLSearchParams {
   return new URL(call!.url()).searchParams;
 }
 
-test("overview: KPI cards with the change from last year, the market median and the charts", async ({ page }) => {
+test("overview: KPI cards with the change from last year and the charts, no market figures", async ({ page }) => {
   const calls = await openPerformance(page, "/performance");
 
   await expect(page.getByTestId("performance-kpi-occupancy")).toContainText("73,6%");
   await expect(page.getByTestId("performance-kpi-occupancy")).toContainText("+4,9 μον.");
   await expect(page.getByTestId("performance-kpi-adr")).toContainText("117,66 €");
   await expect(page.getByTestId("performance-kpi-adr")).toContainText("+5,6%");
-  await expect(page.getByTestId("performance-kpi-adr")).toContainText("Διάμεσος αγοράς: 125,00 €");
+  // The market comparison lives on «Αγορά»: «Απόδοση» shows the owner's own figures only.
+  await expect(page.getByTestId("performance-kpi-adr")).not.toContainText("αγοράς");
   await expect(page.getByTestId("performance-kpi-revenue")).toContainText("191.314,00 €");
 
   const bookingsAdr = page.getByTestId("performance-chart-bookings-adr");
@@ -99,7 +100,6 @@ test("without a comparison there is no change from last year", async ({ page }) 
 
   await expect(page.getByTestId("performance-kpi-occupancy")).toContainText("73,6%");
   await expect(page.getByTestId("performance-kpi-occupancy")).not.toContainText("από πέρυσι");
-  await expect(page.getByTestId("performance-kpi-adr")).not.toContainText("Διάμεσος αγοράς");
 });
 
 test("occupancy: closed months read «Κλειστό», and the next season's pace", async ({ page }) => {

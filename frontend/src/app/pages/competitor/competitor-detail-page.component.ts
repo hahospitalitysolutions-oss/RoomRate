@@ -150,7 +150,7 @@ type PriceBar = { label: string; value: number; valueLabel: string; widthPct: nu
                   <div><dt>Ανταγωνιστής</dt><dd>{{ formatRating(competitor.reviewScore) }}</dd></div>
                   <div><dt>Μέση αγοράς</dt><dd>{{ formatRating(market()?.avgReview) }}</dd></div>
                 </dl>
-                <p class="versus-gap muted">{{ competitor.reviewCount }} κριτικές · η δική σας βαθμολογία δεν συλλέγεται ακόμη.</p>
+                <p class="versus-gap muted">{{ competitor.reviewCount }} κριτικές</p>
               </article>
               <article class="versus-card" data-testid="detail-kpi-context">
                 <h3>Θέση και διαθεσιμότητα</h3>

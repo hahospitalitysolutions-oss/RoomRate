@@ -311,7 +311,8 @@ import { resolveOwnReference } from "./map/market-comparison";
           <h2>Σύνοψη αγοράς</h2>
           <div *ngIf="marketSummaryWithData() as summary" class="market-summary-block" data-testid="market-summary">
             <p class="market-summary-counts" data-testid="market-summary-counts">{{ marketCountsLine(summary) }}</p>
-            <div class="kpi-strip">
+            <!-- On the dashboard tab its cards already show these figures: once is enough. -->
+            <div *ngIf="centerView() !== 'dashboard'" class="kpi-strip" data-testid="market-summary-kpis">
               <div><span>Ελάχιστη</span><strong>{{ formatEuro(summary.price_min_eur) }}</strong></div>
               <div><span>Διάμεση</span><strong>{{ formatEuro(summary.price_median_eur) }}</strong></div>
               <div><span>Μέση</span><strong>{{ formatEuro(summary.price_avg_eur) }}</strong></div>

@@ -429,6 +429,8 @@ test.describe("data renders without a second click or manual refresh", () => {
     // currency formatting puts the symbol after the amount). It replaced the
     // marker-price snapshot (80 € / 120 €) and the separate records strip.
     await expect(page.getByTestId("market-summary-counts")).toHaveText("Καταλύματα 17 · Καταγραφές 42");
+    // The prices show on the map tab; on the dashboard its own cards carry them.
+    await page.getByTestId("center-tab-map").click();
     await expect(page.getByTestId("market-summary").getByText("60 €")).toBeVisible();
     await expect(page.getByTestId("market-summary").getByText("240 €")).toBeVisible();
     // The tracked competitor restored into a checked card checkbox.

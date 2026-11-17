@@ -1,6 +1,7 @@
 /**
  * «Απόδοση»: how the property did, from the owner's own bookings (Excel or
- * the Booking.com export), next to the market prices RoomRate collects.
+ * the Booking.com export). Only the owner's own figures: the comparison with
+ * the market is on «Αγορά».
  *
  * The page owns `/status` and the view in the URL (performance-filter-state.ts):
  * tabs, filter bar, the empty state before any upload and the notice while
@@ -61,7 +62,7 @@ const TEMPLATE_FILENAME = "RoomRate_kratiseis.xlsx";
       <app-header>
         <p class="eyebrow">Απόδοση</p>
         <h1>Πώς πάει το κατάλυμα</h1>
-        <p class="app-band-subtitle">Πληρότητα, μέση τιμή και έσοδα από τις κρατήσεις σας, δίπλα στις τιμές της αγοράς.</p>
+        <p class="app-band-subtitle">Πληρότητα, μέση τιμή και έσοδα από τις κρατήσεις σας.</p>
       </app-header>
 
       <section class="page-body performance-body">

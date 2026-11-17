@@ -418,6 +418,9 @@ test("one market summary box reads /market/summary and the header counts hotels"
   await expect(page.getByTestId("market-summary-counts")).toHaveText(
     "Καταλύματα 17 · Καταγραφές 42 · Ίδια κατηγορία 11 · Παρόμοια 6",
   );
+  // The prices show on the map tab; on the dashboard its own cards carry them.
+  await expect(box.getByTestId("market-summary-kpis")).toHaveCount(0);
+  await page.getByTestId("center-tab-map").click();
   // `\s` before €: el-GR currency formatting puts a no-break space there.
   await expect(box.locator(".kpi-strip > div")).toHaveText([
     /^Ελάχιστη\s*60\s€$/, /^Διάμεση\s*110\s€$/, /^Μέση\s*118\s€$/, /^Μέγιστη\s*240\s€$/, /^Μέση βαθμολογία\s*8\.6$/,

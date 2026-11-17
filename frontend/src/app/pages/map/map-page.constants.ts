@@ -143,7 +143,7 @@ export const START_SEARCH_MESSAGE =
 // Shown when ensureSelectedRoom picked the room instead of the user. Rendered
 // in the results sidebar, right under the room dropdown it describes.
 export const AUTO_PICKED_ROOM_HINT =
-  "Επιλέχθηκε αυτόματα το πρώτο δωμάτιο του καταλόγου — αλλάξτε το αν χρειάζεται.";
+  "Επιλέχθηκε αυτόματα το πρώτο δωμάτιο του καταλόγου. Αλλάξτε το αν χρειάζεται.";
 
 
 export const DEFAULT_STAY = defaultStayDates();
