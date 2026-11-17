@@ -2,7 +2,7 @@
  * «Απόδοση» shell (pages/performance/): the route, the header link, the tabs,
  * and the development fallback to public/mock/performance/*.json while an
  * endpoint does not exist yet (HTTP 404 «Not Found» from FastAPI).
- * The frontend team replaces this with the real page's specs (A10).
+ * Filters, URL and empty state: performance-filters.spec.ts.
  */
 import { expect, test } from "@playwright/test";
 
@@ -26,5 +26,5 @@ test("the performance page opens from the header and runs on the samples until t
     await expect(page.getByRole("tab", { name: tab })).toBeVisible();
   }
   // public/mock/performance/status.json
-  await expect(page.getByTestId("performance-shell")).toContainText("κρατήσεις");
+  await expect(page.getByTestId("performance-bookings")).toContainText("766 κρατήσεις");
 });
