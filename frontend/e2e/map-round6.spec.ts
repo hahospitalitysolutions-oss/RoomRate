@@ -17,6 +17,7 @@ import {
   recordCall,
   ROOM_TYPE_ID,
   seedBrowserState,
+  showMapTab,
 } from "./helpers";
 
 const PROP_ALPHA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
@@ -284,6 +285,7 @@ test("«Απόκρυψη» folds the filters into a rail left of the map, and «
   await mockMapRound6(page, {});
 
   await page.goto("/map");
+  await showMapTab(page);
   await expect(page.locator(".header-actions").getByText("3 ανταγωνιστές")).toBeVisible();
   const sidebar = page.locator(".filters-sidebar");
   await expect(sidebar).toBeVisible();
@@ -456,6 +458,7 @@ test("an open marker popup survives a card tick and the map filter", async ({ pa
   await page.setViewportSize({ width: 1280, height: 1400 });
 
   await page.goto("/map");
+  await showMapTab(page);
   await expect(markers(page)).toHaveCount(3);
   await markerFor(page, "Hotel Beta").click();
   await expect(openPopup(page)).toHaveCount(1);
@@ -525,6 +528,7 @@ test("a marker popup adds the distance, the category and a Booking link when the
   });
 
   await page.goto("/map");
+  await showMapTab(page);
   await expect(markers(page)).toHaveCount(3);
   await markerFor(page, "Hotel Beta").click();
   const popup = openPopup(page);
@@ -555,6 +559,7 @@ test("the owner's hotel is on the map as «Εσείς» with its Booking price a
   await mockMapRound6(page, { reads, ownProperty: { ...OWN_PROPERTY, radius_km: 7.5 } });
 
   await page.goto("/map");
+  await showMapTab(page);
   await expect(markers(page)).toHaveCount(3);
   await expect(ownMarker(page)).toHaveCount(1);
   await expect(ownMarker(page)).toHaveText("Εσείς");
@@ -676,6 +681,7 @@ test("«Μόνο συγκρίσιμα» re-reads the job without refitting the c
   await page.setViewportSize({ width: 1280, height: 1400 });
 
   await page.goto("/map");
+  await showMapTab(page);
   await expect(markers(page)).toHaveCount(2);
   // The summary is the load chain's last kick-off: once it is on screen, the
   // restored job's own fits (marker render, then the post-load re-render) are
@@ -861,6 +867,7 @@ test("zoomed out, competitor markers become dots without their price while «Ε�
   });
 
   await page.goto("/map");
+  await showMapTab(page);
   await expect(markers(page)).toHaveCount(3);
   await expect(ownMarker(page)).toHaveCount(1);
   const map = page.locator(".roomrate-map");

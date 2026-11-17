@@ -32,6 +32,15 @@ export type HistoryRunPoint = {
   tooltipBelow: boolean;
   showAxisLabel: boolean;
   isLabelled: boolean;
+  /** The focused competitor's cheapest price in this run (drill-down only); null when it was not in the run. */
+  focusY: number | null;
+  focusLabel: string;
+};
+
+/** One competitor to draw over the market median (the competitor drill-down). */
+export type HistoryFocus = {
+  propertyId: string | null;
+  hotelName: string;
 };
 
 /** One scrape run after the per-competitor prices are collapsed. */
@@ -67,6 +76,11 @@ export type PriceHistoryChartView = {
   hasBand: boolean;
   summaryLabel: string;
   ariaLabel: string;
+  /** True when a focus competitor was asked for AND appears in at least one plotted run. */
+  hasFocus: boolean;
+  focusName: string;
+  /** Polyline segments of the focus line: consecutive runs only, a missing run breaks it. */
+  focusSegments: string[];
 };
 
 // Chart canvas in user units. The SVG keeps its aspect ratio while scaling to
@@ -115,7 +129,7 @@ const MIN_LABEL_GAP_Y = 26;
  * nightly price in that run; the band behind it is the P25-P75 spread of
  * those same per-competitor prices.
  */
-export function buildHistoryChart(series: PriceHistorySeries): PriceHistoryChartView | null {
+export function buildHistoryChart(series: PriceHistorySeries, focus: HistoryFocus | null = null): PriceHistoryChartView | null {
   const allRuns = aggregateRuns(series);
   if (!allRuns.length) {
     return null;
@@ -127,7 +141,15 @@ export function buildHistoryChart(series: PriceHistorySeries): PriceHistoryChart
 
   // The y domain covers only what is actually drawn, padded on both sides so
   // the extremes never sit pinned to the plot edges.
+  const focusPrices = focus ? focusPricesByRun(series, focus) : new Map<number, number>();
+  const runFocus = runs.map((run) => focusPrices.get(run.runIndex) ?? null);
+  const hasFocus = runFocus.some((price) => price !== null);
   const drawnValues = runs.map((run) => run.median);
+  for (const price of runFocus) {
+    if (price !== null) {
+      drawnValues.push(price);
+    }
+  }
   for (const index of bandedRuns) {
     drawnValues.push(runs[index].p25 as number, runs[index].p75 as number);
   }
@@ -168,6 +190,8 @@ export function buildHistoryChart(series: PriceHistorySeries): PriceHistoryChart
       : `${run.competitorCount} ανταγωνιστές`;
     const stampLabel = formatRunStamp(run.observedAt);
     const medianLabel = formatEuro(run.median);
+    const focusPrice = runFocus[index];
+    const focusLabel = focusPrice !== null ? formatEuro(focusPrice) : "";
     return {
       index,
       x,
@@ -187,6 +211,7 @@ export function buildHistoryChart(series: PriceHistorySeries): PriceHistoryChart
         stampLabel,
         `διάμεσος ${medianLabel}`,
         ...(rangeLabel ? [`P25–P75 ${rangeLabel}`] : []),
+        ...(focus && focusLabel ? [`${focus.hotelName} ${focusLabel}`] : []),
         competitorLabel,
       ].join(" · "),
       valueY: above ? round1(y - 12) : round1(y + 20),
@@ -198,6 +223,8 @@ export function buildHistoryChart(series: PriceHistorySeries): PriceHistoryChart
       // and the labels evenly spaced whatever the run count.
       showAxisLabel: (runs.length - 1 - index) % axisStep === 0,
       isLabelled: labelled.has(index),
+      focusY: focusPrice !== null ? scaleY(focusPrice) : null,
+      focusLabel,
     };
   });
 
@@ -232,8 +259,51 @@ export function buildHistoryChart(series: PriceHistorySeries): PriceHistoryChart
     smallSample,
     hasBand: bandSpans.length > 0,
     summaryLabel: `${countLabel} · ${spreadLabel}`,
-    ariaLabel: `Ιστορικό τιμών αγοράς: ${countLabel.toLowerCase()}, ${spreadLabel}.`,
+    ariaLabel: `Ιστορικό τιμών αγοράς: ${countLabel.toLowerCase()}, ${spreadLabel}.`
+      + (hasFocus && focus ? ` Με τη γραμμή του ${focus.hotelName}.` : ""),
+    hasFocus,
+    focusName: hasFocus && focus ? focus.hotelName : "",
+    focusSegments: hasFocus ? focusSegments(points) : [],
   };
+}
+
+/** The focus competitor's cheapest price per run, matched by property id, else by name. */
+function focusPricesByRun(series: PriceHistorySeries, focus: HistoryFocus): Map<number, number> {
+  const prices = new Map<number, number>();
+  for (const point of series.points || []) {
+    if (point.min_price_eur == null || !Number.isFinite(point.min_price_eur)) {
+      continue;
+    }
+    const matches = focus.propertyId && point.property_id
+      ? point.property_id === focus.propertyId
+      : point.hotel_name === focus.hotelName;
+    if (!matches) {
+      continue;
+    }
+    const current = prices.get(point.run_index);
+    prices.set(point.run_index, current === undefined ? point.min_price_eur : Math.min(current, point.min_price_eur));
+  }
+  return prices;
+}
+
+/** Runs of consecutive focus points, as polyline strings (a lone point stays a marker only). */
+function focusSegments(points: HistoryRunPoint[]): string[] {
+  const segments: string[] = [];
+  let current: string[] = [];
+  for (const point of points) {
+    if (point.focusY === null) {
+      if (current.length >= 2) {
+        segments.push(current.join(" "));
+      }
+      current = [];
+      continue;
+    }
+    current.push(`${point.x},${point.focusY}`);
+  }
+  if (current.length >= 2) {
+    segments.push(current.join(" "));
+  }
+  return segments;
 }
 
 /** Collapse the per-(run, competitor) points into one chronological run list. */

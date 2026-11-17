@@ -26,6 +26,7 @@ import {
   OWNED_PROPERTY_ID,
   ROOM_TYPE_ID,
   seedBrowserState,
+  showMapTab,
 } from "./helpers";
 
 const PROP_ALPHA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
@@ -295,6 +296,7 @@ test("the only-selected filter hides the rest and says so when it hides everythi
   await mockMapPage(page, { trackedProperties: [PROP_ALPHA] });
 
   await page.goto("/map");
+  await showMapTab(page);
   await expect(markers(page)).toHaveCount(3);
 
   await page.getByTestId("only-selected-toggle").check();

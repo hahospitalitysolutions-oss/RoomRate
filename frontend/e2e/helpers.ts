@@ -151,6 +151,16 @@ export async function mockMapbox(page: Page): Promise<void> {
     }));
 }
 
+/**
+ * The market page opens on «Αγορά vs εμείς» (owner request 2026-11-13); the
+ * Mapbox map is the centre column's second tab. Specs that look at the map
+ * itself (markers, popups, the camera, its box) switch to it first.
+ */
+export async function showMapTab(page: Page): Promise<void> {
+  await page.getByTestId("center-tab-map").click();
+  await page.locator(".map-shell").waitFor({ state: "visible" });
+}
+
 /** Only a signed-in Neon Auth session — a brand-new user with no workflow state. */
 export async function seedSessionOnly(page: Page): Promise<void> {
   await mockNeonAuth(page);

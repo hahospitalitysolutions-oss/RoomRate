@@ -150,7 +150,7 @@ test("empty catalog skip reaches the map for this navigation only", async ({ pag
   // the skip navigation and cannot leak into a later ordinary map link.
   await page.getByRole("link", { name: "Ρυθμίσεις" }).click();
   await expect(page).toHaveURL(/\/settings/);
-  await page.getByRole("link", { name: "Χάρτης" }).click();
+  await page.getByRole("link", { name: "Αγορά", exact: true }).click();
   await expect(page).toHaveURL(/\/setup/);
   await expect(page.getByTestId("setup-step-title")).toContainText("Βήμα 2");
 });

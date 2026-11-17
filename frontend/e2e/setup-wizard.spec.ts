@@ -19,6 +19,7 @@ import {
   recordCall,
   ROOM_TYPE_ID,
   seedSessionOnly,
+  showMapTab,
 } from "./helpers";
 
 /** A brand-new account: signed in, but nothing onboarded yet. */
@@ -1133,6 +1134,7 @@ test("scenario 5b: after «Αργότερα» the map checklist shows 2 done, st
   await page.getByRole("button", { name: "Αργότερα" }).click();
 
   await expect(page).toHaveURL(/\/map/);
+  await showMapTab(page);
   await expect(page.getByTestId("setup-checklist")).toBeVisible();
   // Two-sided: the map must not overflow the grid (clipping) NOR collapse —
   // its bottom edge coincides with the grid's inner edge (the grid's bottom
@@ -1534,6 +1536,7 @@ test("the checklist starts collapsed on small screens, leaving room for the map"
   await mockMe(page, CURRENT_USER);
 
   await page.goto("/map");
+  await showMapTab(page);
 
   await expect(page).toHaveURL(/\/map/);
   await expect(page.getByTestId("setup-checklist")).toBeVisible();

@@ -3,6 +3,7 @@ import { Routes } from "@angular/router";
 import { authGuard } from "./guards/auth.guard";
 import { setupGuard } from "./guards/setup.guard";
 import { AuthPageComponent } from "./pages/auth-page.component";
+import { CompetitorDetailPageComponent } from "./pages/competitor/competitor-detail-page.component";
 import { PrivacyPageComponent } from "./pages/legal/privacy-page.component";
 import { TermsPageComponent } from "./pages/legal/terms-page.component";
 import { MapPageComponent } from "./pages/map-page.component";
@@ -21,6 +22,10 @@ export const routes: Routes = [
   { path: "terms", component: TermsPageComponent },
   { path: "setup", component: SetupPageComponent, canActivate: [authGuard, setupGuard] },
   { path: "map", component: MapPageComponent, canActivate: [authGuard, setupGuard] },
+  // Drill-down from «Αγορά vs εμείς»: one competitor against the owner and the
+  // market. `:key` is the hotel key (property id, else name); the query carries
+  // the job, the owner's room and the «Μόνο συγκρίσιμα» state it was opened with.
+  { path: "map/competitors/:key", component: CompetitorDetailPageComponent, canActivate: [authGuard, setupGuard] },
   { path: "pricing", component: PricingPageComponent, canActivate: [authGuard, setupGuard] },
   { path: "performance", component: PerformancePageComponent, canActivate: [authGuard, setupGuard] },
   { path: "settings", component: SettingsPageComponent, canActivate: [authGuard] },

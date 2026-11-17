@@ -69,6 +69,8 @@ import {
   AUTO_PICKED_ROOM_HINT,
   DEFAULT_STAY,
 } from "./map/map-page.constants";
+import { MarketDashboardComponent } from "./map/market-dashboard.component";
+import { resolveOwnReference } from "./map/market-comparison";
 
 // All async-written state is signal-based. Every API call in this component
 // awaits getAccessToken() first, and supabase-js getSession() acquires a
@@ -88,6 +90,7 @@ import {
     EmptyStateComponent,
     IconComponent,
     MapFiltersSidebarComponent,
+    MarketDashboardComponent,
     AppHeaderComponent,
     NotificationToastsComponent,
     SetupChecklistComponent,
@@ -103,8 +106,43 @@ import {
       <app-header [compact]="true">
         <span headerStatus class="status-chip" data-testid="header-count-chip">{{ status() === "loading" ? "Φόρτωση" : competitorCountLabel() }}</span>
         <span headerStatus class="status-chip status-chip-live" data-testid="header-live-chip">Ζωντανά δεδομένα</span>
-        <p class="eyebrow">Χάρτης αγοράς</p>
-        <h1>{{ propertyName() || filters().destination || "Στοχευμένη ανάλυση δωματίων ανταγωνιστών" }}</h1>
+        <div class="band-heading-row">
+          <div class="band-heading-text">
+            <p class="eyebrow">Αγορά</p>
+            <h1>{{ propertyName() || filters().destination || "Στοχευμένη ανάλυση δωματίων ανταγωνιστών" }}</h1>
+          </div>
+          <!-- The centre column's two views, in the band so the map keeps its height. -->
+          <div class="segmented center-tabs" role="tablist" aria-label="Προβολή αγοράς">
+            <button
+              id="center-tab-dashboard"
+              type="button"
+              role="tab"
+              class="segmented-option"
+              data-testid="center-tab-dashboard"
+              aria-controls="center-panel-dashboard"
+              [attr.aria-selected]="centerView() === 'dashboard'"
+              [attr.tabindex]="centerView() === 'dashboard' ? 0 : -1"
+              [class.is-active]="centerView() === 'dashboard'"
+              (click)="setCenterView('dashboard')"
+              (keydown.arrowRight)="setCenterView('map', $event)"
+              (keydown.arrowLeft)="setCenterView('map', $event)"
+            >Σύγκριση</button>
+            <button
+              id="center-tab-map"
+              type="button"
+              role="tab"
+              class="segmented-option"
+              data-testid="center-tab-map"
+              aria-controls="center-panel-map"
+              [attr.aria-selected]="centerView() === 'map'"
+              [attr.tabindex]="centerView() === 'map' ? 0 : -1"
+              [class.is-active]="centerView() === 'map'"
+              (click)="setCenterView('map')"
+              (keydown.arrowRight)="setCenterView('dashboard', $event)"
+              (keydown.arrowLeft)="setCenterView('dashboard', $event)"
+            >Χάρτης</button>
+          </div>
+        </div>
       </app-header>
 
       <!--
@@ -181,18 +219,57 @@ import {
           </section>
         </aside>
 
-        <section class="map-shell">
+        <!--
+          The centre column (owner request 2026-11-13): «Αγορά vs εμείς», the
+          competitors' aggregates beside the owner's own figures, took the
+          map's place as what the page opens on. The map is one tab away and
+          unchanged: both panels share one grid cell and the inactive one is
+          only made invisible (.is-offstage), so the map keeps its real size,
+          markers, popups and camera while the dashboard is shown.
+        -->
+        <section class="market-center">
           <app-setup-checklist></app-setup-checklist>
-          <div
-            class="map-canvas"
-            appCompetitorMap
-            [source]="mapSource"
-            [emptyMessage]="visibleCompetitors().length ? null : mapEmptyMessage()"
-            [ownCoordinatesMissing]="ownCoordinatesMissing()"
-            [showLegend]="showMapLegend()"
-            (markerClick)="flashCard($event)"
-            (popupClose)="releaseCard($event)"
-          ></div>
+          <section
+            id="center-panel-dashboard"
+            role="tabpanel"
+            aria-labelledby="center-tab-dashboard"
+            class="market-dashboard"
+            appMarketDashboard
+            data-testid="market-dashboard"
+            [class.is-offstage]="centerView() !== 'dashboard'"
+            [attr.aria-hidden]="centerView() !== 'dashboard' ? 'true' : null"
+            [status]="status()"
+            [summaryStatus]="marketSummaryStatus()"
+            [competitors]="competitors()"
+            [selectedKeys]="selectedKeys()"
+            [marketSummary]="marketSummaryWithData()"
+            [ownReference]="ownReference()"
+            [jobId]="activeJobId()"
+            [roomId]="selectedRoomId()"
+            [comparableOnly]="comparableOnly()"
+            [emptyTitle]="dashboardEmptyTitle()"
+            [emptyExplanation]="dashboardEmptyExplanation()"
+            (hotelToggle)="toggleHotelByKey($event)"
+          ></section>
+          <section
+            id="center-panel-map"
+            role="tabpanel"
+            aria-labelledby="center-tab-map"
+            class="map-shell"
+            [class.is-offstage]="centerView() !== 'map'"
+            [attr.aria-hidden]="centerView() !== 'map' ? 'true' : null"
+          >
+            <div
+              class="map-canvas"
+              appCompetitorMap
+              [source]="mapSource"
+              [emptyMessage]="visibleCompetitors().length ? null : mapEmptyMessage()"
+              [ownCoordinatesMissing]="ownCoordinatesMissing()"
+              [showLegend]="showMapLegend()"
+              (markerClick)="flashCard($event)"
+              (popupClose)="releaseCard($event)"
+            ></div>
+          </section>
         </section>
 
         <aside class="results-sidebar">
@@ -425,6 +502,9 @@ export class MapPageComponent implements OnInit, OnDestroy {
   readonly selectedRoomId = signal("");
   readonly selectedRoomType = signal("");
   readonly filtersCollapsed = signal(false);
+  // The centre column's tab: «Σύγκριση» (the dashboard, the default) or
+  // «Χάρτης». Written only by its own click/key handlers.
+  readonly centerView = signal<"dashboard" | "map">("dashboard");
   readonly status = signal<LoadingState>("idle");
   readonly actionStatus = signal<LoadingState>("idle");
   readonly message = signal(START_SEARCH_MESSAGE);
@@ -659,6 +739,20 @@ export class MapPageComponent implements OnInit, OnDestroy {
     const summary = this.marketSummary();
     return summary && (summary.total_hotels > 0 || summary.total_records > 0) ? summary : null;
   });
+  // The owner's side of «Αγορά vs εμείς»: the job's own Booking price, else
+  // the selected room's onboarding sample price.
+  readonly ownReference = computed(() => resolveOwnReference(this.ownProperty(), this.selectedOwnedRoom()));
+  // The dashboard's empty state in its own words: the results column already
+  // states the reason (and carries the one button that undoes a read filter),
+  // so repeating its title and button here would say everything twice.
+  readonly dashboardEmptyTitle = computed(() =>
+    this.status() === "ready"
+      ? "Δεν υπάρχουν καταλύματα για σύγκριση"
+      : "Η σύγκριση με την αγορά εμφανίζεται μετά την αναζήτηση");
+  readonly dashboardEmptyExplanation = computed(() =>
+    this.status() === "ready"
+      ? "Η αναζήτηση δεν άφησε καταλύματα για να τα συγκρίνουμε με τα δικά σας στοιχεία. Η δεξιά στήλη εξηγεί γιατί και τι μπορείτε να αλλάξετε."
+      : "Ρυθμίστε τα φίλτρα και ξεκινήστε μια αναζήτηση ανταγωνιστών: οι τιμές της αγοράς θα εμφανιστούν εδώ δίπλα στις δικές σας.");
   // Whether the summary read for the result on screen is still out. Written
   // around an await, so a signal; the empty state waits for it (see template).
   readonly marketSummaryStatus = signal<LoadingState>("idle");
@@ -839,6 +933,43 @@ export class MapPageComponent implements OnInit, OnDestroy {
   releaseCard(key: string): void {
     if (this.highlightedCardKey() === key) {
       this.highlightedCardKey.set(null);
+    }
+  }
+
+  /**
+   * The centre column's tabs. Coming back to the map, Mapbox measures its
+   * container again (it was display:none) and the markers are reconciled;
+   * a camera fit asked for while it was hidden happens now (the map defers
+   * it). Arrow keys move between the two tabs (tablist pattern).
+   */
+  setCenterView(view: "dashboard" | "map", event?: Event): void {
+    if (event) {
+      event.preventDefault();
+      const target = this.hostElement.nativeElement.querySelector<HTMLElement>(`#center-tab-${view}`);
+      target?.focus();
+    }
+    if (this.centerView() === view) {
+      return;
+    }
+    this.centerView.set(view);
+    if (view === "map") {
+      window.setTimeout(() => {
+        this.mapView?.resize();
+        this.mapView?.renderMarkers();
+      }, 0);
+    }
+  }
+
+  /** A hotel ticked or unticked in the dashboard's table: the same rule as the matched card's checkbox. */
+  toggleHotelByKey(key: string): void {
+    const rows = this.competitors().filter((row) => hotelKey(row) === key);
+    if (!rows.length) {
+      return;
+    }
+    const selected = this.selectedKeys();
+    const ticked = rows.filter((row) => selected.has(markerKey(row)));
+    for (const row of ticked.length ? ticked : rows.slice(0, 1)) {
+      this.toggleCompetitor(markerKey(row));
     }
   }
 

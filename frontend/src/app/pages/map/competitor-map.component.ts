@@ -229,6 +229,8 @@ export class CompetitorMapComponent implements AfterViewInit, OnDestroy {
   private styleReady = false;
   private resizeObserver: ResizeObserver | null = null;
   private didFitMarkers = false;
+  // A fit was asked for while the map was hidden (see fitMapToContent).
+  private fitDeferredWhileHidden = false;
   private destroyed = false;
 
   async ngAfterViewInit(): Promise<void> {
@@ -544,6 +546,18 @@ export class CompetitorMapComponent implements AfterViewInit, OnDestroy {
     if (bounds.isEmpty()) {
       return;
     }
+    // The map lives in a tab of the market page and is display:none while
+    // «Σύγκριση» is shown: a fit into a 0×0 box picks a meaningless camera.
+    // The fit waits (didFitMarkers stays false) for the render that follows
+    // the tab switch, and then jumps instead of animating, so a marker the
+    // user clicks right away is not moving under the pointer.
+    const container = this.map.getContainer();
+    if (!container.clientWidth || !container.clientHeight) {
+      this.fitDeferredWhileHidden = true;
+      return;
+    }
+    const duration = this.fitDeferredWhileHidden ? 0 : 700;
+    this.fitDeferredWhileHidden = false;
     this.didFitMarkers = true;
     this.mapFitCount.update((count) => count + 1);
     this.map.fitBounds(bounds, {
@@ -551,7 +565,7 @@ export class CompetitorMapComponent implements AfterViewInit, OnDestroy {
       maxZoom: 14,
       pitch: 0,
       bearing: 0,
-      duration: 700,
+      duration,
     });
   }
 

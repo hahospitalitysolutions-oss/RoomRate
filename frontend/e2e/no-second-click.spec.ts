@@ -422,8 +422,8 @@ test.describe("data renders without a second click or manual refresh", () => {
     // fetches whose continuations run outside the Angular zone. They must
     // appear with ZERO interactions.
     await expect(page.locator(".header-actions").getByText("2 ανταγωνιστές")).toBeVisible();
-    await expect(page.getByText("Hotel Alpha")).toBeVisible();
-    await expect(page.getByText("Hotel Beta")).toBeVisible();
+    await expect(page.locator(".results-sidebar").getByText("Hotel Alpha")).toBeVisible();
+    await expect(page.locator(".results-sidebar").getByText("Hotel Beta")).toBeVisible();
     // The one market summary box (Round 6, spec §4.7), from /market/summary:
     // its counts line and its prices, lowest 60 €, highest 240 € (el-GR
     // currency formatting puts the symbol after the amount). It replaced the
@@ -447,7 +447,7 @@ test.describe("data renders without a second click or manual refresh", () => {
     await interceptAlertSocket(page);
 
     await page.goto("/map");
-    await expect(page.getByText("Hotel Alpha")).toBeVisible();
+    await expect(page.locator(".results-sidebar").getByText("Hotel Alpha")).toBeVisible();
 
     const checkIn = page.locator('input[type="date"]').first();
     const checkOut = page.locator('input[type="date"]').nth(1);
@@ -484,7 +484,7 @@ test.describe("data renders without a second click or manual refresh", () => {
     await interceptAlertSocket(page);
 
     await page.goto("/map");
-    await expect(page.getByText("Hotel Alpha")).toBeVisible();
+    await expect(page.locator(".results-sidebar").getByText("Hotel Alpha")).toBeVisible();
 
     const checkIn = page.locator('input[type="date"]').first();
     // Wait for the restore chain's own date write before overwriting it, so
@@ -956,7 +956,7 @@ test.describe("data renders without a second click or manual refresh", () => {
     // silently cover only one of the two banners.
     await expect(filters).not.toContainText("τελευταία ολοκληρωμένη");
     // The restored job's cards must not appear over a search still running.
-    await expect(page.getByText("Hotel Alpha")).toHaveCount(0);
+    await expect(page.locator(".results-sidebar").getByText("Hotel Alpha")).toHaveCount(0);
     await expect(page.locator(".results-sidebar")).toContainText("Αναμονή για την ολοκλήρωση της ζωντανής αναζήτησης.");
     // And the button stays disabled — a reset that re-enables it is how a
     // second paid job gets started for a search already in flight.
@@ -1033,7 +1033,7 @@ test.describe("data renders without a second click or manual refresh", () => {
     });
 
     await page.goto("/map");
-    await expect(page.getByText("Hotel Alpha")).toBeVisible();
+    await expect(page.locator(".results-sidebar").getByText("Hotel Alpha")).toBeVisible();
 
     const checkIn = page.locator('input[type="date"]').first();
     const checkOut = page.locator('input[type="date"]').nth(1);
@@ -1051,7 +1051,7 @@ test.describe("data renders without a second click or manual refresh", () => {
 
     // Red today: the new job is read with 2030-06-01, matches no rows, and the
     // user sees an empty map for a scrape that did return data.
-    await expect(page.getByText("Hotel Gamma")).toBeVisible();
+    await expect(page.locator(".results-sidebar").getByText("Hotel Gamma")).toBeVisible();
 
     const restoredReads = markerQueries.filter((query) => query.get("scrape_job_id") === JOB_ID);
     const newReads = markerQueries.filter((query) => query.get("scrape_job_id") === NEW_JOB_ID);

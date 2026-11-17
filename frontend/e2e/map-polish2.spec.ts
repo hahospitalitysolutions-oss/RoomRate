@@ -23,6 +23,7 @@ import {
   recordCall,
   ROOM_TYPE_ID,
   seedBrowserState,
+  showMapTab,
 } from "./helpers";
 
 /** A second room of the same category: a separate comparison set all the same. */
@@ -186,6 +187,7 @@ test("a card and its marker point at each other: hover or focus raises the marke
   await mockMap(page);
 
   await openMap(page);
+  await showMapTab(page);
   await expect(markers(page)).toHaveCount(3);
   await expect(page.locator(".roomrate-marker-dot.is-highlighted")).toHaveCount(0);
 

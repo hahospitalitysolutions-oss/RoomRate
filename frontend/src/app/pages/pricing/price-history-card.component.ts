@@ -88,6 +88,22 @@ import type { LoadingState } from "./pricing-format";
               [attr.points]="band"
             />
             <polyline *ngIf="chart.linePoints" class="history-line" [attr.points]="chart.linePoints" />
+            <!-- Drill-down only: one competitor's own cheapest price per run, square markers so it never relies on colour. -->
+            <polyline
+              *ngFor="let segment of chart.focusSegments"
+              class="history-focus-line"
+              [attr.points]="segment"
+            />
+            <ng-container *ngFor="let point of chart.points">
+              <rect
+                *ngIf="point.focusY !== null"
+                class="history-focus-dot"
+                [attr.x]="point.x - 4"
+                [attr.y]="point.focusY - 4"
+                width="8"
+                height="8"
+              />
+            </ng-container>
 
             <line
               *ngIf="activePoint() as active"
@@ -160,12 +176,29 @@ import type { LoadingState } from "./pricing-format";
             <span>Διάμεσος αγοράς</span>
             <span>{{ active.stampLabel }}</span>
             <span *ngIf="active.rangeLabel">P25&ndash;P75: {{ active.rangeLabel }}</span>
+            <span *ngIf="chart.hasFocus">{{ chart.focusName }}: {{ active.focusLabel || "χωρίς τιμή" }}</span>
             <span>{{ active.competitorLabel }}</span>
           </div>
         </div>
       </div>
 
       <div class="history-meta">
+        <span *ngIf="chart.hasFocus" class="history-key" data-testid="history-focus-key">
+          <span *ngIf="!chart.hasBand" class="history-key-item">
+            <svg class="history-key-mark" viewBox="0 0 18 8" aria-hidden="true">
+              <line class="history-key-line" x1="1" y1="4" x2="17" y2="4" />
+              <circle class="history-key-dot" cx="9" cy="4" r="3" />
+            </svg>
+            Διάμεσος αγοράς
+          </span>
+          <span class="history-key-item">
+            <svg class="history-key-mark" viewBox="0 0 18 8" aria-hidden="true">
+              <line class="history-focus-line" x1="1" y1="4" x2="17" y2="4" />
+              <rect class="history-focus-dot" x="6" y="1" width="6" height="6" />
+            </svg>
+            {{ chart.focusName }}
+          </span>
+        </span>
         <span *ngIf="chart.hasBand" class="history-key">
           <span class="history-key-item">
             <svg class="history-key-mark" viewBox="0 0 18 8" aria-hidden="true">
@@ -198,6 +231,7 @@ import type { LoadingState } from "./pricing-format";
               <th scope="col">P25</th>
               <th scope="col">P75</th>
               <th scope="col">Ανταγωνιστές</th>
+              <th *ngIf="chart.hasFocus" scope="col">{{ chart.focusName }}</th>
             </tr>
           </thead>
           <tbody>
@@ -207,6 +241,7 @@ import type { LoadingState } from "./pricing-format";
               <td>{{ point.p25Label }}</td>
               <td>{{ point.p75Label }}</td>
               <td>{{ point.competitorCount }}</td>
+              <td *ngIf="chart.hasFocus">{{ point.focusLabel || "—" }}</td>
             </tr>
           </tbody>
         </table>
