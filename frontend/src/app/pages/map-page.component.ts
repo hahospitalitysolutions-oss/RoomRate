@@ -71,6 +71,7 @@ import {
 } from "./map/map-page.constants";
 import { MarketDashboardComponent } from "./map/market-dashboard.component";
 import { resolveOwnReference } from "./map/market-comparison";
+import type { PriceHistorySeries } from "../types/pricing";
 
 // All async-written state is signal-based. Every API call in this component
 // awaits getAccessToken() first, and supabase-js getSession() acquires a
@@ -244,6 +245,7 @@ import { resolveOwnReference } from "./map/market-comparison";
             [selectedKeys]="selectedKeys()"
             [marketSummary]="marketSummaryWithData()"
             [ownReference]="ownReference()"
+            [marketHistory]="marketHistory()"
             [jobId]="activeJobId()"
             [roomId]="selectedRoomId()"
             [comparableOnly]="comparableOnly()"
@@ -558,6 +560,8 @@ export class MapPageComponent implements OnInit, OnDestroy {
     return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   });
   readonly marketSummary = signal<MarketSummary | null>(null);
+  /** The same market's earlier searches (/market/price-history): the dashboard's «Τάση». */
+  readonly marketHistory = signal<PriceHistorySeries | null>(null);
   // Where the shown match scores come from (spec Α.4). Written after the
   // /competitors/ await — outside the zone, so a signal like its siblings.
   // "statistical" until a read proves otherwise: that is the honest default
@@ -1355,6 +1359,7 @@ export class MapPageComponent implements OnInit, OnDestroy {
     this.mapView?.resetFit();
     this.marketSummary.set(null);
     this.marketSummaryStatus.set("idle");
+    this.marketHistory.set(null);
     this.clearMatchScores();
     this.autoMatchNotice.set("");
     this.reassessNotice.set("");
@@ -1890,6 +1895,7 @@ export class MapPageComponent implements OnInit, OnDestroy {
     this.mapView?.renderMarkers();
     // The strip and match scores describe the same result set as the markers.
     void this.loadMarketSummary(scrapeJobId, generation);
+    void this.loadMarketHistory(scrapeJobId, generation);
     this.matchScoresLoad = this.refreshRoomMatches(generation);
     // A job new to the screen (a fresh search, a restore) gets its one
     // automatic matching run for every room type; a re-read (a room switch,
@@ -2119,6 +2125,31 @@ export class MapPageComponent implements OnInit, OnDestroy {
   }
 
   /**
+   * The market's median search by search, for the dashboard's trend. The job's
+   * own stay and room (buildMarkerParams); the API canonicalizes the destination
+   * and reads the same comparable basis as the recommendation. Supplementary:
+   * a failure only hides the trend.
+   */
+  private async loadMarketHistory(scrapeJobId: string, generation: number): Promise<void> {
+    try {
+      const params = this.buildMarkerParams(scrapeJobId);
+      params.delete("limit");
+      params.delete("scrape_job_id");
+      if (this.selectedRoomId()) {
+        params.set("owned_room_type_id", this.selectedRoomId());
+      }
+      const series = await this.api.get<PriceHistorySeries>("/api/v1/market/price-history", params);
+      if (this.isCurrentChain(generation)) {
+        this.marketHistory.set(series);
+      }
+    } catch {
+      if (this.isCurrentChain(generation)) {
+        this.marketHistory.set(null);
+      }
+    }
+  }
+
+  /**
    * Fetches tracked competitors and feeds SetupProgressService. Runs on
    * EVERY map load, independent of applyTrackedCompetitors below: the
    * checklist's tracked-competitors step must reflect reality even when a
@@ -2310,6 +2341,7 @@ export class MapPageComponent implements OnInit, OnDestroy {
     this.mapView?.resetFit();
     this.marketSummary.set(null);
     this.marketSummaryStatus.set("idle");
+    this.marketHistory.set(null);
     this.clearMatchScores();
     // Deliberately keep lastCompetitorJobId/lastCompetitorSelection: they feed
     // restoreLatestCompetitorSearch (stale entries clean themselves up there).

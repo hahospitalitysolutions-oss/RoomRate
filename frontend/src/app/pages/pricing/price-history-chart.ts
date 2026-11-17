@@ -307,7 +307,7 @@ function focusSegments(points: HistoryRunPoint[]): string[] {
 }
 
 /** Collapse the per-(run, competitor) points into one chronological run list. */
-function aggregateRuns(series: PriceHistorySeries): AggregatedRun[] {
+export function aggregateRuns(series: PriceHistorySeries): AggregatedRun[] {
   const byRun = new Map<number, { prices: number[]; observedAt: string | null }>();
   for (const point of series.points || []) {
     if (point.min_price_eur == null || !Number.isFinite(point.min_price_eur)) {

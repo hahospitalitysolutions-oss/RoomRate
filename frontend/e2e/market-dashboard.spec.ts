@@ -308,3 +308,44 @@ test("without uploaded bookings the season comparison is one line pointing to «
   await expect(page.getByTestId("market-history-empty").getByRole("link", { name: "Απόδοση" })).toHaveAttribute("href", "/performance");
   await expect(page.getByTestId("market-history-months")).toHaveCount(0);
 });
+
+test("price by rating and distance: the scatter, its sentence and the bands, each beside the owner's price", async ({ page }) => {
+  await mockMarket(page);
+  await page.goto("/map");
+
+  // Alpha 60 € (8,0), Beta 100 € (9,0), Gamma 150 € (7,0); the owner at 90 €.
+  const scatter = page.getByTestId("value-scatter");
+  await expect(scatter.locator("svg.scatter-svg circle.ladder-dot")).toHaveCount(3);
+  // Median rating 8,0: Alpha and Beta rate that well, and only Alpha is cheaper than 90 €.
+  await expect(page.getByTestId("value-sentence")).toHaveText("1 από τα 2 καταλύματα με βαθμολογία 8,0 και πάνω χρεώνουν λιγότερο από εσάς.");
+
+  // Within 1 km only Beta (100 €); 1-3 km Alpha and Gamma, median 105 €. «Εσείς» first in each group.
+  const distance = page.getByTestId("bands-distance");
+  await expect(distance.locator(".price-bar-row")).toHaveText([/^Εσείς\s*90\s€$/, /^Έως 1 km\s*\(1\)\s*100\s€$/, /^1 έως 3 km\s*\(2\)\s*105\s€$/]);
+  const rating = page.getByTestId("bands-rating");
+  await expect(rating.locator(".price-bar-row")).toHaveText([/^Εσείς/, /^9 και πάνω.*100\s€$/, /^8 έως 8,9.*60\s€$/, /^Κάτω από 8.*150\s€$/]);
+});
+
+test("trend and availability: the market's median search by search, and how many hotels are nearly full", async ({ page }) => {
+  await mockMarket(page);
+  await page.goto("/map");
+
+  // Medians 115 → 110 → 105 € over the three searches (1, 2 and 3 May).
+  const trend = page.getByTestId("market-trend");
+  await expect(trend).toContainText("105 €");
+  await expect(trend).toContainText("−5% από την προηγούμενη αναζήτηση");
+  await expect(trend).toContainText("−9% από την πρώτη (01/05) · 3 αναζητήσεις");
+
+  // Every hotel has 3 rooms left: none is nearly full.
+  const availability = page.getByTestId("market-availability");
+  await expect(availability).toContainText("0 από 3");
+  await expect(availability).toContainText("Υπάρχει ακόμη αρκετή διαθεσιμότητα");
+});
+
+test("with a single search the trend says when it will appear", async ({ page }) => {
+  await mockMarket(page);
+  await page.route(`${API}/api/v1/market/price-history**`, (route) =>
+    route.fulfill({ json: { ...HISTORY, points: HISTORY.points.filter((point) => point.run_index === 1) } }));
+  await page.goto("/map");
+  await expect(page.getByTestId("market-trend")).toContainText("Η τάση φαίνεται από τη δεύτερη αναζήτηση");
+});

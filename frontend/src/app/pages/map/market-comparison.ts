@@ -28,6 +28,8 @@ export type HotelComparisonRow = {
   reviewScore: number | null;
   reviewCount: number;
   distanceKm: number | null;
+  /** The most rooms any of the hotel's rows has left (Booking's «X left»); 0 when unknown. */
+  roomsLeft: number;
   /** Any of the hotel's rows is ticked. */
   selected: boolean;
   /** False only when the agent judged every row of the hotel not comparable. */
@@ -85,12 +87,14 @@ export function collapseToHotels(
         reviewScore: review,
         reviewCount: row.review_count || 0,
         distanceKm: distance,
+        roomsLeft: Number(row.rooms_left) || 0,
         selected,
         comparable,
       });
       continue;
     }
     existing.selected = existing.selected || selected;
+    existing.roomsLeft = Math.max(existing.roomsLeft, Number(row.rooms_left) || 0);
     existing.comparable = existing.comparable || comparable;
     if (price < existing.price) {
       existing.price = price;
@@ -360,7 +364,7 @@ export function buildPriceLadder(
   };
 }
 
-function ladderTicks(low: number, high: number): number[] {
+export function ladderTicks(low: number, high: number): number[] {
   for (const step of TICK_STEPS) {
     const ticks: number[] = [];
     for (let value = Math.ceil(low / step) * step; value <= high; value += step) {
@@ -373,7 +377,7 @@ function ladderTicks(low: number, high: number): number[] {
   return [Math.round(low), Math.round(high)];
 }
 
-function quantile(sorted: readonly number[], q: number): number {
+export function quantile(sorted: readonly number[], q: number): number {
   const position = (sorted.length - 1) * q;
   const lower = Math.floor(position);
   const upper = Math.min(lower + 1, sorted.length - 1);

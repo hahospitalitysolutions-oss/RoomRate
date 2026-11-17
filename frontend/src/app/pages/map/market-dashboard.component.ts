@@ -42,6 +42,16 @@ import {
   pricePosition,
 } from "./market-comparison";
 import type { LoadingState } from "./map-page.constants";
+import {
+  buildAvailability,
+  buildMarketTrend,
+  buildValueScatter,
+  distanceBands,
+  ratingBands,
+  ValueDot,
+  valueSentence,
+} from "./market-insights";
+import type { PriceHistorySeries } from "../../types/pricing";
 
 export type DashboardScope = "all" | "selected";
 
@@ -185,6 +195,117 @@ export type DashboardScope = "all" | "selected";
         </div>
       </figure>
 
+      <!-- «Τιμή, βαθμολογία, απόσταση»: what the market charges for what it offers. -->
+      <h3 class="dashboard-section-title">Τιμή, βαθμολογία, απόσταση</h3>
+      <div class="insight-grid">
+        <figure *ngIf="scatter() as chart" class="panel-figure" data-testid="value-scatter">
+          <figcaption class="figure-title">
+            <strong>Τιμή και βαθμολογία</strong>
+            <span class="ladder-key">
+              <span class="ladder-key-item"><svg viewBox="0 0 12 12" aria-hidden="true"><circle class="ladder-dot" cx="6" cy="6" r="5" /></svg>Ανταγωνιστής</span>
+              <span *ngIf="chart.own" class="ladder-key-item"><svg viewBox="0 0 14 12" aria-hidden="true"><line class="ladder-own-line" x1="0" y1="6" x2="14" y2="6" /></svg>Εσείς</span>
+              <span *ngIf="chart.median" class="ladder-key-item"><svg viewBox="0 0 14 12" aria-hidden="true"><line class="ladder-median" x1="0" y1="6" x2="14" y2="6" /></svg>Διάμεση</span>
+            </span>
+          </figcaption>
+          <div class="scatter-chart">
+            <svg class="scatter-svg" [attr.viewBox]="chart.viewBox" role="img" [attr.aria-label]="chart.ariaLabel">
+              <ng-container *ngFor="let tick of chart.yTicks">
+                <line class="scatter-grid" [attr.x1]="chart.plotLeft" [attr.x2]="chart.plotRight" [attr.y1]="tick.y" [attr.y2]="tick.y" />
+                <text class="ladder-tick-label" [attr.x]="chart.plotLeft - 8" [attr.y]="tick.y + 4" text-anchor="end">{{ tick.label }}</text>
+              </ng-container>
+              <text
+                *ngFor="let tick of chart.xTicks"
+                class="ladder-tick-label"
+                [attr.x]="tick.x"
+                [attr.y]="chart.plotBottom + 18"
+                text-anchor="middle"
+              >{{ tick.label }}</text>
+              <text class="ladder-tick-label" [attr.x]="chart.plotRight" [attr.y]="chart.plotBottom + 34" text-anchor="end">Βαθμολογία επισκεπτών</text>
+              <line *ngIf="chart.median as median" class="ladder-median" [attr.x1]="chart.plotLeft" [attr.x2]="chart.plotRight" [attr.y1]="median.y" [attr.y2]="median.y" />
+              <line *ngIf="chart.own as own" class="ladder-own-line" [attr.x1]="chart.plotLeft" [attr.x2]="chart.plotRight" [attr.y1]="own.y" [attr.y2]="own.y" />
+              <circle
+                *ngFor="let dot of chart.dots; trackBy: trackValueDot"
+                class="ladder-dot"
+                [class.is-out]="!dot.inScope"
+                [class.is-active]="activeValueDot()?.key === dot.key"
+                [attr.cx]="dot.x"
+                [attr.cy]="dot.y"
+                r="5"
+                (mouseenter)="activeValueDot.set(dot)"
+                (mouseleave)="activeValueDot.set(null)"
+              />
+            </svg>
+            <div
+              *ngIf="activeValueDot() as dot"
+              class="history-tooltip"
+              [ngClass]="dot.x < chart.width * 0.2 ? 'tip-start' : dot.x > chart.width * 0.8 ? 'tip-end' : ''"
+              [style.left.%]="(dot.x / chart.width) * 100"
+              [style.top.%]="(dot.y / chart.height) * 100"
+            >
+              <strong>{{ dot.priceLabel }}</strong>
+              <span>{{ dot.hotelName }}</span>
+              <span>Βαθμολογία {{ dot.ratingLabel }}</span>
+            </div>
+          </div>
+          <p *ngIf="valueLine()" class="versus-gap" data-testid="value-sentence">{{ valueLine() }}</p>
+          <p *ngIf="chart.unrated" class="muted pricing-hint">
+            {{ chart.unrated }} {{ chart.unrated === 1 ? "κατάλυμα δεν έχει" : "καταλύματα δεν έχουν" }} βαθμολογία και δεν εμφανίζονται.
+          </p>
+        </figure>
+
+        <figure *ngIf="bandGroups().length" class="panel-figure" data-testid="price-bands">
+          <figcaption class="figure-title"><strong>Διάμεση τιμή ανά ζώνη</strong></figcaption>
+          <ng-container *ngFor="let group of bandGroups()">
+            <p class="band-group-title">{{ group.title }}</p>
+            <dl class="price-bars" [attr.data-testid]="'bands-' + group.id">
+              <div *ngIf="ownReference().price !== null" class="price-bar-row is-own">
+                <dt>Εσείς</dt>
+                <dd>
+                  <span class="price-bar-track" aria-hidden="true"><span class="price-bar" [style.width.%]="group.ownWidth"></span></span>
+                  <strong>{{ formatOptionalEuro(ownReference().price) }}</strong>
+                </dd>
+              </div>
+              <div *ngFor="let band of group.rows" class="price-bar-row is-market" [attr.title]="band.gap || null">
+                <dt>{{ band.label }} <span class="muted">({{ band.count }})</span></dt>
+                <dd>
+                  <span class="price-bar-track" aria-hidden="true"><span class="price-bar" [style.width.%]="band.widthPct"></span></span>
+                  <strong>{{ band.medianLabel }}</strong>
+                </dd>
+              </div>
+            </dl>
+          </ng-container>
+        </figure>
+      </div>
+
+      <!-- «Τάση και διαθεσιμότητα»: where the market is heading, and how much of it is left. -->
+      <h3 class="dashboard-section-title">Τάση και διαθεσιμότητα</h3>
+      <div class="insight-grid">
+        <article class="versus-card" data-testid="market-trend">
+          <h3>Διάμεση τιμή αγοράς ανά αναζήτηση</h3>
+          <ng-container *ngIf="trend() as current; else noTrend">
+            <div class="trend-head">
+              <strong class="versus-value">{{ current.latestLabel }}</strong>
+              <svg class="trend-spark" viewBox="0 0 120 36" preserveAspectRatio="none" role="img" [attr.aria-label]="'Διάμεση τιμή σε ' + current.runs + ' αναζητήσεις'">
+                <polyline class="trend-line" [attr.points]="current.sparkline" />
+              </svg>
+            </div>
+            <p class="versus-gap trend-change" [ngClass]="'is-' + current.direction">{{ current.sinceLast }}</p>
+            <p *ngIf="current.sinceFirst" class="versus-gap muted">{{ current.sinceFirst }} · {{ current.runs }} αναζητήσεις</p>
+          </ng-container>
+          <ng-template #noTrend>
+            <p class="versus-gap muted">Η τάση φαίνεται από τη δεύτερη αναζήτηση για τις ίδιες ημερομηνίες.</p>
+          </ng-template>
+        </article>
+        <article *ngIf="availability() as current" class="versus-card" data-testid="market-availability">
+          <h3>Διαθεσιμότητα</h3>
+          <strong class="versus-value">{{ current.scarce }} από {{ current.total }}</strong>
+          <p class="versus-gap">καταλύματα με 1-2 δωμάτια ελεύθερα ({{ current.scarcePct }}%). {{ current.sentence }}</p>
+          <p *ngIf="current.scarce && current.scarce < current.total" class="versus-gap muted">
+            Διάμεση τιμή: {{ current.scarceMedianLabel }} όσα γεμίζουν, {{ current.restMedianLabel }} τα υπόλοιπα.
+          </p>
+        </article>
+      </div>
+
       <!-- Per hotel: tick to examine, open to drill down. The table is also the chart's accessible view. -->
       <div class="comparison-table-wrap">
         <table class="comparison-table" data-testid="comparison-table" aria-describedby="dashboard-title">
@@ -262,6 +383,8 @@ export class MarketDashboardComponent {
   readonly selectedKeys = input<ReadonlySet<string>>(new Set());
   readonly marketSummary = input<MarketSummary | null>(null);
   readonly ownReference = input<OwnReference>({ price: null, source: null, roomLabel: "" });
+  /** The same market's earlier searches, for «Τάση». */
+  readonly marketHistory = input<PriceHistorySeries | null>(null);
   /** The job and room the drill-down reads; no link without a job. */
   readonly jobId = input("");
   readonly roomId = input("");
@@ -275,6 +398,7 @@ export class MarketDashboardComponent {
 
   readonly scope = signal<DashboardScope>("all");
   readonly activeDot = signal<LadderDot | null>(null);
+  readonly activeValueDot = signal<ValueDot | null>(null);
 
   readonly hotels = computed(() => collapseToHotels(this.competitors(), this.selectedKeys()));
   readonly selectedHotels = computed(() => this.hotels().filter((hotel) => hotel.selected));
@@ -296,6 +420,26 @@ export class MarketDashboardComponent {
       this.aggregate()?.median ?? null,
     );
   });
+  readonly scatter = computed(() => {
+    const scopeKeys = new Set(this.scopeHotels().map((hotel) => hotel.key));
+    return buildValueScatter(this.hotels(), (hotel) => scopeKeys.has(hotel.key), this.ownReference().price, this.aggregate()?.median ?? null);
+  });
+  readonly valueLine = computed(() => valueSentence(this.scopeHotels(), this.ownReference().price));
+  /** Median price by distance and by rating, each with the owner's price as the first bar. */
+  readonly bandGroups = computed(() => {
+    const own = this.ownReference().price;
+    return [
+      { id: "distance", title: "Απόσταση από εσάς", rows: distanceBands(this.scopeHotels(), own) },
+      { id: "rating", title: "Βαθμολογία επισκεπτών", rows: ratingBands(this.scopeHotels(), own) },
+    ]
+      .filter((group) => group.rows.length)
+      .map((group) => {
+        const top = Math.max(own ?? 0, ...group.rows.map((row) => row.median));
+        return { ...group, ownWidth: own !== null && top > 0 ? Math.round((own / top) * 1000) / 10 : 0 };
+      });
+  });
+  readonly trend = computed(() => buildMarketTrend(this.marketHistory()));
+  readonly availability = computed(() => buildAvailability(this.scopeHotels()));
   /** The examined hotels first, then the rest, each cheapest first. */
   readonly tableHotels = computed(() => {
     if (this.effectiveScope() === "all") {
@@ -374,6 +518,10 @@ export class MarketDashboardComponent {
 
   trackHotel(_: number, hotel: HotelComparisonRow): string {
     return hotel.key;
+  }
+
+  trackValueDot(_: number, dot: ValueDot): string {
+    return dot.key;
   }
 
   trackDot(_: number, dot: LadderDot): string {
