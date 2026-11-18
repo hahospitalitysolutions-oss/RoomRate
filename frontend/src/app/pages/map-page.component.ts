@@ -151,7 +151,8 @@ import type { PriceHistorySeries } from "../types/pricing";
         decision 2026-10-06). It starts open; «Απόκρυψη» folds it into a narrow
         rail, still left of the map, whose «Φίλτρα» button opens it again.
       -->
-      <section class="map-grid" [class.filters-collapsed]="filtersCollapsed()">
+      <section class="map-grid" [class.filters-collapsed]="filtersCollapsed()" [class.results-collapsed]="resultsCollapsed()">
+        <!-- Folded: one small tab at the top of the column, no empty panel down to the bottom. -->
         <aside *ngIf="filtersCollapsed()" class="filters-rail">
           <button
             class="filters-rail-button"
@@ -162,6 +163,7 @@ import type { PriceHistorySeries } from "../types/pricing";
           >
             <app-icon name="search" [size]="18"></app-icon>
             <span>Φίλτρα</span>
+            <app-icon name="chevron-right" [size]="14"></app-icon>
           </button>
         </aside>
         <aside
@@ -251,7 +253,6 @@ import type { PriceHistorySeries } from "../types/pricing";
             [comparableOnly]="comparableOnly()"
             [emptyTitle]="dashboardEmptyTitle()"
             [emptyExplanation]="dashboardEmptyExplanation()"
-            (hotelToggle)="toggleHotelByKey($event)"
           ></section>
           <section
             id="center-panel-map"
@@ -274,7 +275,28 @@ import type { PriceHistorySeries } from "../types/pricing";
           </section>
         </section>
 
-        <aside class="results-sidebar">
+        <aside *ngIf="resultsCollapsed()" class="filters-rail results-rail">
+          <button
+            class="filters-rail-button"
+            type="button"
+            data-testid="show-results"
+            aria-label="Εμφάνιση στήλης σύγκρισης"
+            (click)="toggleResultsSidebar()"
+          >
+            <app-icon name="chart" [size]="18"></app-icon>
+            <span>Σύγκριση</span>
+            <app-icon name="chevron-left" [size]="14"></app-icon>
+          </button>
+        </aside>
+        <!-- Hidden, not removed, when folded: the cards keep their state and the map's links to them. -->
+        <aside class="results-sidebar" [class.is-folded]="resultsCollapsed()" data-testid="results-sidebar">
+          <div class="results-head">
+            <span class="results-head-title">Σύγκριση για</span>
+            <button class="panel-toggle-button" type="button" data-testid="hide-results" (click)="toggleResultsSidebar()">
+              <span>Απόκρυψη</span>
+              <app-icon name="chevron-right" [size]="16"></app-icon>
+            </button>
+          </div>
           <!--
             The room the whole column is read for, as the column's first
             control (owner feedback 2026-09-30): the owner compares per room
@@ -285,7 +307,7 @@ import type { PriceHistorySeries } from "../types/pricing";
             the room's id — no new search, no new matching run.
           -->
           <label class="compare-room-field">
-            <span>Σύγκριση για</span>
+            <span class="visually-hidden">Σύγκριση για</span>
             <app-select-menu
               testId="room-select"
               placeholder="Επιλέξτε το δωμάτιό σας"
@@ -505,6 +527,8 @@ export class MapPageComponent implements OnInit, OnDestroy {
   readonly selectedRoomId = signal("");
   readonly selectedRoomType = signal("");
   readonly filtersCollapsed = signal(false);
+  /** The right-hand column («Σύγκριση για», summary, cards) folded into a tab. */
+  readonly resultsCollapsed = signal(false);
   // The centre column's tab: «Σύγκριση» (the dashboard, the default) or
   // «Χάρτης». Written only by its own click/key handlers.
   readonly centerView = signal<"dashboard" | "map">("dashboard");
@@ -962,19 +986,6 @@ export class MapPageComponent implements OnInit, OnDestroy {
         this.mapView?.resize();
         this.mapView?.renderMarkers();
       }, 0);
-    }
-  }
-
-  /** A hotel ticked or unticked in the dashboard's table: the same rule as the matched card's checkbox. */
-  toggleHotelByKey(key: string): void {
-    const rows = this.competitors().filter((row) => hotelKey(row) === key);
-    if (!rows.length) {
-      return;
-    }
-    const selected = this.selectedKeys();
-    const ticked = rows.filter((row) => selected.has(markerKey(row)));
-    for (const row of ticked.length ? ticked : rows.slice(0, 1)) {
-      this.toggleCompetitor(markerKey(row));
     }
   }
 
@@ -1492,6 +1503,11 @@ export class MapPageComponent implements OnInit, OnDestroy {
   toggleFiltersSidebar(): void {
     this.filtersCollapsed.update((collapsed) => !collapsed);
     // The map's column changes width: let Mapbox re-measure its canvas.
+    window.setTimeout(() => this.mapView?.resize(), 0);
+  }
+
+  toggleResultsSidebar(): void {
+    this.resultsCollapsed.update((collapsed) => !collapsed);
     window.setTimeout(() => this.mapView?.resize(), 0);
   }
 

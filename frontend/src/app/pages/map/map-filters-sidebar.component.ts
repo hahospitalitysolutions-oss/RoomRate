@@ -25,7 +25,10 @@ export type MapFilterChange = { key: keyof MapFilters; value: string };
   template: `
     <div class="filters-title-row">
       <h2>Φίλτρα αναζήτησης</h2>
-      <button class="panel-toggle-button" type="button" (click)="collapseRequest.emit()">Απόκρυψη</button>
+      <button class="panel-toggle-button" type="button" (click)="collapseRequest.emit()">
+        <app-icon name="chevron-left" [size]="16"></app-icon>
+        <span>Απόκρυψη</span>
+      </button>
     </div>
     <!--
       A search is for the whole property (owner decision 2026-11-13): it

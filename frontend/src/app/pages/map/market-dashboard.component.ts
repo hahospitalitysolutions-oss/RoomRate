@@ -5,8 +5,9 @@
  * After a search it sets the competitors' aggregates beside the owner's own
  * figures: the market's median and average price against the owner's price,
  * the price range with how many hotels undercut the owner, the rating, a
- * price ladder of every hotel, and a per-hotel table whose rows tick hotels
- * into the examined set and open each hotel's drill-down page.
+ * price ladder of every hotel, and a per-hotel table whose rows open each
+ * hotel's drill-down page. Hotels are ticked in the results column only (the
+ * cards on the right): one place to pick, not two.
  *
  * Scope: «Όλη η αγορά» reads /market/summary's figures (the ONE summary the
  * results column shows too); «Επιλεγμένοι» reads the ticked hotels' own rows.
@@ -19,7 +20,7 @@
  * the dashboard owns nothing but its scope and the ladder's readout.
  */
 import { CommonModule } from "@angular/common";
-import { Component, computed, input, output, signal } from "@angular/core";
+import { Component, computed, input, signal } from "@angular/core";
 import { RouterLink } from "@angular/router";
 
 import { EmptyStateComponent } from "../../components/empty-state.component";
@@ -82,7 +83,7 @@ export type DashboardScope = "all" | "selected";
           [attr.aria-checked]="effectiveScope() === 'selected'"
           [class.is-active]="effectiveScope() === 'selected'"
           [disabled]="!selectedHotels().length"
-          [attr.title]="selectedHotels().length ? null : 'Τσεκάρετε ανταγωνιστές στον πίνακα ή στη δεξιά στήλη'"
+          [attr.title]="selectedHotels().length ? null : 'Τσεκάρετε ανταγωνιστές στη δεξιά στήλη'"
           data-testid="dashboard-scope-selected"
           (click)="scope.set('selected')"
         >Επιλεγμένοι ({{ selectedHotels().length }})</button>
@@ -306,13 +307,12 @@ export type DashboardScope = "all" | "selected";
         </article>
       </div>
 
-      <!-- Per hotel: tick to examine, open to drill down. The table is also the chart's accessible view. -->
+      <!-- Per hotel: open to drill down. The table is also the chart's accessible view. -->
       <div class="comparison-table-wrap">
         <table class="comparison-table" data-testid="comparison-table" aria-describedby="dashboard-title">
           <caption class="visually-hidden">Ανταγωνιστές με την τιμή τους δίπλα στη δική σας</caption>
           <thead>
             <tr>
-              <th scope="col"><span class="visually-hidden">Επιλογή</span></th>
               <th scope="col">Κατάλυμα</th>
               <th scope="col" class="num">Τιμή/βράδυ</th>
               <th scope="col">Διαφορά από εσάς</th>
@@ -328,14 +328,6 @@ export type DashboardScope = "all" | "selected";
               [class.is-active]="activeDot()?.key === hotel.key"
               [attr.data-hotel-key]="hotel.key"
             >
-              <td>
-                <input
-                  type="checkbox"
-                  [checked]="hotel.selected"
-                  [attr.aria-label]="'Επιλογή ' + hotel.hotelName"
-                  (change)="hotelToggle.emit(hotel.key)"
-                >
-              </td>
               <th scope="row">
                 <span class="table-hotel">{{ hotel.hotelName }}</span>
                 <small class="muted">{{ hotel.roomType }}<ng-container *ngIf="!hotel.comparable"> · Μη συγκρίσιμο</ng-container></small>
@@ -392,9 +384,6 @@ export class MarketDashboardComponent {
   /** The empty state's wording, from the page (it knows whether a search has run). */
   readonly emptyTitle = input("Η σύγκριση με την αγορά εμφανίζεται μετά την αναζήτηση");
   readonly emptyExplanation = input("");
-
-  /** A hotel's tick in the table: the page toggles the hotel's rows. */
-  readonly hotelToggle = output<string>();
 
   readonly scope = signal<DashboardScope>("all");
   readonly activeDot = signal<LadderDot | null>(null);

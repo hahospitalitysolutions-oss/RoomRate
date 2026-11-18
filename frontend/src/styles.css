@@ -677,37 +677,43 @@ label span {
  * width, and the canvas below guarantees the height.
  */
 .map-grid {
+  --filters-col: 300px;
+  --results-col: 380px;
   background: var(--background);
   display: grid;
   flex: 1;
   gap: 16px;
-  grid-template-columns: 300px minmax(0, 1fr) 380px;
+  grid-template-columns: var(--filters-col) minmax(0, 1fr) var(--results-col);
   min-height: 0;
   overflow: hidden;
   padding: 16px;
 }
 
 .map-grid.filters-collapsed {
-  grid-template-columns: 64px minmax(0, 1fr) 380px;
+  --filters-col: 64px;
 }
 
-/* «Φίλτρα» folded: a narrow rail left of the map, never a button on it. */
+.map-grid.results-collapsed {
+  --results-col: 64px;
+}
+
+/*
+ * A folded column («Φίλτρα» or «Σύγκριση»): one tab at the top of its own
+ * column, beside the map and never on it. No panel behind it, so no empty
+ * white strip down to the bottom of the page.
+ */
 .filters-rail {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
+  align-self: start;
   display: flex;
   justify-content: center;
-  min-height: 0;
-  padding: 10px 0;
 }
 
 .filters-rail-button {
   align-items: center;
-  background: var(--sea-soft);
-  border: 1px solid var(--sea-tint);
-  border-radius: var(--radius);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
   color: var(--sea-strong);
   cursor: pointer;
   display: flex;
@@ -715,14 +721,37 @@ label span {
   font-size: 12px;
   font-weight: 700;
   gap: 6px;
-  height: max-content;
-  padding: 10px 6px;
-  width: 48px;
+  padding: 12px 6px 10px;
+  transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+  width: 64px;
 }
 
 .filters-rail-button:hover,
 .filters-rail-button:focus-visible {
-  border-color: var(--sea);
+  background: var(--sea-soft);
+  border-color: var(--sea-tint);
+  transform: translateY(-1px);
+}
+
+.results-sidebar.is-folded {
+  display: none;
+}
+
+/* «Σύγκριση για» and its fold button on one row, at the top of the column. */
+.results-head {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.results-head-title {
+  color: var(--sea);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .filters-sidebar,
@@ -755,15 +784,27 @@ label span {
 }
 
 .panel-toggle-button {
+  align-items: center;
   background: var(--panel);
   border: 1px solid var(--line-strong);
   border-radius: 999px;
-  color: var(--ink);
+  color: var(--ink-soft);
   cursor: pointer;
+  display: inline-flex;
+  flex-shrink: 0;
   font-size: 13px;
   font-weight: 600;
-  min-height: 36px;
-  padding: 7px 14px;
+  gap: 4px;
+  min-height: 34px;
+  padding: 6px 12px;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.panel-toggle-button:hover,
+.panel-toggle-button:focus-visible {
+  background: var(--sea-soft);
+  border-color: var(--sea-tint);
+  color: var(--sea-strong);
 }
 
 .results-sidebar {
@@ -2451,12 +2492,21 @@ label span {
 }
 
 @media (max-width: 1120px) {
-  .map-grid {
-    grid-template-columns: 300px minmax(0, 1fr);
+  .map-grid,
+  .map-grid.filters-collapsed {
+    grid-template-columns: var(--filters-col) minmax(0, 1fr);
   }
 
-  .map-grid.filters-collapsed {
-    grid-template-columns: 64px minmax(0, 1fr);
+  /* The results column sits under the map here: folded, its tab is a bar. */
+  .results-rail {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .results-rail .filters-rail-button {
+    flex-direction: row;
+    padding: 8px 14px;
+    width: auto;
   }
 
   .results-sidebar {
@@ -2479,11 +2529,11 @@ label span {
   /* One column: the folded rail becomes a bar above the map. */
   .filters-rail {
     justify-content: flex-start;
-    padding: 8px;
   }
 
   .filters-rail-button {
     flex-direction: row;
+    padding: 8px 14px;
     width: auto;
   }
 
@@ -4721,4 +4771,16 @@ app-performance-rooms-form,
 .trend-change.is-down {
   color: var(--sea-strong);
   font-weight: 600;
+}
+
+/* With both side columns folded the centre is wide: the SVG charts stop growing, so their labels keep their size. */
+.price-ladder .ladder-chart {
+  margin: 0 auto;
+  max-width: 760px;
+}
+
+.scatter-chart {
+  margin: 0 auto;
+  max-width: 520px;
+  width: 100%;
 }

@@ -183,9 +183,11 @@ test("ticking competitors narrows the comparison to the selected ones", async ({
   const selectedScope = page.getByTestId("dashboard-scope-selected");
   await expect(selectedScope).toBeDisabled();
 
-  const table = page.getByTestId("comparison-table");
-  await table.getByRole("checkbox", { name: "Επιλογή Hotel Beta" }).check();
-  await table.getByRole("checkbox", { name: "Επιλογή Hotel Gamma" }).check();
+  // Hotels are ticked in the results column only: the table has no checkboxes of its own.
+  await expect(page.getByTestId("comparison-table").getByRole("checkbox")).toHaveCount(0);
+  const card = (name: string) => page.locator(".competitor-card").filter({ hasText: name }).getByRole("checkbox");
+  await card("Hotel Beta").check();
+  await card("Hotel Gamma").check();
   await expect(selectedScope).toHaveText("Επιλεγμένοι (2)");
   await selectedScope.click();
   await expect(selectedScope).toHaveAttribute("aria-checked", "true");
@@ -198,12 +200,9 @@ test("ticking competitors narrows the comparison to the selected ones", async ({
   // The rest stay on the ladder, hollow.
   await expect(page.getByTestId("price-ladder").locator(".ladder-svg circle.ladder-dot.is-out")).toHaveCount(1);
 
-  // The same ticks as the results column: one notion of «my competitors».
-  await expect(page.locator(".competitor-card").filter({ hasText: "Hotel Beta" }).getByRole("checkbox")).toBeChecked();
-
   // Unticking everything falls back to the whole market instead of an empty screen.
-  await table.getByRole("checkbox", { name: "Επιλογή Hotel Beta" }).uncheck();
-  await table.getByRole("checkbox", { name: "Επιλογή Hotel Gamma" }).uncheck();
+  await card("Hotel Beta").uncheck();
+  await card("Hotel Gamma").uncheck();
   await expect(page.getByTestId("dashboard-scope-all")).toHaveAttribute("aria-checked", "true");
   await expect(page.getByTestId("kpi-median")).toContainText("110 €");
 });
@@ -348,4 +347,25 @@ test("with a single search the trend says when it will appear", async ({ page })
     route.fulfill({ json: { ...HISTORY, points: HISTORY.points.filter((point) => point.run_index === 1) } }));
   await page.goto("/map");
   await expect(page.getByTestId("market-trend")).toContainText("Η τάση φαίνεται από τη δεύτερη αναζήτηση");
+});
+
+test("the «Σύγκριση» column folds into a tab beside the centre and opens again", async ({ page }) => {
+  await mockMarket(page);
+  await page.goto("/map");
+
+  const column = page.getByTestId("results-sidebar");
+  await expect(column).toBeVisible();
+  await page.getByTestId("hide-results").click();
+  await expect(column).toBeHidden();
+
+  // Only a tab at the top: no panel stretched down the page.
+  const tab = page.getByTestId("show-results");
+  const tabBox = (await tab.boundingBox())!;
+  const centreBox = (await page.locator(".market-center").boundingBox())!;
+  expect(tabBox.x).toBeGreaterThanOrEqual(centreBox.x + centreBox.width);
+  expect(tabBox.height).toBeLessThan(centreBox.height / 3);
+
+  await tab.click();
+  await expect(column).toBeVisible();
+  await expect(tab).toHaveCount(0);
 });

@@ -10,6 +10,8 @@ export type IconName =
   | "chart"
   | "check"
   | "chevron-down"
+  | "chevron-left"
+  | "chevron-right"
   | "alert"
   | "refresh"
   | "trash";
@@ -35,6 +37,8 @@ export type IconName =
       <g *ngSwitchCase="'chart'"><path d="M3 3v18h18"/><path d="m7 15 4-5 3 3 5-7"/></g>
       <g *ngSwitchCase="'check'"><path d="m5 13 4 4L19 7"/></g>
       <g *ngSwitchCase="'chevron-down'"><path d="m6 9 6 6 6-6"/></g>
+      <g *ngSwitchCase="'chevron-left'"><path d="m15 6-6 6 6 6"/></g>
+      <g *ngSwitchCase="'chevron-right'"><path d="m9 6 6 6-6 6"/></g>
       <g *ngSwitchCase="'alert'"><circle cx="12" cy="12" r="9"/><path d="M12 8v4m0 4h.01"/></g>
       <g *ngSwitchCase="'refresh'"><path d="M3 12a9 9 0 0 1 15.4-6.4L21 8m0-5v5h-5M21 12a9 9 0 0 1-15.4 6.4L3 16m0 5v-5h5"/></g>
       <g *ngSwitchCase="'trash'"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m2 0v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V6"/></g>
